@@ -1,0 +1,20 @@
+name: Bug report
+description: Report a reproducible platform problem
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic data. Remove tokens, personal paths and private records.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Platform version, Python version and operating system

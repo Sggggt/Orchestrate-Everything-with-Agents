@@ -1,0 +1,13 @@
+interface:
+  display_name: "Orchestrate Everything with Agents"
+  short_description: "Develop agents and orchestrate your personal workspace"
+  icon_large: "./assets/mark.svg"
+  brand_color: "#7361D9"
+  default_prompt: "Use $orchestrate-everything-with-agents for this platform task. Load only the relevant workflow."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "oea"
+      description: "Compact OEA management interface"
+policy:
+  allow_implicit_invocation: true
