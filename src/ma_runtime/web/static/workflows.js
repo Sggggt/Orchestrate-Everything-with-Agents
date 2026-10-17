@@ -2,8 +2,8 @@ import { autoLayout, canConnect, clampZoom, clone, curve, fitViewport, portPoint
 
 export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, api, toast, render, idempotency, time }) {
   const $ = (selector) => document.querySelector(selector);
-  const labels = { start: "开始", agent: "Agent", condition: "条件分支", template: "模板转换", end: "结束" };
-  const symbols = { start: "arrow", agent: "agents", condition: "branch", template: "file", end: "check" };
+  const labels = { start: "开始", agent: "Agent", map: "并行实例", condition: "条件分支", template: "模板转换", end: "结束" };
+  const symbols = { start: "arrow", agent: "agents", map: "agents", condition: "branch", template: "file", end: "check" };
   const done = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
   const projects = new Map();
   let ws = fresh(null), drag = null;
@@ -167,6 +167,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     if (node.type === "start") return "定义流程的输入变量";
     if (node.type === "end") return Object.keys(node.config.outputs || {}).join(" · ") || "配置最终输出";
     if (node.type === "agent") return state.agents.find((agent) => agent.id === node.config.agent_id)?.name || "选择项目内的 Agent";
+    if (node.type === "map") return `${node.config.agent_ids.join(" / ") || "选择 Agent 池"} · 最多 ${node.config.max_concurrency} 并行`;
     if (node.type === "condition") return `${displayValue(node.config.left)} ${operators[node.config.operator] || ""} ${["is_empty", "is_not_empty"].includes(node.config.operator) ? "" : displayValue(node.config.right)}`;
     return node.config.template || "编写文本模板";
   }
@@ -200,6 +201,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     const config = node.config;
     if (node.type === "start") return `${jsonField("输入结构 · JSON Schema", "input_schema", config.input_schema)}<p class="form-hint">定义运行前需要填写的变量。顶层类型为 object。</p>`;
     if (node.type === "agent") return `<label class="field">执行 Agent<select id="wf-agent" data-focus="wf-agent" data-wf-field="agent_id"><option value="">选择当前项目的 Agent</option>${state.agents.filter((agent) => agent.kind !== "external").map((agent) => `<option value="${esc(agent.id)}" ${config.agent_id === agent.id ? "selected" : ""}>${esc(agent.name)}</option>`).join("")}</select></label>${jsonField("任务输入 · JSON", "payload", config.payload)}<p class="form-hint">使用该 Agent 的模型配置和工具授权。</p><details class="wf-advanced"><summary>超时与重试</summary>${textField("超时（秒）", "attempt_timeout_s", config.attempt_timeout_s, { type: "number" })}${textField("最多尝试次数", "max_attempts", config.max_attempts, { type: "number" })}<label class="field">重试策略<select data-wf-field="retry_policy"><option value="NEVER" ${config.retry_policy === "NEVER" ? "selected" : ""}>不自动重试</option><option value="SAFE_ONLY" ${config.retry_policy === "SAFE_ONLY" ? "selected" : ""}>仅执行端确认安全时重试</option></select></label></details>`;
+    if (node.type === "map") return `${jsonField("Agent 池 · ID 数组", "agent_ids", config.agent_ids)}${jsonField("输入列表或变量引用 · JSON", "items", config.items)}${jsonField("每个实例的输入 · JSON", "payload", config.payload)}${textField("批次并发上限", "max_concurrency", config.max_concurrency, { type: "number" })}<label class="field">路由方式<select data-wf-field="routing"><option value="round_robin" ${config.routing === "round_robin" ? "selected" : ""}>轮询分配</option><option value="least_loaded" ${config.routing === "least_loaded" ? "selected" : ""}>按负载分配</option></select></label><p class="form-hint">最多 128 项。payload 可引用 {{item}}、{{index}} 和前置变量。全部成功后按输入顺序输出 outputs；仍受全局与 Agent 预算限制。</p>`;
     if (node.type === "condition") return `${textField("左侧值", "left", displayValue(config.left))}<label class="field">判断条件<select data-wf-field="operator" data-focus="wf-operator">${Object.entries(operators).map(([op, title]) => `<option value="${op}" ${config.operator === op ? "selected" : ""}>${title}</option>`).join("")}</select></label>${["is_empty", "is_not_empty"].includes(config.operator) ? "" : textField("右侧值", "right", displayValue(config.right))}<p class="form-hint">可填写变量、文本、数字或布尔值。将“是”和“否”出口分别连接到后续节点。</p>`;
     if (node.type === "template") return `${textField("文本模板", "template", config.template, { textarea: true })}<p class="form-hint">通过 {{inputs.name}} 或 {{nodes.node_id.text}} 引用变量。输出保存在 text 字段。</p>`;
     return `${jsonField("最终输出 · JSON", "outputs", config.outputs)}<p class="form-hint">完整变量引用保留原始类型。引用可能被跳过的分支时，可用 {"$ref":"nodes.node_id.text","default":""}。</p>`;
@@ -213,7 +215,8 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     const start = graph().nodes.find((item) => item.type === "start");
     const names = Object.keys(start?.config.input_schema?.properties || {});
     const refs = ["inputs", ...((names.length ? names : ["input"]).map((name) => "inputs." + name)),
-      ...graph().nodes.filter((item) => upstream.has(item.id)).map((item) => `nodes.${item.id}${["agent", "template"].includes(item.type) ? ".text" : item.type === "condition" ? ".result" : ""}`)];
+      ...graph().nodes.filter((item) => upstream.has(item.id)).map((item) => `nodes.${item.id}${["agent", "template"].includes(item.type) ? ".text" : item.type === "condition" ? ".result" : item.type === "map" ? ".outputs" : ""}`)];
+    if (node.type === "map") refs.push("item", "index");
     return `<details class="wf-variables"><summary>可用变量 <span>${refs.length}</span></summary><p class="form-hint">点击变量，插入当前输入框。</p>${refs.map((ref) => `<button class="wf-variable" data-action="wf-insert-variable" data-ref="${esc(ref)}">${esc(ref)}</button>`).join("")}</details>`;
   }
   function connections(node) {
@@ -235,7 +238,8 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     return `${badge(run.state)}<p class="wf-muted">r${run.revision} · ${date(run.created_at)}</p>${run.error ? `<p class="wf-field-error">${esc(run.error.safe_message)}</p>` : ""}${run.summary_markdown ? `<div class="markdown">${markdown(run.summary_markdown)}</div>` : ""}<h3>节点进度</h3><div class="wf-run-node-list">${run.nodes.map((node) => `<button data-action="wf-select-node" data-id="${esc(node.node_id)}"><span>${esc(node.title)}</span>${badge(node.state)}</button>`).join("")}</div>`;
   }
   function runNode(node, execution) {
-    return `<h3>${esc(node.title || node.id)}</h3>${badge(execution.state)}${execution.started_at ? `<p class="wf-muted">${date(execution.started_at)}${execution.ended_at ? ` · ${Math.max(0, execution.ended_at - execution.started_at)} ms` : ""}</p>` : ""}${execution.error ? `<p class="wf-field-error">${esc(execution.error.safe_message || execution.error.code)}</p>` : ""}${execution.summary_markdown ? `<div class="markdown wf-node-summary">${markdown(execution.summary_markdown)}</div>` : ""}${execution.state === "WAITING" ? `<button class="btn small primary" data-action="wf-resume-node" data-id="${esc(node.id)}">提供输入并继续</button>` : ""}${execution.state === "UNCERTAIN" ? '<p class="wf-notice error">此节点需要核对停止证据与外部结果。可在任务页或 Codex 中核对后继续。</p>' : ""}<details class="wf-advanced"><summary>节点输入</summary><pre class="wf-json-preview">${esc(json(execution.inputs))}</pre></details><details class="wf-advanced"><summary>节点输出</summary><pre class="wf-json-preview">${esc(json(execution.output))}</pre></details>${execution.task_id ? `<p class="wf-node-id">任务：${esc(execution.task_id)}</p>` : ""}<button class="text-link" data-action="wf-run-overview">查看运行概览 ${icon("arrow")}</button>`;
+    const members = (execution.instances || []).map((member) => `<div class="wf-instance"><strong>#${member.ordinal + 1} ${esc(member.agent_id)}</strong> ${badge(member.state)}<small>${esc(member.task_id)}</small>${member.state === "WAITING" ? `<button class="btn small" data-action="wf-resume-node" data-id="${esc(node.id)}" data-instance-index="${member.ordinal}">提供输入</button>` : ""}</div>`).join("");
+    return `<h3>${esc(node.title || node.id)}</h3>${badge(execution.state)}${members}${execution.started_at ? `<p class="wf-muted">${date(execution.started_at)}${execution.ended_at ? ` · ${Math.max(0, execution.ended_at - execution.started_at)} ms` : ""}</p>` : ""}${execution.error ? `<p class="wf-field-error">${esc(execution.error.safe_message || execution.error.code)}</p>` : ""}${execution.summary_markdown ? `<div class="markdown wf-node-summary">${markdown(execution.summary_markdown)}</div>` : ""}${execution.state === "WAITING" && !execution.batch_id ? `<button class="btn small primary" data-action="wf-resume-node" data-id="${esc(node.id)}">提供输入并继续</button>` : ""}${execution.state === "UNCERTAIN" ? '<p class="wf-notice error">此节点需要核对停止证据与外部结果。可在任务页或 Codex 中核对后继续。</p>' : ""}<details class="wf-advanced"><summary>节点输入</summary><pre class="wf-json-preview">${esc(json(execution.inputs))}</pre></details><details class="wf-advanced"><summary>节点输出</summary><pre class="wf-json-preview">${esc(json(execution.output))}</pre></details>${execution.task_id ? `<p class="wf-node-id">任务：${esc(execution.task_id)}</p>` : ""}<button class="text-link" data-action="wf-run-overview">查看运行概览 ${icon("arrow")}</button>`;
   }
   function dialog() {
     if (!ws.dialog) return "";
@@ -516,16 +520,16 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     if (name === "wf-resume-node") {
       const current = ws, runId = ws.run.id;
       const node = ws.run.nodes.find((item) => item.node_id === id);
-      const task = (await api("/rpc", { method: "POST", body: { method: "tasks.get", params: { task_id: node.task_id } } })).result;
+      const task = (await api("/rpc", { method: "POST", body: { method: "tasks.get", params: { task_id: element.dataset.instanceIndex !== undefined ? node.instances[Number(element.dataset.instanceIndex)].task_id : node.task_id } } })).result;
       if (ws !== current || ws.run?.id !== runId) return;
       if (task.wait?.kind !== "input") throw new Error("此节点等待的是消息或其他任务，无需手动提供输入。");
-      ws.dialog = { type: "resume", nodeId: id, runId: ws.run.id, key: idempotency(), input: json({ wait_token: task.wait.wait_token, input: "" }) };
+      ws.dialog = { type: "resume", instanceIndex: element.dataset.instanceIndex === undefined ? null : Number(element.dataset.instanceIndex), nodeId: id, runId: ws.run.id, key: idempotency(), input: json({ wait_token: task.wait.wait_token, input: "" }) };
       ws.dialogFocused = false; render(); return;
     }
     if (name === "wf-confirm-resume") {
       let input;
       try { input = JSON.parse(ws.dialog.input); } catch { throw new Error("恢复输入须为有效 JSON。"); }
-      await call("resume_node", { run_id: ws.dialog.runId, node_id: ws.dialog.nodeId, input, idempotency_key: ws.dialog.key });
+      await call("resume_node", { run_id: ws.dialog.runId, node_id: ws.dialog.nodeId, input, idempotency_key: ws.dialog.key, instance_index: ws.dialog.instanceIndex });
       ws.dialog = null; await selectRun(ws.run.id); return;
     }
     if (name === "wf-toggle-inspector") { ws.inspector = !ws.inspector; render(); return; }
@@ -570,7 +574,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     }
     if (name === "wf-insert-variable") {
       const node = selected();
-      const fallback = node?.type === "template" ? "wf-config-template" : node?.type === "agent" ? "wf-json-payload" : node?.type === "end" ? "wf-json-outputs" : "wf-config-left";
+      const fallback = node?.type === "template" ? "wf-config-template" : ["agent", "map"].includes(node?.type) ? "wf-json-payload" : node?.type === "end" ? "wf-json-outputs" : "wf-config-left";
       const field = document.getElementById(ws.lastField || fallback) || document.getElementById(fallback);
       if (!field || !["TEXTAREA", "INPUT"].includes(field.tagName)) { toast(`{{${element.dataset.ref}}}`); return; }
       field.focus(); field.setRangeText(`{{${element.dataset.ref}}}`, field.selectionStart ?? field.value.length, field.selectionEnd ?? field.value.length, "end");
@@ -587,9 +591,9 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
       remember(); const field = element.dataset.wfJson, key = keyFor(node, field); ws.raw[key] = element.value;
       try {
         const value = JSON.parse(element.value);
-        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+        if (field === "agent_ids" ? !Array.isArray(value) || !value.every((id) => typeof id === "string") : field === "items" ? value === null || !["string", "object"].includes(typeof value) : !value || typeof value !== "object" || Array.isArray(value)) throw new Error();
         node.config[field] = value; delete ws.errors[key];
-      } catch { ws.errors[key] = "请输入有效的 JSON 对象。"; }
+      } catch { ws.errors[key] = "请输入符合字段类型的有效 JSON。"; }
       if ($(`#wf-error-${field}`)) $(`#wf-error-${field}`).textContent = ws.errors[key] || "";
       dirty(); return;
     }
@@ -600,7 +604,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, ap
     else if (!node) return;
     else if (field === "title") node.title = element.value;
     else if (["x", "y"].includes(field)) node.position[field] = Math.max(-100000, Math.min(100000, Number(element.value) || 0));
-    else if (["attempt_timeout_s", "max_attempts"].includes(field)) node.config[field] = Number(element.value);
+    else if (["attempt_timeout_s", "max_attempts", "max_concurrency"].includes(field)) node.config[field] = Number(element.value);
     else if (["left", "right"].includes(field)) {
       try { node.config[field] = JSON.parse(element.value); } catch { node.config[field] = element.value; }
     } else node.config[field] = element.value;

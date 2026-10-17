@@ -229,3 +229,14 @@
   .wf-run-cards { flex-basis:100%; }
   .wf-canvas-controls { bottom:13px; left:10px; }
 }
+.wf-instance {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #e5def1;
+  border-radius: 8px;
+}
+.wf-instance small {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+}

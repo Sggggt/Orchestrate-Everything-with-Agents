@@ -15,6 +15,8 @@ python -B scripts/check_release.py
 
 Node.js is needed only for JavaScript contract tests. The browser application requires no bundling. Python tests use temporary directories and synthetic adapters; they do not require provider keys or private services. Run any visual or manual experiment in a separate external state directory.
 
+For synthetic concurrency measurements, run `python -B scripts/benchmark_runtime.py --data-dir EXTERNAL_DIRECTORY --mode instances --tasks 512 --agents 4 --concurrency 16 --agent-concurrency 4`. Modes `tasks`, `instances` and `workflow` exercise the same scheduler through different entry points. Reports include throughput, completion percentiles, CPU time and observed concurrency, and assert ordered, complete results and budget compliance. Save reports outside the checkout. These measurements do not represent model-provider throughput.
+
 ## Changes
 
 - Preserve project ownership, version checks, idempotency and uncertain-outcome handling.

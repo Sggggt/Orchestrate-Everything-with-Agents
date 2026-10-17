@@ -21,6 +21,9 @@ def describe(runtime):
             "full_peer_messages",
             "sessions",
             "tasks",
+            "managed_instances",
+            "agent_pool_routing",
+            "workflow_map",
             "workflows",
             "project_workflow_canvas",
             "durable_workflow_runs",
@@ -58,6 +61,7 @@ def describe(runtime):
                 "AgentDescriptor",
                 "AdapterEvent",
                 "TaskSpec",
+                "InstanceBatchSpec",
                 "MessageSpec",
                 "RuntimeConfig",
                 "LLMRequest",
@@ -73,6 +77,8 @@ def describe(runtime):
             )
         },
         "contracts": {
+            "instances": "Instances reuse independent Threads/Tasks/Runs and the ordinary scheduler. Spawn is atomic and idempotent, with 1..128 ordered payloads, same-project managed Agent pools, fixed round_robin/least_loaded assignment and a batch concurrency cap. Execution remains bounded by global and Agent budgets, including uncertain slots. Parent-scoped batches are cancelled when their parent fails or is cancelled; active parents suspend to wait.",
+            "workflow_map": "A map node resolves an items list (0..128), renders payload per item/index, and persists one batch_id atomically. All-success aggregation preserves input order in outputs; empty input returns an empty list. Failures stop normal advancement; UNCERTAIN blocks downstream. Resume/reconcile one map member with instance_index. No additional scheduler.",
             "workflow_deletion": "confirmed=true authorizes recoverable deletion of one workflow. Unfinished/uncertain runs block deletion. Graph, project ownership and all run history are retained. list(deleted_only=true) reads its project's recycle bin; restore returns the previous active/archived state.",
             "workflow_graph": "Project ownership is required and immutable. Canvas positions/viewport and typed node configs share one serializable DAG. Drafts may be incomplete; run requires validation. Updates require expected_revision; runs snapshot graph/revision/inputs. Variables use {{inputs.name}}, {{nodes.node_id.field}} or typed {$ref:path,default:value}. No arbitrary code evaluation. Branch joins wait for all incoming paths to settle and execute if at least one incoming edge is active.",
             "workflow_execution": "Agent nodes use ordinary tasks, global concurrency, per-Agent grants and saved model configuration. Node task receipts and graph advancement commit atomically. Recovery observes durable tasks without replay; UNCERTAIN blocks new downstream execution. Cancel waits for actual stopped evidence. Workflow run sessions cannot move to another project.",

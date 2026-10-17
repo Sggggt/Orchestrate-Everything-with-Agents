@@ -8,6 +8,7 @@ import os
 import random
 import shutil
 from dataclasses import dataclass
+from collections import Counter
 
 from .artifacts import ArtifactStore
 from .context import RunContext
@@ -83,6 +84,7 @@ class ActiveRun:
     driver: asyncio.Task | None = None
     committed: bool = False
     started: bool = False
+    batch_id: str | None = None
 
 
 class Runtime:
@@ -110,6 +112,9 @@ class Runtime:
             Threads(self),
         )
         self.tasks, self.messages = Tasks(self), Messages(self)
+        from .instances import Instances
+
+        self.instances = Instances(self)
         from .workflows import Workflows
 
         self.workflows = Workflows(self)
@@ -119,6 +124,7 @@ class Runtime:
         self.mcp = MCPRegistry(self)
         self.active: dict[str, ActiveRun] = {}
         self.uncertain_slots = set()
+        self._uncertain_owners = {}
         self.wake = asyncio.Event()
         self.closing = False
         self.closed = False
@@ -718,11 +724,25 @@ class Runtime:
             or self.store.failed
         ):
             return
-        candidates = await self.store.call(
-            lambda db: rows(
-                db, "SELECT * FROM tasks WHERE state='QUEUED' ORDER BY created_at,rowid"
-            )
-        )
+        def snapshot(db):
+            candidates = rows(db, "SELECT t.*,h.active_run_id,h.owner_task_id,m.batch_id,b.max_concurrency AS batch_limit "
+                "FROM tasks t JOIN threads h ON h.id=t.thread_id "
+                "LEFT JOIN instance_members m ON m.task_id=t.id LEFT JOIN instance_batches b ON b.id=m.batch_id "
+                "WHERE t.state='QUEUED' ORDER BY t.created_at,t.rowid")
+            dependencies = {}
+            for row in rows(db, "SELECT e.task_id,d.state FROM task_dependencies e JOIN tasks d ON d.id=e.depends_on_task_id "
+                            "JOIN tasks t ON t.id=e.task_id WHERE t.state='QUEUED'"):
+                dependencies.setdefault(row.task_id, []).append(row.state)
+            return candidates, dependencies
+        candidates, dependency_states = await self.store.call(snapshot)
+
+        def counts():
+            # Drivers can finish during store awaits. Recount live runs, and never
+            # double-count an uncertain receipt whose driver has not exited yet.
+            by_run = dict(self._uncertain_owners)
+            for run_id, active in self.active.items():
+                by_run[run_id] = (active.request.agent_id, active.batch_id)
+            return Counter(a for a, _ in by_run.values()), Counter(b for _, b in by_run.values() if b)
         groups = {}
         for task in candidates:
             groups.setdefault(task.session_id, []).append(task)
@@ -737,6 +757,7 @@ class Runtime:
             if group:
                 sessions.append(session_id)
             self.last_session = session_id
+            agent_active, batch_active = counts()
             spec = TaskSpec.model_validate_json(task.spec_json)
             reason = None
             adapter = self.adapters.get(spec.agent_id)
@@ -758,21 +779,17 @@ class Runtime:
             elif model_required(config) and not (config.base_url and config.model):
                 reason = "MODEL_CONFIGURATION"
             elif (
-                sum(a.request.agent_id == spec.agent_id for a in self.active.values())
-                >= adapter.describe().max_concurrency
+                agent_active[spec.agent_id] >= min(adapter.describe().max_concurrency,
+                                                  config.max_concurrency if config else 64)
             ):
                 reason = "AGENT_LIMIT"
-            dependencies = await self.store.call(
-                lambda db, t=task: rows(
-                    db,
-                    "SELECT d.* FROM tasks d JOIN task_dependencies e ON e.depends_on_task_id=d.id WHERE e.task_id=?",
-                    (t.id,),
-                )
-            )
-            if any(d.state not in TERMINAL for d in dependencies):
+            if task.batch_id and batch_active[task.batch_id] >= task.batch_limit:
+                reason = "BATCH_LIMIT"
+            dependencies = dependency_states.get(task.id, ())
+            if any(state not in TERMINAL for state in dependencies):
                 reason = "DEPENDENCIES"
             elif spec.dependency_policy == "ALL_SUCCEEDED" and any(
-                d.state != "SUCCEEDED" for d in dependencies
+                state != "SUCCEEDED" for state in dependencies
             ):
                 await self.store.call(
                     lambda db, t=task: self.finish_idle(
@@ -781,13 +798,10 @@ class Runtime:
                     transaction=True,
                 )
                 continue
-            thread = await self.store.call(
-                lambda db, t=task: need(db, "threads", t.thread_id)
-            )
             if (
-                thread.active_run_id
-                or (thread.owner_task_id and thread.owner_task_id != task.id)
-                or any(a.request.thread_id == thread.id for a in self.active.values())
+                task.active_run_id
+                or (task.owner_task_id and task.owner_task_id != task.id)
+                or any(a.request.thread_id == task.thread_id for a in self.active.values())
             ):
                 reason = "THREAD"
             if not self.resources.can_acquire("", spec.resources):
@@ -806,6 +820,7 @@ class Runtime:
             self.resources.acquire(run_id, spec.resources)
             try:
                 async with self.configuration_lock:
+                    agent_active, batch_active = counts()
                     adapter = self.adapter(spec.agent_id)
                     config = self.agent_configs.get(spec.agent_id)
                     model_client = (
@@ -824,11 +839,8 @@ class Runtime:
                             model_required(config)
                             and not (config.base_url and config.model)
                         )
-                        or sum(
-                            a.request.agent_id == spec.agent_id
-                            for a in self.active.values()
-                        )
-                        >= adapter.describe().max_concurrency
+                        or agent_active[spec.agent_id] >= min(adapter.describe().max_concurrency,
+                                                             config.max_concurrency if config else 64)
                     ):
                         self.resources.release(run_id)
                         continue
@@ -861,7 +873,7 @@ class Runtime:
                 collaboration=config.collaboration if config else True,
                 model_client=model_client,
             )
-            active = ActiveRun(request, adapter, context, spec)
+            active = ActiveRun(request, adapter, context, spec, batch_id=task.batch_id)
             self.active[run_id] = active
             active.driver = asyncio.create_task(self.execute_run(active), name=run_id)
             self.events.notify()
@@ -1071,8 +1083,8 @@ class Runtime:
         except BaseException:
             self.accepting = False
             self.resources.isolate(run_id, "Execution admission could not be verified")
-            self.uncertain_slots.add(run_id)
             self.active.pop(run_id, None)
+            self.retain_uncertain(active)
             self.notify()
             return
         if saved.cancel_requested_at is not None:
@@ -1166,8 +1178,8 @@ class Runtime:
                 LOCAL_WORKERS.pop(run_id, None)
                 self.consume_exception(active.worker)
                 self.active.pop(run_id, None)
-                if not stopped and not active.committed:
-                    self.uncertain_slots.add(run_id)
+                if run_id in self._uncertain_owners or (not stopped and not active.committed):
+                    self.retain_uncertain(active)
                 self.resources.release(run_id)
             else:
                 active.worker.add_done_callback(
@@ -1180,12 +1192,18 @@ class Runtime:
         if task.done() and not task.cancelled():
             task.exception()
 
+    def retain_uncertain(self, active):
+        run_id = active.request.run_id
+        self._uncertain_owners[run_id] = (active.request.agent_id, active.batch_id)
+        if run_id not in self.active:
+            self.uncertain_slots.add(run_id)
+
     def on_late_stop(self, run_id, worker):
         LOCAL_WORKERS.pop(run_id, None)
         self.consume_exception(worker)
         active = self.active.pop(run_id, None)
         if active is not None:
-            self.uncertain_slots.add(run_id)
+            self.retain_uncertain(active)
         self.notify()
 
     async def fail_run(
@@ -1309,6 +1327,7 @@ class Runtime:
 
         state = await self.store.call(fail, transaction=True)
         if state == "UNCERTAIN":
+            self.retain_uncertain(active)
             self.resources.isolate(
                 active.request.run_id, "Unreconciled execution or external operation"
             )
@@ -1330,7 +1349,8 @@ class Runtime:
         pending = await self.store.call(
             lambda db: rows(
                 db,
-                "SELECT r.*,t.session_id,t.thread_id,t.spec_json FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.state IN ('RUNNING','UNCERTAIN')",
+                "SELECT r.*,t.session_id,t.thread_id,t.spec_json,m.batch_id FROM runs r JOIN tasks t ON t.id=r.task_id "
+                "LEFT JOIN instance_members m ON m.task_id=t.id WHERE r.state IN ('RUNNING','UNCERTAIN')",
             )
         )
         for run in pending:
@@ -1485,8 +1505,8 @@ class Runtime:
 
             await self.store.call(uncertain, transaction=True)
             self.resources.isolate(run.id, "Previous execution needs reconciliation")
-            if not probe.confirmed_stopped:
-                self.uncertain_slots.add(run.id)
+            self._uncertain_owners[run.id] = (spec.agent_id, run.batch_id)
+            self.uncertain_slots.add(run.id)
         for tool in await self.store.call(
             lambda db: rows(
                 db, "SELECT * FROM tool_calls WHERE state IN ('DISPATCHED','UNCERTAIN')"

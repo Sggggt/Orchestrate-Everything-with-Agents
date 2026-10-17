@@ -80,6 +80,9 @@ class RemoteRunContext:
     async def submit_task(self, spec):
         return await self._call("runtime.tasks.submit", spec=spec)
 
+    async def spawn_instances(self, spec):
+        return await self._call("runtime.instances.spawn", spec=spec)
+
     async def send_message(self, spec):
         return await self._call("runtime.messages.send", spec=spec)
 

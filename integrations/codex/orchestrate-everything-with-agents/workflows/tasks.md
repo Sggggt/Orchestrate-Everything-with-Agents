@@ -4,6 +4,8 @@
 
 先确认 session、agent、thread 的真实归属与用户目标。简单对话用 threads.turn；需要结构化 payload、依赖、资源或期限时查询并调用 tasks.submit。
 
+同一 Agent 的多个独立输入需要新上下文时，用[多实例编排](instances.md) 的 instances.spawn 原子创建线程与任务。已有线程上的依赖继续用本流程；不要为每个实例复制 Agent 配置。
+
 ```json
 {"area":"tasks","action":"submit","params":{"spec":{
   "session_id":"session_id", "agent_id":"agent_id", "thread_id":"thread_id",

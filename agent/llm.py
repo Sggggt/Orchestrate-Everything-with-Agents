@@ -64,6 +64,14 @@ COLLABORATION_TOOLS = [
         ["task_ids"],
     ),
     function(
+        "spawn_instances",
+        "Start independent child instances in this session. Reuse the key for the same logical batch. Suspend with wait_for_tasks using returned task IDs.",
+        {"agent_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32},
+         "inputs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 128},
+         "idempotency_key": {"type": "string"}, "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 256}},
+        ["agent_ids", "inputs", "idempotency_key"],
+    ),
+    function(
         "wait_for_message",
         "Checkpoint and release this execution slot until a collaboration message arrives.",
         {},
@@ -287,6 +295,14 @@ class LLMApiAgent:
                                     idempotency_key=key,
                                 )
                             )
+                        elif name == "spawn_instances":
+                            value = await context.spawn_instances({
+                                "session_id": request.session_id,
+                                "agent_ids": arguments["agent_ids"],
+                                "payloads": [{"input": text} for text in arguments["inputs"]],
+                                "idempotency_key": arguments["idempotency_key"],
+                                "max_concurrency": arguments.get("max_concurrency", 4),
+                            })
                         elif name in {
                             "wait_for_tasks",
                             "wait_for_message",

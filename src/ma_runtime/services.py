@@ -1345,6 +1345,7 @@ class Tasks:
         if run_id:
             self.rt.resources.resolve(run_id)
             self.rt.uncertain_slots.discard(run_id)
+            self.rt._uncertain_owners.pop(run_id, None)
             for owner in list(self.rt.resources.isolated):
                 if owner.startswith(run_id + ":"):
                     self.rt.resources.resolve(owner)

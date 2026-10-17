@@ -46,6 +46,9 @@ def methods(rt):
         "tasks.resume": rt.tasks.resume,
         "tasks.reconcile": rt.tasks.reconcile,
         "tasks.workflow": rt.tasks.workflow,
+        **{"instances." + name: getattr(rt.instances, name) for name in (
+            "spawn", "get", "list", "result", "cancel",
+        )},
         **{"workflows." + name: getattr(rt.workflows, name) for name in (
             "create", "get", "list", "update", "archive", "delete", "restore", "validate", "node_types",
             "run", "get_run", "runs", "result", "cancel", "resume_node", "reconcile_node",

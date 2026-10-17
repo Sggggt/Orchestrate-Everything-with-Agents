@@ -428,7 +428,7 @@ function overview() {
   ).length;
   const capacity = Math.max(
     0,
-    (state.config.max_concurrency || 4) -
+    (state.config.max_concurrency || 16) -
       (state.config.reserved_external_slots || 0),
   );
   const enabled = state.agents.filter(
@@ -453,7 +453,7 @@ function overview() {
           `<div class="stat-card"><div><div class="stat-label">${label}</div><div class="stat-number">${value}</div><div class="stat-foot">${foot}</div></div><span class="stat-icon ${tone}">${icon(ico)}</span></div>`,
       )
       .join("")}</div>
-    <div class="overview-columns"><div class="overview-primary"><div class="section-heading"><h2>你的 Agent <span class="section-count">${state.agents.filter((a) => a.kind !== "external").length}</span></h2><button class="text-link" data-action="route" data-route="agents">管理团队 ${icon("arrow")}</button></div><div class="agent-grid">${agentCards()}</div></div><aside class="overview-secondary"><div class="section-heading"><h2>协作脉搏</h2><span class="live-label"><span class="dot online"></span>实时</span></div><div class="pulse-card"><div class="pulse-head"><span>工作区状态</span>${icon("activity")}</div><strong class="pulse-title">${running ? "想法正在推进" : attention ? "有任务需要关注" : "一切准备就绪"}</strong><div class="capacity-slots" aria-label="全局活跃 ${state.runtime.active || 0}，待核对 ${state.runtime.uncertain_slots || 0}，总执行槽 ${state.config.max_concurrency || 4}">${Array.from({ length: state.config.max_concurrency || 4 }, (_, i) => `<span class="${i >= capacity ? "reserved" : i < (state.runtime.active || 0) ? "occupied" : i < (state.runtime.active || 0) + (state.runtime.uncertain_slots || 0) ? "isolated" : ""}">${icon(i >= capacity ? "terminal" : "agents")}</span>`).join("")}</div><div class="capacity-legend"><span>全局执行槽</span><strong>${capacity} 可调度 / ${state.config.reserved_external_slots || 0} 预留</strong></div><div class="pulse-metrics"><div><span>对话上下文</span><strong>${state.snapshot.threads.length}</strong></div><div><span>待应用消息</span><strong>${state.snapshot.messages.filter((m) => m.state === "PENDING").length}</strong></div><div><span>共享产物</span><strong>${state.snapshot.artifacts.length}</strong></div></div>${attention ? `<button class="attention-link" data-action="task-filter-link" data-filter="attention">${icon("activity")}${attention} 个任务需要关注 ${icon("arrow")}</button>` : '<div class="pulse-note">' + icon("shield") + "执行状态持续保存在本机</div>"}</div><button class="connection-card" data-action="codex"><span class="connection-card-icon">${icon("terminal")}</span><strong>连接你的协调者</strong><p>在 Codex 中讨论，在这里<br>让整个团队一起行动。</p><span>查看接入方式 ${icon("arrow")}</span></button></aside></div>
+    <div class="overview-columns"><div class="overview-primary"><div class="section-heading"><h2>你的 Agent <span class="section-count">${state.agents.filter((a) => a.kind !== "external").length}</span></h2><button class="text-link" data-action="route" data-route="agents">管理团队 ${icon("arrow")}</button></div><div class="agent-grid">${agentCards()}</div></div><aside class="overview-secondary"><div class="section-heading"><h2>协作脉搏</h2><span class="live-label"><span class="dot online"></span>实时</span></div><div class="pulse-card"><div class="pulse-head"><span>工作区状态</span>${icon("activity")}</div><strong class="pulse-title">${running ? "想法正在推进" : attention ? "有任务需要关注" : "一切准备就绪"}</strong><div class="capacity-slots" aria-label="全局活跃 ${state.runtime.active || 0}，待核对 ${state.runtime.uncertain_slots || 0}，总执行槽 ${state.config.max_concurrency || 16}">${Array.from({ length: state.config.max_concurrency || 16 }, (_, i) => `<span class="${i >= capacity ? "reserved" : i < (state.runtime.active || 0) ? "occupied" : i < (state.runtime.active || 0) + (state.runtime.uncertain_slots || 0) ? "isolated" : ""}">${icon(i >= capacity ? "terminal" : "agents")}</span>`).join("")}</div><div class="capacity-legend"><span>全局执行槽</span><strong>${capacity} 可调度 / ${state.config.reserved_external_slots || 0} 预留</strong></div><div class="pulse-metrics"><div><span>对话上下文</span><strong>${state.snapshot.threads.length}</strong></div><div><span>待应用消息</span><strong>${state.snapshot.messages.filter((m) => m.state === "PENDING").length}</strong></div><div><span>共享产物</span><strong>${state.snapshot.artifacts.length}</strong></div></div>${attention ? `<button class="attention-link" data-action="task-filter-link" data-filter="attention">${icon("activity")}${attention} 个任务需要关注 ${icon("arrow")}</button>` : '<div class="pulse-note">' + icon("shield") + "执行状态持续保存在本机</div>"}</div><button class="connection-card" data-action="codex"><span class="connection-card-icon">${icon("terminal")}</span><strong>连接你的协调者</strong><p>在 Codex 中讨论，在这里<br>让整个团队一起行动。</p><span>查看接入方式 ${icon("arrow")}</span></button></aside></div>
     <div class="section-heading recent-heading"><h2>最近任务 <span class="subtitle">每一步进展，都在这里</span></h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${
       tasks.length
         ? `<div class="activity-list">${tasks
@@ -664,7 +664,7 @@ function ensureSettings() {
           temperature: null,
           max_output_tokens: 4096,
           token_parameter: "max_completion_tokens",
-          max_concurrency: 1,
+          max_concurrency: 4,
           timeout_seconds: 120,
           collaboration: true,
           agent_md: "",
@@ -708,7 +708,7 @@ function settings() {
     )
     .join(
       "",
-    )}<button class="settings-agent" data-action="add-agent">${icon("plus")}添加 Agent</button><div class="runtime-settings"><h3>执行预算</h3><label class="field">外部预留执行槽<select id="reserved-slots" aria-label="外部预留执行槽">${[0, 1, 2, 3].map((n) => `<option value="${n}" ${state.config.reserved_external_slots === n ? "selected" : ""}>${n} 个 · 受管最多 ${4 - n} 个</option>`).join("")}</select></label><button class="btn small" data-action="save-budget">保存预算</button><p class="form-hint">Codex 同时执行时预留 1 个槽。四个 mock 并行可设为 0。</p></div></aside>
+    )}<button class="settings-agent" data-action="add-agent">${icon("plus")}添加 Agent</button><div class="runtime-settings"><h3>执行预算</h3><label class="field">全局执行槽<input id="global-slots" type="number" min="1" max="256" value="${state.config.max_concurrency || 16}" aria-label="全局执行槽"></label><label class="field">外部预留执行槽<select id="reserved-slots" aria-label="外部预留执行槽">${Array.from({ length: state.config.max_concurrency || 16 }, (_, n) => n).map((n) => `<option value="${n}" ${state.config.reserved_external_slots === n ? "selected" : ""}>${n} 个 · 受管最多 ${(state.config.max_concurrency || 16) - n} 个</option>`).join("")}</select></label><button class="btn small" data-action="save-budget">保存预算</button><p class="form-hint">Codex 同时执行时预留 1 个槽。独立 mock 压测可设为 0。</p></div></aside>
     <form id="agent-form" class="settings-form"><p class="eyebrow">AGENT SETTINGS</p><h1>${escape(state.settingsId ? d.name : "接入一个新 Agent")}</h1><p>为这个 Agent 设定工作方式。保存后，新的执行将使用最新配置。</p>${integrationUI.profileTabs()}${state.settingsTab === "general" ? agentGeneral(d) : integrationUI.profilePanel()}<footer class="settings-footer"><div>${d.has_api_key ? '<span class="secret-status">密钥已设置</span> <button type="button" class="text-link" data-action="delete-secret">删除密钥</button>' : '<span class="secret-status">本机配置 · 仓库之外</span>'}</div><button class="btn primary" type="submit" ${state.savingSettings ? "disabled" : ""}>${icon("check")}${state.savingSettings ? "正在保存…" : "保存配置"}</button></footer><div class="storage-note">${icon("shield")}<div>运行数据库、配置、凭据与产物都保存在源码仓库之外。Codex 的模型配置继续由 Codex 管理。</div></div></form></div>`;
 }
 function commandResults() {
@@ -1576,7 +1576,7 @@ async function action(name, element) {
       temperature: null,
       max_output_tokens: 4096,
       token_parameter: "max_completion_tokens",
-      max_concurrency: 1,
+      max_concurrency: 4,
       timeout_seconds: 120,
       collaboration: true,
       agent_md: "",
@@ -1630,7 +1630,7 @@ async function action(name, element) {
     const reserved = Number($("#reserved-slots").value);
     state.config = await api("/config", {
       method: "PUT",
-      body: { ...state.config, reserved_external_slots: reserved },
+      body: { ...state.config, max_concurrency: Number($("#global-slots").value), reserved_external_slots: reserved },
     });
     toast("执行预算已保存");
     render();

@@ -3,7 +3,7 @@
 import asyncio
 
 from .errors import RuntimeFault, require
-from .models import MessageSpec, TaskSpec
+from .models import InstanceBatchSpec, MessageSpec, TaskSpec
 
 
 class RunContext:
@@ -90,6 +90,12 @@ class RunContext:
             "UNSUPPORTED_CAPABILITY",
             "An active agent must suspend to wait for another task",
         )
+
+    async def spawn_instances(self, spec: InstanceBatchSpec | dict):
+        spec = InstanceBatchSpec.model_validate(spec)
+        require(self.collaboration and spec.session_id == self.request.session_id,
+                "PERMISSION_DENIED", "Child instances must stay in the current collaboration session")
+        return await self._runtime.instances.spawn(spec, caller_run_id=self.request.run_id)
 
     async def put_file(self, path, *, metadata=None):
         await self.check_current()

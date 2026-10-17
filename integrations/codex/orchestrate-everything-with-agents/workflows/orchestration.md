@@ -18,6 +18,12 @@
 
 前端“工作流画布”可拖动节点、端口连线、编辑参数、平移缩放、自动布局、撤销重做和导入导出。SDK/MCP 编辑的 graph 会显示在同一画布；position 与 viewport 是展示信息。
 
+## 列表并行实例
+
+map 节点配置 agent_ids、items、payload、max_concurrency、routing。items 引用输入或上游列表，最多 128 项；payload 可引用当前 item/index，也可引用 inputs/nodes。agent_ids 是同项目受管 Agent 池，routing 为 round_robin 或 least_loaded。节点复用 instances 批次与普通 Task 调度，按输入顺序在 outputs 字段汇聚全部成功结果，count 给出项数；空列表直接成功。不支持首胜/quorum 或额外并发池。
+
+get_run 的 map 节点返回 batch_id 和实例 task_id/ordinal/state。恢复或核对某个成员时，resume_node/reconcile_node 额外提供 instance_index；取消仍对整个工作流生效。若成员结果 UNCERTAIN，先核对具体 Task，不重新运行 map。一次性动态委派参见[多实例编排](instances.md)。
+
 ## 运行与核对
 
 `run {workflow_id, inputs:{...}, idempotency_key, expected_revision}` 使用固定版本，在同项目的新会话中运行。inputs 要符合开始节点的 object JSON Schema。保留 workflow_id/run_id/session_id/revision 和稳定幂等键。同键同参数重试读取原运行；客户端超时或断连先用 runs/get_run 核对，不换键重跑。

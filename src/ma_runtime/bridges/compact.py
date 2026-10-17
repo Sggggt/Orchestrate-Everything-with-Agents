@@ -16,6 +16,7 @@ from ..events import EventHub
 from ..mcp_service import MCPRegistry
 from ..resources import ResourceCoordinator
 from ..workflows import Workflows
+from ..instances import Instances
 
 AREAS = {
     "projects": (
@@ -93,6 +94,10 @@ AREAS = {
         "同一会话内传递完整消息、检查回执",
         {name: "messages." + name for name in ("send", "get", "list")},
     ),
+    "instances": (
+        "受管子 Agent 多实例、Agent 池路由、批次预算、结果与取消",
+        {name: "instances." + name for name in ("spawn", "get", "list", "result", "cancel")},
+    ),
     "workflows": (
         "项目工作流、画布节点/连线、变量、校验与版本运行记录",
         {name: "workflows." + name for name in (
@@ -148,11 +153,13 @@ OWNERS = {
     "resources": ResourceCoordinator,
     "mcp": MCPRegistry,
     "workflows": Workflows,
+    "instances": Instances,
 }
 PARAM_MODELS = {
     ("agents.configure", "config"): models.AgentConfig,
     ("agents.skill_put", "skill"): models.AgentSkill,
     ("tasks.submit", "spec"): models.TaskSpec,
+    ("instances.spawn", "spec"): models.InstanceBatchSpec,
     ("tasks.reconcile", "resolution"): models.Reconciliation,
     ("messages.send", "spec"): models.MessageSpec,
     ("mcp.configure", "config"): models.MCPServerConfig,
@@ -175,6 +182,7 @@ DEV_MODELS = {
     "workflow_graph": models.WorkflowGraph,
     "workflow_node": models.WorkflowNode,
     "workflow_run": models.WorkflowRunSnapshot,
+    "instance_batch": models.InstanceBatchSpec,
 }
 # Virtual operations use existing authenticated HTTP routes; no server restart is needed.
 EXTRA_PARAMS = {
@@ -189,6 +197,11 @@ EXTRA_PARAMS = {
     "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": 4000},
 }
 NOTES = {
+    "instances.spawn": "Atomically create 1..128 independent Thread/Task instances in one session. Reuse Agent configurations. Stable key returns the original batch; changed input conflicts. agent_ids is a same-project managed pool, routing is round_robin or least_loaded; assignment is fixed at creation. max_concurrency bounds this batch within global and Agent budgets.",
+    "instances.get": "Read ordered member IDs, states, counts and queue reasons; include_outputs=true reads full results. UNCERTAIN retains capacity and requires task reconciliation.",
+    "instances.list": "Session-scoped batch summaries with cursor pagination; does not include full outputs or all conversation history.",
+    "instances.result": "Wait for all instances to succeed, preserving input order. Nonblocking by default; bridge waits at most 30 seconds. Failure/cancellation/uncertainty requires inspecting individual task IDs; do not respawn with a new key.",
+    "instances.cancel": "Request cancellation of unfinished batch members. Inspect confirmed_stopped and member tasks; never claim an uncertain or unsupported stop. Waiting parents must suspend, not occupy slots while blocking on children.",
     "workflows.create": "A workflow has one required, immutable project_id. Stores a draft; incomplete graphs may be saved. Stable idempotency_key; omitted graph creates start/end nodes. Use node_types for node configuration schemas.",
     "workflows.update": "Optimistic save requires expected_revision. Cannot change project_id. Running flows retain their revision snapshot. REVISION_CONFLICT requires reloading and merging edits.",
     "workflows.list": "Required project_id; lightweight metadata/counts with bounded cursor pagination. Use get for one full graph. Archived definitions excluded unless include_archived=true. deleted_only=true reads this project's workflow recycle bin.",
@@ -479,7 +492,7 @@ class CompactBridge:
         params = dict(params)
         if "limit" in defaults and not method.startswith("@"):
             params.setdefault("limit", 25)
-        if method in {"tasks.result", "workflows.result"}:
+        if method in {"tasks.result", "workflows.result", "instances.result"}:
             params.setdefault("timeout", 0)
             require(
                 type(params["timeout"]) in {int, float}

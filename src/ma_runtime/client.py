@@ -10,6 +10,7 @@ import httpx
 from .errors import RuntimeFault, require
 from .models import (
     AgentConfig,
+    InstanceBatchSpec,
     AgentSkill,
     MCPServerConfig,
     MessageSpec,
@@ -273,6 +274,23 @@ class TaskClient(_Namespace):
         )
 
 
+class InstanceClient(_Namespace):
+    async def spawn(self, spec: InstanceBatchSpec | dict):
+        return await self.call("spawn", spec=InstanceBatchSpec.model_validate(spec))
+
+    async def get(self, batch_id, *, include_outputs=False):
+        return await self.call("get", batch_id=batch_id, include_outputs=include_outputs)
+
+    async def list(self, session_id, **options):
+        return await self.call("list", session_id=session_id, **options)
+
+    async def result(self, batch_id, *, timeout=0):
+        return await self.call("result", batch_id=batch_id, timeout=timeout)
+
+    async def cancel(self, batch_id):
+        return await self.call("cancel", batch_id=batch_id)
+
+
 class MessageClient(_Namespace):
     async def send(self, spec: MessageSpec | dict):
         return await self.call("send", spec=MessageSpec.model_validate(spec))
@@ -323,12 +341,12 @@ class WorkflowClient(_Namespace):
     async def cancel(self, run_id):
         return await self.call("cancel", run_id=run_id)
 
-    async def resume_node(self, run_id, node_id, input, idempotency_key):
+    async def resume_node(self, run_id, node_id, input, idempotency_key, *, instance_index=None):
         return await self.call("resume_node", run_id=run_id, node_id=node_id,
-                               input=input, idempotency_key=idempotency_key)
+                               input=input, idempotency_key=idempotency_key, instance_index=instance_index)
 
-    async def reconcile_node(self, run_id, node_id, resolution):
-        return await self.call("reconcile_node", run_id=run_id, node_id=node_id, resolution=resolution)
+    async def reconcile_node(self, run_id, node_id, resolution, *, instance_index=None):
+        return await self.call("reconcile_node", run_id=run_id, node_id=node_id, resolution=resolution, instance_index=instance_index)
 
 
 class PlatformClient:
@@ -355,6 +373,7 @@ class PlatformClient:
         self.agents, self.mcp = AgentClient(self, "agents"), MCPClient(self, "mcp")
         self.projects = ProjectClient(self, "projects")
         self.workflows = WorkflowClient(self, "workflows")
+        self.instances = InstanceClient(self, "instances")
         self.sessions, self.threads = (
             SessionClient(self, "sessions"),
             ThreadClient(self, "threads"),

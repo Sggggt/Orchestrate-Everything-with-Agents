@@ -31,6 +31,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 | 建项目内会话、删除/恢复会话、开 Agent 对话、读完整上下文、分支 | [会话与对话](workflows/sessions.md) | `sessions/threads` |
 | 设计、保存、删除/恢复项目工作流，查看节点运行记录 | [项目工作流](workflows/orchestration.md) | `workflows` |
 | 派任务、一次性依赖、等待、取消、恢复、核对 | [任务与依赖](workflows/tasks.md) | `tasks` |
+| 并行启动多个子 Agent 实例、Agent 池路由、批次结果和取消 | [多实例编排](workflows/instances.md) | `instances` |
 | Agent 之间交流、发送上下文、检查回执 | [交流](workflows/messages.md) | `messages` |
 | 上传、查询、下载共享文件与产物 | [产物](workflows/artifacts.md) | `artifacts` |
 | 启动、升级、备份、接口或连接故障 | [维护](workflows/maintenance.md) | `control`；有限本机操作 |

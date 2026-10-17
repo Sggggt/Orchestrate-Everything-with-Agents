@@ -164,7 +164,7 @@ class CompactMCPTests(unittest.IsolatedAsyncioTestCase):
                     self.root, "@configure", {"changes": {"reserved_external_slots": 0}}
                 )
                 self.assertEqual(config["reserved_external_slots"], 0)
-                self.assertEqual(config["max_concurrency"], 4)
+                self.assertEqual(config["max_concurrency"], 16)
                 parsed = await gateway_request(
                     self.root,
                     "@skill_parse",
@@ -248,6 +248,7 @@ class CompactMCPTests(unittest.IsolatedAsyncioTestCase):
                         tool_index = json.loads(index.contents[0].text)
                         self.assertIn("projects", tool_index["areas"])
                         self.assertIn("workflows", tool_index["areas"])
+                        self.assertIn("instances", tool_index["areas"])
                         projects = await client.read_resource("multi-agent://projects")
                         self.assertEqual(json.loads(projects.contents[0].text)["result"][0]["id"], "default")
 
@@ -298,6 +299,14 @@ class CompactMCPTests(unittest.IsolatedAsyncioTestCase):
                             "tasks", "result", {"task_id": task["id"], "timeout": 5}
                         )
                         self.assertIn("output", result)
+                        batch = await call("instances", "spawn", {"spec": {
+                            "session_id": session["id"], "agent_ids": ["fixture"],
+                            "payloads": [{"input": "first"}, {"input": "second"}],
+                            "idempotency_key": "stdio-instances", "max_concurrency": 2,
+                        }})
+                        batch_result = await call("instances", "result", {"batch_id": batch["id"], "timeout": 5})
+                        self.assertEqual(batch_result["state"], "SUCCEEDED")
+                        self.assertEqual([member["ordinal"] for member in batch_result["instances"]], [0, 1])
                         self.assertEqual(len(await self.rt.agents.list()), 1)
                         self.assertEqual(
                             (await self.rt.tasks.get(task["id"])).state, "SUCCEEDED"

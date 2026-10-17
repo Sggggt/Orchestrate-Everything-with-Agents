@@ -80,7 +80,7 @@ class MessageHandle(Model):
 
 
 class RuntimeConfig(Model):
-    max_concurrency: int = Field(default=4, ge=1, le=4)
+    max_concurrency: int = Field(default=16, ge=1, le=256)
     reserved_external_slots: int = Field(default=1, ge=0)
     max_queued_tasks: int = Field(default=1000, ge=1)
     cancel_grace_seconds: float = Field(default=10, gt=0, le=120)
@@ -126,6 +126,26 @@ class TaskSpec(Model):
     def unique_resources(cls, value):
         if len({v.key for v in value}) != len(value):
             raise ValueError("Resource keys must be unique")
+        return value
+
+
+class InstanceBatchSpec(Model):
+    session_id: str
+    agent_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
+    payloads: tuple[dict, ...] = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=256)
+    max_concurrency: int = Field(default=4, ge=1, le=256)
+    routing: Literal["round_robin", "least_loaded"] = "round_robin"
+    depends_on: tuple[str, ...] = ()
+    attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+
+    @field_validator("agent_ids")
+    @classmethod
+    def unique_agents(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Agent pool members must be unique")
         return value
 
 
@@ -195,7 +215,7 @@ class AgentDescriptor(Model):
     adapter_version: str = "1.0"
     protocol_version: str = PROTOCOL_VERSION
     execution_mode: Literal["in_process", "subprocess", "external"] = "in_process"
-    max_concurrency: int = Field(default=1, ge=1, le=4)
+    max_concurrency: int = Field(default=1, ge=1, le=64)
     checkpoint_mode: Literal["none", "opaque_json", "native_ref"] = "none"
     checkpoint_format_version: str = "1.0"
     supports_suspend: bool = False
@@ -317,7 +337,7 @@ class AgentConfig(Model):
         "max_completion_tokens"
     )
     timeout_seconds: float = Field(default=120, gt=0, le=3600)
-    max_concurrency: int = Field(default=1, ge=1, le=4)
+    max_concurrency: int = Field(default=4, ge=1, le=64)
     collaboration: bool = True
     command: tuple[str, ...] = ()
     process_descriptor: AgentDescriptor | None = None
@@ -639,6 +659,18 @@ class WorkflowAgentConfig(BaseModel):
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
 
 
+class WorkflowMapConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    items: Any = "{{inputs.items}}"
+    payload: dict = Field(default_factory=lambda: {"input": "{{item}}"})
+    max_concurrency: int = Field(default=4, ge=1, le=256)
+    routing: Literal["round_robin", "least_loaded"] = "round_robin"
+    attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+
+
 class WorkflowConditionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     left: Any = "{{inputs.input}}"
@@ -659,6 +691,7 @@ class WorkflowEndConfig(BaseModel):
 WORKFLOW_CONFIGS = {
     "start": WorkflowStartConfig,
     "agent": WorkflowAgentConfig,
+    "map": WorkflowMapConfig,
     "condition": WorkflowConditionConfig,
     "template": WorkflowTemplateConfig,
     "end": WorkflowEndConfig,
@@ -667,7 +700,7 @@ WORKFLOW_CONFIGS = {
 
 class WorkflowNode(Model):
     id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-    type: Literal["start", "agent", "condition", "template", "end"]
+    type: Literal["start", "agent", "map", "condition", "template", "end"]
     title: str = Field(default="", max_length=120)
     position: WorkflowPosition = Field(default_factory=WorkflowPosition)
     config: dict = Field(default_factory=dict)
@@ -737,6 +770,8 @@ class WorkflowNodeRun(SnapshotModel):
     title: str
     state: str
     task_id: str | None = None
+    batch_id: str | None = None
+    instances: list[dict] = Field(default_factory=list)
     inputs: Any = None
     output: Any = None
     summary_markdown: str = ""

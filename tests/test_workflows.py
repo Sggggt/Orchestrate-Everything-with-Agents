@@ -437,7 +437,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("WorkflowGraph", guide["schemas"])
                 run = await client.workflows.run(saved["id"], {"via": "sdk"}, "sdk-run")
                 self.assertEqual((await client.workflows.result(run["id"], timeout=3))["outputs"], {"data": {"via": "sdk"}})
-                self.assertEqual(len(await client.workflows.node_types()), 5)
+                self.assertEqual(len(await client.workflows.node_types()), 6)
                 await client.workflows.delete(saved["id"], confirmed=True)
                 self.assertEqual((await client.workflows.list("default", deleted_only=True))["items"][0]["id"], saved["id"])
                 self.assertEqual((await client.workflows.restore(saved["id"]))["state"], "ACTIVE")

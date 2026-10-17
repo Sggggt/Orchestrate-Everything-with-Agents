@@ -47,6 +47,8 @@ runtime-config.json
 runtime-config.json.*.new
 host.lock
 *.local.md
+/PROJECT_SPEC.md
+/AGENTS.md
 /.codex/
 /.claude/
 /.cursor/

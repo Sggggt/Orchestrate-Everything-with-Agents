@@ -224,6 +224,8 @@ class JsonlAgent:
                         return
                     if method == "runtime.tasks.submit":
                         value = await context.submit_task(params["spec"])
+                    elif method == "runtime.instances.spawn":
+                        value = await context.spawn_instances(params["spec"])
                     elif method == "runtime.llm.info":
                         value = await context.llm.info()
                     elif method == "runtime.llm.complete":

@@ -20,6 +20,28 @@ Pass the same external `data_dir` used by the host if it is not the CLI default.
 
 Common services are `projects`, `sessions`, `threads`, `agents`, `tasks`, `messages`, `artifacts`, `workflows` and `mcp`. A project groups Agents and sessions; a session groups independent Agent threads. Tasks are durable units of execution. Messages exchange complete context, and artifacts share files by reference.
 
+## Run independent instances
+
+Reuse an Agent configuration while creating independent threads and tasks:
+
+```python
+batch = await client.instances.spawn({
+    "session_id": session_id,
+    "agent_ids": ["worker"],
+    "payloads": [{"input": "First item"}, {"input": "Second item"}],
+    "idempotency_key": "two-items-001",
+    "max_concurrency": 2,
+    "routing": "round_robin",
+})
+result = await client.instances.result(batch["id"], timeout=30)
+```
+
+Each member returns `thread_id`, `task_id`, `agent_id` and its input ordinal. Spawn accepts 1–128 payload objects and creates the whole batch atomically. Reusing the same key and arguments returns the original batch; changed arguments conflict. `get(include_outputs=True)` reads individual results, `list(session_id)` pages summaries, and `cancel(batch_id)` requests cancellation. Results preserve input order. A batch summarizes its original tasks; subsequent `threads.turn` calls continue an instance but do not change that batch's membership.
+
+An Agent pool can contain multiple same-project managed Agents. `round_robin` distributes inputs in order; `least_loaded` prefers enabled, configured Agents, then compares queued/running/uncertain work against declared capacity. Routing assignments are durable and do not change after creation. Global, per-Agent, adapter and batch limits all apply. New runtime defaults are 16 total slots with one reserved; built-in Agent configurations default to four concurrent runs. Existing saved configurations are preserved. Custom adapters remain limited by their actual descriptor.
+
+Inside a process Agent, use `await context.spawn_instances(spec)` with the current session. It requires collaboration permission and records the parent task. Suspend with a `WaitCondition(kind="tasks", task_ids=...)` to release the parent slot; child results arrive in `request.resume_input["tasks"]`. Parent failure or cancellation requests cancellation of unfinished child batches. Do not synchronously wait inside an active parent or create an unmanaged worker pool.
+
 ## Develop a process Agent
 
 ```python

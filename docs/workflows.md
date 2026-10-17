@@ -16,6 +16,7 @@ Export contains the definition and graph, without credentials or run data. Impor
 | --- | --- | --- |
 | `start` | Object `input_schema`, without schema references | Run input object |
 | `agent` | `agent_id`, `payload`, attempt timeout and retry policy | Complete `TaskResult.output` |
+| `map` | `agent_ids`, `items`, per-item `payload`, `max_concurrency`, `routing`, timeout/retry | Ordered `outputs` array and `count` |
 | `condition` | `left`, `operator`, `right` | `{"result": true/false}` and selected branch |
 | `template` | Text `template` | `{"text": "resolved text"}` |
 | `end` | JSON object `outputs` | Final output object |
@@ -25,6 +26,26 @@ Conditions support `equals`, `not_equals`, `contains`, `gt`, `gte`, `lt`, `lte`,
 The canvas supports acyclic graphs, not loops, arbitrary script nodes or nested workflows. Put custom code or a framework graph inside a process Agent. Tool calls use the Agent's granted RunContext; a workflow does not expand permissions. Definitions are limited to 100 nodes, 400 edges and 1 MiB of JSON. Runtime limits also apply to inputs and outputs.
 
 ## Variables
+
+### Parallel map
+
+A map node resolves an input or upstream list of up to 128 items. Its payload can reference `{{item}}`, `{{item.field}}` and `{{index}}` as well as ordinary upstream variables. Each item creates an independent thread/task in a durable instance batch, using the ordinary scheduler and the selected Agent pool. All members must succeed before downstream nodes advance. Outputs preserve input order even when completion order differs; an empty list succeeds with `outputs=[]` and `count=0`.
+
+```python
+graph = (
+    WorkflowBuilder()
+    .node("start", "start")
+    .node("parallel", "map", agent_ids=["worker"],
+          items="{{inputs.items}}", payload={"input": "{{item}}"},
+          max_concurrency=4, routing="least_loaded")
+    .node("end", "end", outputs={"results": "{{nodes.parallel.outputs}}"})
+    .connect("start", "parallel").connect("parallel", "end").build()
+)
+```
+
+The canvas exposes the same map configuration and member states. Run records include `batch_id` and member task IDs. Resume or reconcile one member using `instance_index` with `resume_node` / `reconcile_node`; cancellation still covers the entire workflow. A failed member stops normal advancement, and uncertainty blocks downstream execution until reconciled. Map currently uses all-success aggregation; first-result and quorum policies are not provided. Existing linear Agent nodes keep their original behavior.
+
+### References
 
 Reference `inputs.name` or `nodes.node_id.field`, with object fields and numeric list indexes. A node may reference only upstream nodes. A whole reference preserves the JSON type; references mixed with text become text.
 

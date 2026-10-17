@@ -1163,7 +1163,8 @@ kbd {
   color: #5f506d;
 }
 .capacity-slots {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 8px;
   margin-top: 21px;
 }

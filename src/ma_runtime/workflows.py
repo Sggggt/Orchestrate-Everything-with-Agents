@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from .errors import RuntimeFault, require
 from .models import (
-    TERMINAL, WORKFLOW_CONFIGS, PageEnvelope, TaskSpec, WorkflowEdge, WorkflowGraph,
+    TERMINAL, WORKFLOW_CONFIGS, InstanceBatchSpec, PageEnvelope, TaskSpec, WorkflowEdge, WorkflowGraph,
     WorkflowInfo, WorkflowNode, WorkflowRunHandle, WorkflowRunSnapshot, WorkflowSummary,
     content_hash, json_dump, new_id, now_ms,
 )
@@ -26,9 +26,9 @@ from .services import agent_project, need, public, resolve_project
 from .store import emit, one, rows
 
 TOKEN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
-PATH = re.compile(r"^(inputs|nodes)(?:\.[\w-]+)*$")
+PATH = re.compile(r"^(inputs|nodes|item|index)(?:\.[\w-]+)*$")
 LIVE = ("RUNNING", "WAITING", "UNCERTAIN", "CANCELLING", "FAILING")
-LABELS = {"start": "开始", "agent": "Agent", "condition": "条件分支", "template": "模板转换", "end": "结束"}
+LABELS = {"start": "开始", "agent": "Agent", "map": "并行实例", "condition": "条件分支", "template": "模板转换", "end": "结束"}
 
 
 def default_graph():
@@ -177,13 +177,17 @@ def analyse_graph(graph):
             continue
         try:
             values = {"left": node.config["left"]} if node.type == "condition" and node.config["operator"] in {"is_empty", "is_not_empty"} else node.config
-            for path in references(values):
-                if not isinstance(path, str) or len(path) > 512 or not PATH.fullmatch(path):
-                    error("INVALID_VARIABLE", "变量路径应为 inputs.name 或 nodes.node_id.field。", node_id=node.id)
-                    continue
-                parts = path.split(".")
-                if parts[0] == "nodes" and (len(parts) < 2 or parts[1] not in ancestors.get(node.id, ())):
-                    error("VARIABLE_NOT_UPSTREAM", f"变量 {path} 必须来自已连接的前置节点。", node_id=node.id)
+            scopes = [(node.config["items"], False), (node.config["payload"], True)] if node.type == "map" else [(values, False)]
+            for value, item_scope in scopes:
+                for path in references(value):
+                    if not isinstance(path, str) or len(path) > 512 or not PATH.fullmatch(path):
+                        error("INVALID_VARIABLE", "变量路径应为 inputs.name 或 nodes.node_id.field。", node_id=node.id)
+                        continue
+                    parts = path.split(".")
+                    if parts[0] in {"item", "index"} and not item_scope:
+                        error("INVALID_VARIABLE", "item/index 只能用于并行实例的 payload。", node_id=node.id)
+                    if parts[0] == "nodes" and (len(parts) < 2 or parts[1] not in ancestors.get(node.id, ())):
+                        error("VARIABLE_NOT_UPSTREAM", f"变量 {path} 必须来自已连接的前置节点。", node_id=node.id)
         except RuntimeFault as exc:
             error(exc.code, exc.safe_message, node_id=node.id)
     return {"valid": not issues, "errors": issues, "warnings": [], "order": order}
@@ -238,6 +242,7 @@ class WorkflowBuilder:
 class Workflows:
     def __init__(self, rt):
         self.rt = rt
+        self._plans = {}
 
     async def node_types(self):
         return [{"type": kind, "title": LABELS[kind], "config_schema": model.model_json_schema(),
@@ -248,6 +253,12 @@ class Workflows:
     def _validation(self, db, project_id, graph):
         report = analyse_graph(graph)
         for node in graph.nodes:
+            if node.type == "map":
+                try:
+                    self.rt.instances.validate_agents(db, project_id, node.config["agent_ids"])
+                except RuntimeFault as exc:
+                    report["errors"].append({"code": exc.code, "node_id": node.id, "message": exc.safe_message})
+                continue
             if node.type != "agent":
                 continue
             identity = node.config["agent_id"]
@@ -268,6 +279,8 @@ class Workflows:
 
     def _membership(self, db, project_id, graph):
         for node in graph.nodes:
+            if node.type == "map" and node.config["agent_ids"]:
+                self.rt.instances.validate_agents(db, project_id, node.config["agent_ids"])
             if node.type == "agent" and node.config["agent_id"] in self.rt.adapters:
                 require(agent_project(db, node.config["agent_id"]) == project_id,
                         "PROJECT_MISMATCH", "工作流只能使用当前项目的 Agent。")
@@ -490,6 +503,8 @@ class Workflows:
             value.pop("request_hash", None)
             value["nodes"] = [public(row) for row in rows(db, "SELECT * FROM workflow_node_runs WHERE run_id=? ORDER BY rowid", (run_id,))]
             for node in value["nodes"]:
+                if node.get("batch_id"):
+                    node["instances"] = self.rt.instances.snapshot(db, node["batch_id"])["instances"]
                 node["summary_markdown"] = live.get(node["task_id"], "")
                 if node["output"] is not None:
                     result = one(db, "SELECT result_json FROM tasks WHERE id=?", (node["task_id"],)) if node["task_id"] else None
@@ -546,24 +561,31 @@ class Workflows:
         self.rt.notify()
         return result
 
-    async def resume_node(self, run_id, node_id, input, idempotency_key):
+    async def resume_node(self, run_id, node_id, input, idempotency_key, instance_index=None):
         require(isinstance(input, dict), "INVALID_REQUEST", "恢复输入必须为 JSON 对象。")
         self._key(idempotency_key)
-        task_id = await self._node_task(run_id, node_id, continuing=True)
+        task_id = await self._node_task(run_id, node_id, continuing=True, instance_index=instance_index)
         return await self.rt.tasks.resume(task_id, input, idempotency_key)
 
-    async def reconcile_node(self, run_id, node_id, resolution):
-        task_id = await self._node_task(run_id, node_id)
+    async def reconcile_node(self, run_id, node_id, resolution, instance_index=None):
+        task_id = await self._node_task(run_id, node_id, instance_index=instance_index)
         return await self.rt.tasks.reconcile(task_id, resolution)
 
-    async def _node_task(self, run_id, node_id, continuing=False):
+    async def _node_task(self, run_id, node_id, continuing=False, instance_index=None):
         def read(db):
             run = need(db, "workflow_runs", run_id)
             if continuing:
                 require(run.cancel_requested_at is None and run.error_json is None and run.ended_at is None,
                         "INVALID_STATE", "已停止的工作流不能恢复节点。")
-            node = one(db, "SELECT task_id FROM workflow_node_runs WHERE run_id=? AND node_id=?", (run_id, node_id))
-            require(node is not None and node.task_id, "NOT_FOUND", "节点尚未创建 Agent 任务。")
+            node = one(db, "SELECT task_id,batch_id FROM workflow_node_runs WHERE run_id=? AND node_id=?", (run_id, node_id))
+            require(node is not None, "NOT_FOUND", "节点不存在。")
+            if node.batch_id:
+                require(type(instance_index) is int and instance_index >= 0,
+                        "INVALID_REQUEST", "并行节点需要指定 instance_index。")
+                member = one(db, "SELECT task_id FROM instance_members WHERE batch_id=? AND ordinal=?", (node.batch_id, instance_index))
+                require(member is not None, "NOT_FOUND", "实例不存在。")
+                return member.task_id
+            require(node.task_id and instance_index is None, "NOT_FOUND", "节点尚未创建 Agent 任务。")
             return node.task_id
         return await self.rt.store.call(read)
 
@@ -571,7 +593,7 @@ class Workflows:
         """Called by the existing scheduler; all scheduling receipts commit atomically."""
         def advance(db):
             before = db.total_changes()
-            cancelled = set()
+            cancelled = self.rt.instances.cancel_children(db)
             for run in rows(db, "SELECT * FROM workflow_runs WHERE ended_at IS NULL ORDER BY created_at,rowid"):
                 cancelled.update(self._advance(db, run))
             return cancelled, db.total_changes() != before
@@ -582,17 +604,18 @@ class Workflows:
             if active.request.task_id in cancelled:
                 active.context.cancelled.set()
 
-    def _set_node(self, db, run, node, state, *, inputs=None, output=None, error=None, branch=None, task_id=None):
+    def _set_node(self, db, run, node, state, *, inputs=None, output=None, error=None, branch=None, task_id=None, batch_id=None):
         if node.state == state:
             return
         stamp = now_ms()
-        db.execute("UPDATE workflow_node_runs SET state=?,inputs_json=COALESCE(?,inputs_json),output_json=COALESCE(?,output_json),error_json=?,branch=COALESCE(?,branch),task_id=COALESCE(?,task_id),started_at=COALESCE(started_at,?),ended_at=? WHERE run_id=? AND node_id=?",
+        db.execute("UPDATE workflow_node_runs SET state=?,inputs_json=COALESCE(?,inputs_json),output_json=COALESCE(?,output_json),error_json=?,branch=COALESCE(?,branch),task_id=COALESCE(?,task_id),batch_id=COALESCE(?,batch_id),started_at=COALESCE(started_at,?),ended_at=? WHERE run_id=? AND node_id=?",
                    (state, json_dump(inputs) if inputs is not None else None, json_dump(output) if output is not None else None,
-                    json_dump(error) if error else None, branch, task_id, stamp if state != "SKIPPED" else None,
+                    json_dump(error) if error else None, branch, task_id, batch_id, stamp if state != "SKIPPED" else None,
                     stamp if state in TERMINAL else None, run.id, node.node_id))
         node.update(state=state, inputs_json=json_dump(inputs) if inputs is not None else node.inputs_json,
                     output_json=json_dump(output) if output is not None else node.output_json, error_json=json_dump(error) if error else None,
-                    branch=branch if branch is not None else node.branch, task_id=task_id or node.task_id)
+                    branch=branch if branch is not None else node.branch, task_id=task_id or node.task_id,
+                    batch_id=batch_id or node.batch_id)
         emit(db, "workflow.node_changed", session_id=run.session_id, task_id=node.task_id,
              payload={"workflow_run_id": run.id, "node_id": node.node_id, "state": state})
 
@@ -604,6 +627,8 @@ class Workflows:
                    (state, json_dump(result) if result is not None else None, json_dump(error) if error else None,
                     stamp, stamp if state in TERMINAL else None, run.id))
         run.state = state
+        if state in TERMINAL:
+            self._plans.pop(run.id, None)
         if error:
             run.error_json = json_dump(error)
         emit(db, "workflow.run_changed", session_id=run.session_id, payload={"workflow_run_id": run.id, "state": state})
@@ -638,9 +663,31 @@ class Workflows:
         return self.rt.tasks.insert(db, task).id
 
     def _advance(self, db, run):
-        graph = WorkflowGraph.model_validate_json(run.graph_json)
+        if run.id not in self._plans:
+            graph = WorkflowGraph.model_validate_json(run.graph_json)
+            incoming = defaultdict(list)
+            for edge in graph.edges:
+                incoming[edge.target].append(edge)
+            self._plans[run.id] = (graph, analyse_graph(graph)["order"], incoming,
+                                   {node.id: node for node in graph.nodes})
+        graph, order, incoming, specs = self._plans[run.id]
         nodes = {row.node_id: row for row in rows(db, "SELECT * FROM workflow_node_runs WHERE run_id=?", (run.id,))}
         for node in nodes.values():
+            if node.batch_id and node.state not in TERMINAL:
+                batch = self.rt.instances.snapshot(db, node.batch_id)
+                state = batch["state"]
+                if run.cancel_requested_at is not None and state in TERMINAL:
+                    state = "CANCELLED"
+                if state not in {"UNCERTAIN", "CANCELLING"} and any(batch["counts"].get(key, 0) for key in ("FAILED", "CANCELLED", "SKIPPED")):
+                    state = "CANCELLED" if run.cancel_requested_at is not None else "FAILED"
+                if state == "CANCELLING":
+                    state = "RUNNING"
+                if state == "SUCCEEDED":
+                    batch = self.rt.instances.snapshot(db, node.batch_id, include_outputs=True)
+                output = {"outputs": [member["result"]["output"] for member in batch["instances"]],
+                          "count": len(batch["instances"])} if state == "SUCCEEDED" else None
+                self._set_node(db, run, node, state, output=output,
+                               error={"code": "INSTANCE_FAILED", "batch_id": node.batch_id} if state == "FAILED" else None)
             if node.task_id and node.state not in TERMINAL:
                 task = need(db, "tasks", node.task_id)
                 output = json.loads(task.result_json)["output"] if task.result_json else None
@@ -670,11 +717,6 @@ class Workflows:
             self._state(db, run, ("FAILING" if run.error_json else "CANCELLING") if unsettled else ("FAILED" if run.error_json else "CANCELLED"))
             return cancelled
         scope = {"inputs": json.loads(run.inputs_json), "nodes": {key: json.loads(node.output_json) for key, node in nodes.items() if node.state == "SUCCEEDED" and node.output_json}}
-        incoming = defaultdict(list)
-        for edge in graph.edges:
-            incoming[edge.target].append(edge)
-        specs = {node.id: node for node in graph.nodes}
-        order = analyse_graph(graph)["order"]
         for identity in order:
             node, spec = nodes[identity], specs[identity]
             if node.state != "PENDING":
@@ -699,6 +741,22 @@ class Workflows:
                     task_id = self._agent_task(db, run, spec, payload)
                     self._set_node(db, run, node, "RUNNING", inputs=payload, task_id=task_id)
                     continue
+                elif spec.type == "map":
+                    items = resolve(spec.config["items"], scope)
+                    require(isinstance(items, list) and len(items) <= 128,
+                            "INVALID_INPUT", "并行实例输入必须是最多 128 项的列表。")
+                    if items:
+                        if one(db, "SELECT COUNT(*) AS count FROM tasks WHERE state='QUEUED'").count + len(items) > self.rt.config.max_queued_tasks:
+                            continue
+                        payloads = [resolve(spec.config["payload"], {**scope, "item": item, "index": index})
+                                    for index, item in enumerate(items)]
+                        batch_spec = InstanceBatchSpec(session_id=run.session_id, agent_ids=spec.config["agent_ids"],
+                            payloads=payloads, idempotency_key=f"{run.id}:{spec.id}",
+                            **{key: spec.config[key] for key in ("max_concurrency", "routing", "attempt_timeout_s", "max_attempts", "retry_policy")})
+                        batch = self.rt.instances.insert(db, batch_spec)
+                        self._set_node(db, run, node, "RUNNING", inputs={"count": len(items)}, batch_id=batch["id"])
+                        continue
+                    output = {"outputs": [], "count": 0}
                 elif spec.type == "condition":
                     passed = condition(spec.config, scope)
                     branch, output = "true" if passed else "false", {"result": passed}

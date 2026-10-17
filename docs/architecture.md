@@ -22,6 +22,12 @@ A project owns its Agent configurations, sessions and reusable workflows. A sess
 
 A workflow is a versioned project-owned DAG. Its run snapshots the definition and creates an ordinary session. Agent nodes submit ordinary tasks, so concurrency budgets, tool bindings, model snapshots, checkpoints and cancellation share the same runtime contracts. Template and condition nodes are deterministic and do not consume model slots.
 
+## Managed instances and parallel workflows
+
+Instance batches are durable request receipts over ordinary threads and tasks. Each member has an input ordinal and fixed Agent assignment; batches add a concurrency cap without creating another scheduler. Round-robin and capacity-normalized least-loaded routing operate within a project's managed Agent pool. A run-scoped parent may spawn a batch only in its current session, then suspend while waiting. Parent failure/cancellation requests cancellation of its child batches.
+
+Map workflow nodes create batches atomically with node advancement and aggregate all successful outputs in input order. Empty input completes without tasks. Their immutable graph snapshots, recovery, cancellation and uncertain outcomes use the same contracts as ordinary Agent nodes. The scheduler batches dependency and ownership reads, retains session round-robin fairness, and counts uncertain executions against both Agent and batch capacity. Immutable graph execution plans are cached for active workflow runs.
+
 ## Persistence and recovery
 
 SQLite stores durable state and receipts on a local disk outside source repositories. The host takes an exclusive workspace lock. Schema upgrades retain migration checksums and create pre-upgrade backups. Event sequence numbers support bounded event replay; transient token streams are replaced by persisted results after reconnect.
