@@ -27,6 +27,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 | 按业务拆节点、编写或修改执行端代码 | [开发](workflows/develop.md) | `development`；源码用文件工具 |
 | 注册已有执行端、更新版本并验收 | [注册](workflows/register.md) | `agents`，随后 `sessions/threads/tasks` |
 | 编辑 AGENT.md、导入或维护独立 Skills | [指令与技能](workflows/profiles.md) | `profiles` |
+| 注册共享标准 Skill 目录、查看正文、关联 Agent | [指令与技能](workflows/profiles.md) | `skills`；关联用 `agents.patch` |
 | 注册共享 MCP、授权、查工具协议、调用工具 | [MCP 集成](workflows/mcp.md) | `mcp`；Agent 授权用 `agents.patch` |
 | 建项目内会话、删除/恢复会话、开 Agent 对话、读完整上下文、分支 | [会话与对话](workflows/sessions.md) | `sessions/threads` |
 | 设计、保存、删除/恢复项目工作流，查看节点运行记录 | [项目工作流](workflows/orchestration.md) | `workflows` |
@@ -35,6 +36,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 | Agent 之间交流、发送上下文、检查回执 | [交流](workflows/messages.md) | `messages` |
 | 上传、查询、下载共享文件与产物 | [产物](workflows/artifacts.md) | `artifacts` |
 | 启动、升级、备份、接口或连接故障 | [维护](workflows/maintenance.md) | `control`；有限本机操作 |
+| 双向运维、报告问题、请求/回复指导、接收异常或派发诊断测试 | [运维通道](workflows/operations.md) | `operations` |
 
 ## 上下文预算
 

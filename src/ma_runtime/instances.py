@@ -25,7 +25,7 @@ class Instances:
             require(adapter.describe().execution_mode != "external", "UNSUPPORTED_CAPABILITY",
                     "Instances require platform-managed Agents")
 
-    def insert(self, db, spec, caller_run_id=None):
+    def insert(self, db, spec, caller_run_id=None, *, task_metadata=None):
         parent = None
         if caller_run_id:
             parent, run = self.rt.check_run(db, caller_run_id)
@@ -33,7 +33,10 @@ class Instances:
             require(parent.session_id == spec.session_id, "PERMISSION_DENIED",
                     "Child instances must stay in the current session")
         parent_id = parent.id if parent else None
-        digest = content_hash(spec)
+        from .execution_policy import request_hash
+        digest = request_hash(spec)
+        if task_metadata:
+            digest = content_hash({"request_hash": digest, "metadata": task_metadata})
         old = one(db, "SELECT * FROM instance_batches WHERE session_id=? AND idempotency_key=?",
                   (spec.session_id, spec.idempotency_key))
         if old:
@@ -75,7 +78,8 @@ class Instances:
                 payload=payload, idempotency_key=f"{identity}:{ordinal}", depends_on=spec.depends_on,
                 attempt_timeout_s=spec.attempt_timeout_s, max_attempts=spec.max_attempts,
                 retry_policy=spec.retry_policy, metadata={"batch_id": identity, "instance_index": ordinal,
-                                                         "parent_task_id": parent_id})
+                                                         "parent_task_id": parent_id, **(task_metadata or {})},
+                tool_policy=spec.tool_policy, skill_policy=spec.skill_policy)
             handle = self.rt.tasks.insert(db, task, caller_run_id=caller_run_id)
             db.execute("INSERT INTO instance_members VALUES(?,?,?)", (identity, ordinal, handle.id))
         emit(db, "instances.spawned", session_id=spec.session_id,

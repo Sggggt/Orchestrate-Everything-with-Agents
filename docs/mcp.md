@@ -29,11 +29,15 @@ The entry point routes to one workflow at a time: Agent development, configurati
 
 ## Coordinate independent instances
 
+For bidirectional supervision use the `operations` area: bind a receiver, inspect or dispatch a diagnostic test, wait for compact inbox summaries and reply to a selected report. It adds no top-level MCP tools. [Operations and guidance](operations.md) describes replay, acknowledgement and Codex parameter recommendations.
+
 Use `platform_guide(area="instances", action="spawn")` to discover only the batch contract, then `platform_call` with one `InstanceBatchSpec`. The `instances` area exposes `spawn`, `get`, `list`, `result` and `cancel`; it adds no top-level MCP tools. Batches reuse Agent configurations and create independent threads/tasks. Agent pools, stable request keys and batch limits support bounded orchestration by the coordinating client.
 
 For repeated list processing inside a fixed workflow, use the `map` node and discover its configuration with `workflows.node_types`. Runtime state transitions and authorization remain in shared services; Skills explain which operation to choose. Install the updated skill's `workflows/instances.md` alongside its main router, and reconnect the MCP bridge after updating the host so discovery uses the new protocol. Preserve local instance references and unrelated client settings.
 
 ## Share upstream tools
+
+Shared [Skill registrations and task policies](skills.md) complement MCP bindings. Use `agents.capabilities` for a compact linked capability catalog. Dispatch may include `tool_policy` and `skill_policy`; both default to `auto`.
 
 Register STDIO, Streamable HTTP or SSE services through the frontend or `client.mcp.configure()`. Credentials go through `secret_values`, not command arguments or URLs. Bind the required tools to an Agent with `mcp_bindings`. Skills and instructions guide behavior; the runtime's bindings enforce tool access.
 

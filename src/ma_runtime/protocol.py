@@ -31,6 +31,11 @@ def describe(runtime):
             "artifacts",
             "agent_profiles",
             "skills",
+            "skill_registry",
+            "task_execution_policies",
+            "operations_channel",
+            "guidance_suspend_resume",
+            "settled_task_wait",
             "run_bound_llm",
             "mcp_registry",
             "mcp_tools",
@@ -55,6 +60,8 @@ def describe(runtime):
                 "ProjectInfo",
                 "TaskResult",
                 "AgentSkill",
+                "SkillBinding",
+                "UsePolicy",
                 "MCPBinding",
                 "MCPServerConfig",
                 "ExecutionRequest",
@@ -77,6 +84,7 @@ def describe(runtime):
             )
         },
         "contracts": {
+            "operations": "Per-session coordinator binding, compact cursor inbox, durable acknowledgements, on-demand report bodies and idempotent guidance. Agents report through run-bound callbacks and suspend on ordinary messages. Internal coordinator notifications are coalesced and can interrupt a task wait without fabricating child completion; self-failure never recursively starts maintenance. External consumers receive via inbox long wait or client event subscriptions, not automatic external chat activation. Diagnostic tests reuse ordinary instance scheduling and grants.",
             "instances": "Instances reuse independent Threads/Tasks/Runs and the ordinary scheduler. Spawn is atomic and idempotent, with 1..128 ordered payloads, same-project managed Agent pools, fixed round_robin/least_loaded assignment and a batch concurrency cap. Execution remains bounded by global and Agent budgets, including uncertain slots. Parent-scoped batches are cancelled when their parent fails or is cancelled; active parents suspend to wait.",
             "workflow_map": "A map node resolves an items list (0..128), renders payload per item/index, and persists one batch_id atomically. All-success aggregation preserves input order in outputs; empty input returns an empty list. Failures stop normal advancement; UNCERTAIN blocks downstream. Resume/reconcile one map member with instance_index. No additional scheduler.",
             "workflow_deletion": "confirmed=true authorizes recoverable deletion of one workflow. Unfinished/uncertain runs block deletion. Graph, project ownership and all run history are retained. list(deleted_only=true) reads its project's recycle bin; restore returns the previous active/archived state.",

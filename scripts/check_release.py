@@ -1,8 +1,9 @@
-"""Check public source hygiene and local documentation links without reading .git."""
+"""Check distributable files, Git index boundaries and public documentation links."""
 
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -10,17 +11,20 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = {".git"}
+LOCAL_REGISTRIES = {"skills", "mcp"}
+LOCAL_DOCUMENTS = {"AGENTS.md", "PROJECT_SPEC.md"}
 GENERATED = {
     "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache",
     ".mypy_cache", ".ruff_cache", "dist", "build", "runtime-data", ".runtime",
     ".oea", ".multi-agent", "env", ".tox", ".nox", ".hypothesis",
     ".ipynb_checkpoints", ".nyc_output", "coverage", "htmlcov", ".cache",
     "test-results", "playwright-report", "blob-report", ".idea", ".vscode",
-    "output", "tmp", "temp", "reports",
+    "output", "tmp", "temp", "reports", "screenshots", "recordings", "captures",
+    ".agents", ".codex", ".claude", ".cursor",
 }
 PRIVATE_ROOTS = {
     "data", "state", "workspace", "artifacts", "staging", "backups", "logs",
-    "profiles", "screenshots", ".codex", ".claude", ".cursor",
+    "profiles", "notes", "plans", "handoffs",
 }
 RUNTIME_FILES = {
     "client-token", "client.json", "runtime-config.json", "secrets.enc",
@@ -32,7 +36,10 @@ ARTIFACT_PATTERNS = (
     "*.tar", "*.tar.gz", "*.tgz", "*.7z", "*.rar", "*.pyc", "*.pyo",
     "*.bak", "*.orig", "*.rej", "*.local.md", "*.swp", "*.swo", "*~",
 )
-TEXT_SUFFIXES = {".py", ".js", ".mjs", ".css", ".svg", ".html", ".md", ".toml", ".yaml", ".yml", ".txt", ".ps1", ".cmd"}
+TEST_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml",
+                      ".parquet", ".arrow", ".feather", ".pkl", ".pickle", ".npy", ".npz", ".xls", ".xlsx"}
+TEXT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".css", ".svg", ".html", ".md", ".toml", ".yaml", ".yml", ".txt", ".ps1", ".cmd", ".sql",
+                 ".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".xml", ".ini", ".cfg", ".env", ".ipynb"}
 PRIVATE = {
     "personal Windows path": re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+(?!Public\b|<)[^\\/\s\"']+", re.I),
     "personal Unix path": re.compile(r"/(?:home|Users)/[a-zA-Z0-9_.-]+/"),
@@ -48,6 +55,8 @@ def artifact_reason(relative: Path):
     """Identify state even when copied into a directory with an arbitrary name."""
     directories = relative.parts[:-1]
     name = relative.name.lower()
+    if relative.as_posix() in LOCAL_DOCUMENTS or relative.parts[0] in LOCAL_REGISTRIES:
+        return "local-only documentation or integration"
     if (GENERATED.intersection(directories)
             or any(part.startswith((".venv", ".playwright")) for part in directories)
             or relative.parts[0] in PRIVATE_ROOTS):
@@ -60,6 +69,8 @@ def artifact_reason(relative: Path):
         return "generated or private artifact"
     if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
         return "environment file"
+    if relative.parts[0] == "tests" and relative.suffix.lower() in TEST_DATA_SUFFIXES:
+        return "fixed test input or generated result; generate it outside the source tree"
     return None
 
 
@@ -79,14 +90,42 @@ def content_issues(value: str, *, skill=False):
     return issues
 
 
-def main():
+def git_hygiene_issues(root=ROOT):
+    """Check tracked names and root ignore rules, without inspecting Git history."""
+    if not (root / ".git").exists():
+        return []  # Source archives do not contain Git metadata.
     errors = []
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True).stdout
+        ignored = subprocess.run(["git", "check-ignore", "-v", "--no-index", "--", *sorted(LOCAL_DOCUMENTS)],
+                                 cwd=root, check=False, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        return ["Cannot verify Git index and root ignore rules"]
+    for name in tracked.decode("utf-8").split("\0"):
+        if name and (reason := artifact_reason(Path(name))):
+            errors.append(f"Tracked {name}: {reason}")
+    rules = {}
+    for line in ignored.stdout.decode("utf-8").splitlines():
+        declaration, name = line.split("\t", 1)
+        origin, _, pattern = declaration.rsplit(":", 2)
+        rules[name] = (origin, pattern)
+    for name in LOCAL_DOCUMENTS:
+        if rules.get(name) != (".gitignore", "/" + name):
+            errors.append(f"{name} must be ignored by its root .gitignore rule")
+    return errors
+
+
+def main():
+    errors = git_hygiene_issues()
     files = []
     # Prune Git rather than reading even ignored private history or hooks.
     import os
     for directory, children, names in os.walk(ROOT):
-        children[:] = [name for name in children if name not in EXCLUDED]
+        children[:] = [name for name in children if name not in EXCLUDED and
+                       not (Path(directory) == ROOT and name in LOCAL_REGISTRIES)]
         for name in names:
+            if Path(directory) == ROOT and name in LOCAL_DOCUMENTS:
+                continue
             files.append(Path(directory) / name)
     for path in files:
         relative = path.relative_to(ROOT)
@@ -121,7 +160,7 @@ def main():
     if errors:
         print("\n".join(errors))
         return 1
-    print(f"Public source checks passed ({len(files)} files; Git history excluded).")
+    print(f"Public source checks passed ({len(files)} files; Git index checked when present, history excluded).")
     return 0
 
 

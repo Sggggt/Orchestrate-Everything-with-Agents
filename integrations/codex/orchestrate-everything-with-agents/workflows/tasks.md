@@ -1,5 +1,7 @@
 # 任务与依赖工作流
 
+派发前按需用 `agents.capabilities {agent_id}` 确认关联 MCP/Skill。`threads.turn`、`tasks.submit` 和批次均支持 tool_policy / skill_policy，省略默认 mode=auto；none 禁用新使用，allowed 收窄范围，required 指定必要成功动作。工具标识用 mcp:server_id:tool_name 或平台工具名，Skill 用 ID。显式 required Skill 在执行前加载，工具成功回执和正文加载记录由 Runtime 核验，缺失时不能成功。策略不会扩大 Agent 的授权；不要仅因需要使用某 Skill 就读取所有技能正文。
+
 可保存、带变量传递和画布编辑的项目工作流使用 [orchestration.md](orchestration.md) 与 `workflows` area。本文的 tasks.workflow 保留为一次性会话任务依赖接口。
 
 先确认 session、agent、thread 的真实归属与用户目标。简单对话用 threads.turn；需要结构化 payload、依赖、资源或期限时查询并调用 tasks.submit。
@@ -22,6 +24,8 @@
 同一个 thread 同时只有一个执行者。要并行执行独立上下文，使用不同 thread，并尊重全局与每 Agent 的并发预算。Agent 内部代码节点不必转换成平台任务。
 
 ## 观察与处置
+
+平台内模型主 Agent 的 wait_for_tasks 默认 ALL_SETTLED，带回成功、失败、取消及 UNCERTAIN 的状态/错误，交由主 Agent 判断。原 ALL_SUCCEEDED/ALL_TERMINAL 可显式选择。子 Agent 请求指导和双向异常反馈使用 [运维通道](operations.md)，不要靠等待失败把主决策者直接结束。
 
 - `tasks.get {task_id}` 查看单个任务；`tasks.list {session_id, cursor, limit:25}` 取一页。
 - `tasks.progress {task_id}` 查看实时或最终 Markdown 摘要；`control.live {session_id}` 查看当前执行摘要。需要完整交接内容时取 result，不把前端摘要当成 Agent 的完整消息。

@@ -496,6 +496,11 @@ kbd {
 .dot.offline {
   background: #a8a6b7;
 }
+.dot.status-ready { background: #58a890; }
+.dot.status-running { background: #8f76df; box-shadow: 0 0 0 3px #947ce51a; }
+.dot.status-waiting { background: #d3a15a; }
+.dot.status-error { background: #d1707c; }
+.dot.status-muted { background: #a8a6b7; }
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1104,6 +1109,8 @@ kbd {
   border-color: #e9e2f7;
 }
 .badge.WAITING,
+.badge.GUIDANCE,
+.badge.REPORTED,
 .badge.PENDING,
 .badge.OFFERED {
   color: #967238;
@@ -1126,6 +1133,11 @@ kbd {
   background: #fcedf1;
   border-color: #f4e0e7;
 }
+.badge.agent-state.status-ready { color: #48816b; background: #edf6f1; border-color: #e7f0eb; }
+.badge.agent-state.status-running { color: #8064b2; background: #f1edfb; border-color: #e9e2f7; }
+.badge.agent-state.status-waiting { color: #967238; background: #fcf6e9; border-color: #f4ecd9; }
+.badge.agent-state.status-error { color: #a7576b; background: #fcedf1; border-color: #f4e0e7; }
+.badge.agent-state.status-muted { color: #747282; background: #f1f0f4; border-color: #e6e5eb; }
 .live-label {
   display: inline-flex;
   gap: 5px;
@@ -2226,6 +2238,15 @@ kbd {
   color: #967cad;
   font-size: 10px;
 }
+.agent-feedback { margin-top: 28px; }
+.feedback-list { display: grid; gap: 14px; }
+.feedback-card { margin: 0; min-width: 0; }
+.message-kind { font-size: 10px; color: var(--muted); }
+.message-actions { display: flex; flex-wrap: wrap; gap: 14px; }
+.message-card .message-text { margin: 16px 0; overflow-wrap: anywhere; }
+.message-card .message-text > :first-child { margin-top: 0; }
+.message-card .message-text > :last-child { margin-bottom: 0; }
+.message-card .message-text h1, .message-card .message-text h2 { font-size: 16px; }
 .artifact-total {
   font-size: 12px;
   color: #866597;

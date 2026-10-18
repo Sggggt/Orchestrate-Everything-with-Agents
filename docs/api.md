@@ -10,7 +10,7 @@ The local gateway binds to loopback. Requests use `Authorization: Bearer <client
 {"method": "projects.list", "params": {}}
 ```
 
-Responses contain `result` or a structured `error` with a safe message and code. `GET /api/protocol` describes current methods, parameter names, models and capabilities. Namespaced methods cover projects, Agents, sessions, threads, tasks, messages, artifacts, resources, events, workflows and MCP. Use this catalog when developing a client; a compact MCP consumer should request only one area's guide.
+Responses contain `result` or a structured `error` with a safe message and code. `GET /api/protocol` describes current methods, parameter names, models and capabilities. Namespaced methods cover projects, Agents, sessions, threads, tasks, messages, artifacts, resources, events, workflows, operations and MCP. Use this catalog when developing a client; a compact MCP consumer should request only one area's guide.
 
 Python `PlatformClient.call()` and CLI `oea request METHOD --params-file PATH` call this same gateway. Parameter files and saved outputs belong outside source repositories. `oea schema --output PATH` exports model schemas without requiring a running host.
 
@@ -30,6 +30,12 @@ Python `PlatformClient.call()` and CLI `oea request METHOD --params-file PATH` c
 | `/api/events` | Server-sent runtime events |
 
 Exact REST route definitions are maintained in [web/app.py](../src/ma_runtime/web/app.py). SDK clients should prefer RPC rather than depending on browser-specific projections. Legacy workflow requests carrying a `session_id` create one-off task dependencies; saved project graphs use `project_id`.
+
+The browser submits one-off session dependencies through `tasks.workflow` RPC and uses `workflows.*` for saved project graphs. Task inspectors use the current browser presentation endpoints. Codex setup displays the generated compact tool allowlist, environment and connection parameters from `/api/mcp/codex-config`.
+
+Supervision uses `operations.*` through RPC, SDK or MCP. There is no dedicated browser operations page or operations REST route. The existing session snapshot supplies compact `attention_thread_ids` and `failed_thread_ids` in its browser presentation. Latest failures remain visible beyond the bounded task history using an indexed per-thread lookup; existing events refresh Agent status colors without another subscription or polling loop.
+
+The browser presentation also includes `agent_reports`: at most ten recent run-sourced report summaries and response states. Report details are excluded. The overview shows the latest three Agent messages/reports as safe Markdown; the collaboration messages view includes a report/guidance filter. Ordinary message payloads retain only their bounded presentation summary in this view, while peer APIs keep complete content. Both views reuse the existing event refresh path.
 
 ## Events and output
 

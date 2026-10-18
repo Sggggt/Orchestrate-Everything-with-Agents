@@ -1,5 +1,9 @@
 # Python SDK
 
+Shared Skill registration, Agent associations and task policies are described in [Skills and execution policies](skills.md).
+
+For active diagnostics, passive receiving and run-bound Agent reports, see [Operations and guidance](operations.md). `client.operations` uses the same service as MCP and HTTP RPC; process Agents use `context.report_issue` and the scoped coordinator router. The browser reflects execution and pending reports through Agent status colors.
+
 The public package is `oea`. The existing `ma_runtime` and `agent` imports and `multi-agent` command remain compatible. New code should use `oea`, `oea.stdio` and the `oea` command.
 
 ## Connect to an existing host

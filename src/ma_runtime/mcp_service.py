@@ -189,6 +189,30 @@ class MCPRegistry:
             "catalog": self.catalogs.get(server_id, {}),
         }
 
+    async def register_directory(self, directory):
+        root = Path(directory).expanduser()
+        require(root.is_absolute() and root.is_dir(), "INVALID_REQUEST", "Choose an existing absolute MCP directory")
+        root = root.resolve()
+        source = root / "mcp.json"
+        require(source.is_file() and not source.is_symlink() and source.resolve().is_relative_to(root)
+                and source.stat().st_size <= 65536, "INVALID_REQUEST", "MCP directory requires mcp.json within 64 KiB")
+        try:
+            config = json.loads(await asyncio.to_thread(source.read_text, encoding="utf-8-sig"))
+        except (OSError, UnicodeError, ValueError):
+            raise RuntimeFault("INVALID_REQUEST", "Cannot read MCP directory configuration") from None
+        require(isinstance(config, dict) and not ({"secret_values", "env", "headers"} & set(config)),
+                "INVALID_REQUEST", "mcp.json must contain public MCPServerConfig fields; save credentials separately")
+        config["source_directory"] = str(root)
+        if config.get("transport", "stdio") == "stdio":
+            config["cwd"] = str((root / config.get("cwd", ".")).resolve())
+            if config.get("command", "").startswith(("./", ".\\")):
+                config["command"] = str((root / config["command"]).resolve())
+        parsed = MCPServerConfig.model_validate(config)
+        previous = self.configs.get(parsed.id)
+        require(previous is None or previous.source_directory == str(root),
+                "MCP_CONFLICT", "MCP ID is registered from another source")
+        return await self.configure(parsed)
+
     async def configure(
         self, config: MCPServerConfig | dict, secret_values: dict | None = None
     ):
@@ -502,15 +526,20 @@ class MCPRegistry:
             self._config(binding.server_id)
 
     async def schemas_for_run(self, run_id):
+        from .models import TaskSpec
+        from .execution_policy import mcp_name
         task, run = await self.rt.store.call(lambda db: self.rt.check_run(db, run_id))
+        policy = TaskSpec.model_validate_json(task.spec_json).tool_policy
         bindings = (
             json.loads(run.adapter_run_ref_json or "{}")
             .get("scopes", {})
             .get("mcp_bindings", [])
         )
-        tools, instructions, unavailable = [], [], []
+        tools, instructions, unavailable, identifiers = [], [], [], {}
         for binding in bindings:
             sid = binding["server_id"]
+            if policy.mode == "none" or (policy.allowed is not None and not any(name.startswith(f"mcp:{sid}:") for name in policy.allowed)):
+                continue
             try:
                 client = await self._connection(sid, "thread:" + task.thread_id)
                 if not getattr(client, "profile_announced", False):
@@ -523,7 +552,13 @@ class MCPRegistry:
                     client.profile_announced = True
                 if not self.catalogs.get(sid, {}).get("discovered_at"):
                     await self._discover(sid, client)
+                requested = {name.split(":", 2)[2] for name in (policy.allowed or ()) + policy.required
+                             if name.startswith(f"mcp:{sid}:")}
+                require(requested <= {tool["name"] for tool in self.catalogs[sid].get("tools", [])},
+                        "MCP_TOOL_POLICY_INVALID", "Task policy selects an unknown MCP tool")
                 for tool in self.catalogs[sid].get("tools", []):
+                    if not policy.permits(mcp_name(sid, tool["name"])):
+                        continue
                     if (
                         binding.get("tools") is not None
                         and tool["name"] not in binding["tools"]
@@ -540,13 +575,14 @@ class MCPRegistry:
                             "type": "function",
                             "function": {
                                 "name": tool["alias"],
-                                "description": f"[{config.name}] "
+                                "description": f"[{config.name}; {mcp_name(sid, tool['name'])}] "
                                 + tool.get("description", "")[:6000],
                                 "parameters": tool.get("inputSchema")
                                 or {"type": "object"},
                             },
                         }
                     )
+                    identifiers[tool["alias"]] = mcp_name(sid, tool["name"])
                 if self.catalogs[sid].get("instructions"):
                     instructions.append(
                         {
@@ -555,6 +591,8 @@ class MCPRegistry:
                         }
                     )
             except RuntimeFault as exc:
+                if exc.code == "MCP_TOOL_POLICY_INVALID":
+                    raise
                 unavailable.append({"server_id": sid, "error": exc.as_dict()})
         require(
             len(tools) <= 96,
@@ -565,12 +603,17 @@ class MCPRegistry:
             "tools": tools,
             "instructions": instructions,
             "unavailable": unavailable,
+            "identifiers": identifiers,
         }
 
     async def call_for_run(
         self, run_id, server_id, tool_name, arguments, idempotency_key
     ):
         task, run = await self.rt.store.call(lambda db: self.rt.check_run(db, run_id))
+        from .models import TaskSpec
+        from .execution_policy import mcp_name
+        require(TaskSpec.model_validate_json(task.spec_json).tool_policy.permits(mcp_name(server_id, tool_name)),
+                "PERMISSION_DENIED", "Tool is disabled by this task's policy")
         scopes = json.loads(run.adapter_run_ref_json or "{}").get("scopes", {})
         require(
             any(

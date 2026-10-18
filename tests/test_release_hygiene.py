@@ -2,6 +2,9 @@
 
 import importlib.util
 import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -43,9 +46,9 @@ class ReleaseHygieneTests(unittest.TestCase):
 
     def test_public_assets_templates_and_synthetic_examples_remain_allowed(self):
         for name in (
-            "docs/images/overview.png", "src/ma_runtime/secrets.py",
+            "docs/images/diagram.svg", "src/ma_runtime/secrets.py",
             "src/ma_runtime/store/schema.sql", ".env.example",
-            ".github/workflows/ci.yml", "tests/fixtures/synthetic.csv",
+            ".github/workflows/ci.yml", "tests/fixtures/mcp_server.py",
             "integrations/codex/example/references/local-instance.md",
         ):
             with self.subTest(name=name):
@@ -57,3 +60,31 @@ class ReleaseHygieneTests(unittest.TestCase):
             "from oea import PlatformClient",
             skill=True,
         ), [])
+
+    def test_fixed_test_data_and_captures_are_not_public_source(self):
+        for name in ("tests/fixtures/synthetic.csv", "tests/input.json", "tests/output.jsonl",
+                     "tests/fixtures/samples.parquet", "docs/screenshots/overview.png",
+                     "tests/captures/recording.webm", "src/.agents/context.md",
+                     "AGENTS.md", "PROJECT_SPEC.md", "skills/private/SKILL.md", "mcp/private/mcp.json"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(release_check.artifact_reason(Path(name)))
+
+    @unittest.skipUnless(shutil.which("git"), "Git is needed to verify tracked/ignored boundaries")
+    def test_ignored_files_already_in_the_index_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="oea-index-contract-") as temp:
+            root = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+            (root / "AGENTS.md").write_text("Local development instructions", encoding="utf-8")
+            (root / "skills/private").mkdir(parents=True)
+            (root / "skills/private/SKILL.md").write_text("Local integration", encoding="utf-8")
+            subprocess.run(["git", "add", "AGENTS.md", "skills/private/SKILL.md"], cwd=root, check=True, capture_output=True)
+            (root / ".gitignore").write_text("/AGENTS.md\n/PROJECT_SPEC.md\n/skills/\n/mcp/\n", encoding="utf-8")
+            errors = release_check.git_hygiene_issues(root)
+            self.assertTrue(any("Tracked AGENTS.md" in error for error in errors))
+            self.assertTrue(any("Tracked skills/private/SKILL.md" in error for error in errors))
+            (root / ".gitignore").write_text("AGENTS.md\nPROJECT_SPEC.md\n/skills/\n/mcp/\n", encoding="utf-8")
+            self.assertTrue(any("root .gitignore rule" in error for error in release_check.git_hygiene_issues(root)))
+
+    def test_source_archive_does_not_require_git(self):
+        with tempfile.TemporaryDirectory(prefix="oea-source-contract-") as temp:
+            self.assertEqual(release_check.git_hygiene_issues(Path(temp)), [])

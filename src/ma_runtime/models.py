@@ -105,6 +105,30 @@ class ResourceRequirement(Model):
     mode: Literal["SHARED", "EXCLUSIVE"] = "EXCLUSIVE"
 
 
+class UsePolicy(Model):
+    """Task-scoped restrictions; never grants capabilities."""
+
+    mode: Literal["auto", "none", "required"] = "auto"
+    allowed: tuple[str, ...] | None = Field(default=None, max_length=96)
+    required: tuple[str, ...] = Field(default=(), max_length=96)
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if self.mode == "none" and (self.required or self.allowed):
+            raise ValueError("none cannot select or require capabilities")
+        if self.allowed is not None and not set(self.required) <= set(self.allowed):
+            raise ValueError("required must be a subset of allowed")
+        for values in (self.allowed or (), self.required):
+            if any(not value or len(value) > 256 for value in values):
+                raise ValueError("Capability identifiers must contain 1..256 characters")
+            if len(set(values)) != len(values):
+                raise ValueError("Capability identifiers must be unique")
+        return self
+
+    def permits(self, name):
+        return self.mode != "none" and (self.allowed is None or name in self.allowed)
+
+
 class TaskSpec(Model):
     schema_version: str = PROTOCOL_VERSION
     session_id: str
@@ -120,6 +144,8 @@ class TaskSpec(Model):
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
     metadata: dict = Field(default_factory=dict)
+    tool_policy: UsePolicy = Field(default_factory=UsePolicy)
+    skill_policy: UsePolicy = Field(default_factory=UsePolicy)
 
     @field_validator("resources")
     @classmethod
@@ -140,6 +166,8 @@ class InstanceBatchSpec(Model):
     attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+    tool_policy: UsePolicy = Field(default_factory=UsePolicy)
+    skill_policy: UsePolicy = Field(default_factory=UsePolicy)
 
     @field_validator("agent_ids")
     @classmethod
@@ -177,7 +205,7 @@ class CheckpointProposal(Model):
 class WaitCondition(Model):
     kind: Literal["tasks", "message", "input"]
     task_ids: tuple[str, ...] = ()
-    policy: Literal["ALL_SUCCEEDED", "ALL_TERMINAL"] = "ALL_SUCCEEDED"
+    policy: Literal["ALL_SUCCEEDED", "ALL_TERMINAL", "ALL_SETTLED"] = "ALL_SUCCEEDED"
     port: str = "input"
     match: dict = Field(default_factory=dict)
     wait_token: str | None = None
@@ -231,12 +259,14 @@ class AgentDescriptor(Model):
 
 
 class AgentSkill(Model):
-    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2048)
     content: str = Field(default="", max_length=65536)
     enabled: bool = True
     resources: dict[str, str] = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+    revision: str = ""
 
     @field_validator("content")
     @classmethod
@@ -268,6 +298,10 @@ class AgentSkill(Model):
         return value
 
 
+class SkillBinding(Model):
+    skill_id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=64)
+
+
 class MCPBinding(Model):
     server_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     # None grants the server's available tools; an empty tuple grants no tools.
@@ -278,6 +312,7 @@ class MCPServerConfig(Model):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2048)
+    source_directory: str = Field(default="", max_length=4096)
     transport: Literal["stdio", "streamable-http", "sse"] = "stdio"
     command: str = Field(default="", max_length=4096)
     args: tuple[str, ...] = ()
@@ -343,6 +378,7 @@ class AgentConfig(Model):
     process_descriptor: AgentDescriptor | None = None
     agent_md: str = Field(default="", max_length=65536)
     skills: tuple["AgentSkill", ...] = ()
+    skill_bindings: tuple[SkillBinding, ...] = ()
     mcp_bindings: tuple["MCPBinding", ...] = ()
 
     @field_validator("agent_md")
@@ -364,6 +400,11 @@ class AgentConfig(Model):
             )
         if len({s.id for s in self.skills}) != len(self.skills):
             raise ValueError("Skill IDs must be unique within an agent")
+        linked = [binding.skill_id for binding in self.skill_bindings]
+        if len(set(linked)) != len(linked) or set(linked) & {s.id for s in self.skills}:
+            raise ValueError("Linked and embedded Skill IDs must be unique")
+        if len(linked) + len(self.skills) > 32:
+            raise ValueError("An Agent supports up to 32 linked and embedded skills")
         if len({b.server_id for b in self.mcp_bindings}) != len(self.mcp_bindings):
             raise ValueError("MCP server bindings must be unique within an agent")
         if len(self.skills) > 32 or len(self.mcp_bindings) > 32:
@@ -397,6 +438,7 @@ class LLMRequest(Model):
     tools: list[dict] | None = Field(default=None, max_length=64)
     include_instructions: bool = True
     emit_progress: bool = False
+    tool_choice: str | dict | None = None
 
     @model_validator(mode="after")
     def bounded_model_input(self):
@@ -449,6 +491,9 @@ class ExecutionRequest(Model):
     agent_md: str = ""
     skills: tuple["AgentSkill", ...] = ()
     mcp_bindings: tuple["MCPBinding", ...] = ()
+    tool_policy: UsePolicy = Field(default_factory=UsePolicy)
+    skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    operations_consumer_id: str = ""
 
 
 class ProbeResult(Model):
@@ -546,6 +591,7 @@ class TaskSnapshot(SnapshotModel):
     updated_at: int
     runs: list[RunSnapshot] = Field(default_factory=list)
     current_run: RunSnapshot | None = None
+    execution_evidence: list[dict] = Field(default_factory=list)
     position: int | None = None
 
 
@@ -657,6 +703,8 @@ class WorkflowAgentConfig(BaseModel):
     attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+    tool_policy: UsePolicy = Field(default_factory=UsePolicy)
+    skill_policy: UsePolicy = Field(default_factory=UsePolicy)
 
 
 class WorkflowMapConfig(BaseModel):
@@ -669,6 +717,8 @@ class WorkflowMapConfig(BaseModel):
     attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+    tool_policy: UsePolicy = Field(default_factory=UsePolicy)
+    skill_policy: UsePolicy = Field(default_factory=UsePolicy)
 
 
 class WorkflowConditionConfig(BaseModel):

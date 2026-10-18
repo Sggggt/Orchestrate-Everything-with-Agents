@@ -50,6 +50,7 @@ host.lock
 /PROJECT_SPEC.md
 /AGENTS.md
 /.codex/
+/.agents/
 /.claude/
 /.cursor/
 
@@ -69,6 +70,8 @@ runtime-data/
 /backups/
 /logs/
 /profiles/
+/skills/
+/mcp/
 
 # Logs, captures, backups and release archives
 *.log
@@ -90,6 +93,31 @@ tmp/
 temp/
 reports/
 /screenshots/
+screenshots/
+recordings/
+captures/
+/notes/
+/plans/
+/handoffs/
+
+# Test inputs are generated outside the checkout; keep source protocol stubs only.
+/tests/**/*.csv
+/tests/**/*.tsv
+/tests/**/*.json
+/tests/**/*.jsonl
+/tests/**/*.ndjson
+/tests/**/*.xml
+/tests/**/*.yaml
+/tests/**/*.yml
+/tests/**/*.parquet
+/tests/**/*.arrow
+/tests/**/*.feather
+/tests/**/*.pkl
+/tests/**/*.pickle
+/tests/**/*.npy
+/tests/**/*.npz
+/tests/**/*.xls
+/tests/**/*.xlsx
 
 # Editor and operating-system state; public image assets remain trackable
 .idea/

@@ -5,6 +5,7 @@ import inspect
 
 
 def methods(rt):
+    from ..operations import OPERATIONS_ACTIONS
     return {
         "projects.create": rt.projects.create,
         "projects.get": rt.projects.get,
@@ -23,6 +24,7 @@ def methods(rt):
         "sessions.restore": rt.sessions.restore,
         "agents.list": rt.agents.list,
         "agents.describe": rt.agents.describe,
+        "agents.capabilities": rt.agents.capabilities,
         "agents.configure": rt.agents.configure,
         "agents.test_model": rt.agents.test_model,
         "agents.documents": rt.agents.documents,
@@ -63,6 +65,7 @@ def methods(rt):
         "mcp.list": rt.mcp.list,
         "mcp.get": rt.mcp.get,
         "mcp.configure": rt.mcp.configure,
+        "mcp.register_directory": rt.mcp.register_directory,
         "mcp.delete": rt.mcp.delete,
         "mcp.connect": rt.mcp.connect,
         "mcp.disconnect": rt.mcp.disconnect,
@@ -76,6 +79,10 @@ def methods(rt):
         "mcp.codex_candidates": rt.mcp.codex_candidates,
         "mcp.import_codex": rt.mcp.import_codex,
         "mcp.codex_config": rt.mcp.codex_config,
+        **{"skills." + name: getattr(rt.skills, name) for name in (
+            "list", "get", "register_directory", "refresh", "set_enabled", "read", "delete",
+        )},
+        **{"operations." + name: getattr(rt.operations, name) for name in OPERATIONS_ACTIONS},
     }
 
 

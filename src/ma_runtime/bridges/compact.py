@@ -17,6 +17,8 @@ from ..mcp_service import MCPRegistry
 from ..resources import ResourceCoordinator
 from ..workflows import Workflows
 from ..instances import Instances
+from ..skill_registry import SkillRegistry
+from ..operations import Operations, OPERATIONS_ACTIONS
 
 AREAS = {
     "projects": (
@@ -40,11 +42,16 @@ AREAS = {
         {
             "list": "agents.list",
             "describe": "agents.describe",
+            "capabilities": "agents.capabilities",
             "configure": "agents.configure",
             "test_model": "agents.test_model",
             "patch": "@agent_patch",
             "delete_secret": "@delete_secret",
         },
+    ),
+    "skills": (
+        "共享标准 Skill 目录、正文、参考文件、启停与刷新；Agent 用 skill_bindings 关联",
+        {name: "skills." + name for name in ("list", "get", "register_directory", "refresh", "set_enabled", "read", "delete")},
     ),
     "profiles": (
         "AGENT.md 与各 Agent 独立的 Skills",
@@ -57,6 +64,10 @@ AREAS = {
             "skill_delete": "agents.skill_delete",
             "skill_parse": "@skill_parse",
         },
+    ),
+    "operations": (
+        "双向运维、精简收件箱、指导与受管诊断测试；正文按引用读取",
+        {name: "operations." + name for name in OPERATIONS_ACTIONS},
     ),
     "sessions": (
         "创建、查看和关闭项目内会话",
@@ -121,6 +132,7 @@ AREAS = {
                 "list",
                 "get",
                 "configure",
+                "register_directory",
                 "delete",
                 "connect",
                 "disconnect",
@@ -152,10 +164,14 @@ OWNERS = {
     "events": EventHub,
     "resources": ResourceCoordinator,
     "mcp": MCPRegistry,
+    "skills": SkillRegistry,
+    "operations": Operations,
     "workflows": Workflows,
     "instances": Instances,
 }
 PARAM_MODELS = {
+    ("operations.test", "tool_policy"): models.UsePolicy,
+    ("operations.test", "skill_policy"): models.UsePolicy,
     ("agents.configure", "config"): models.AgentConfig,
     ("agents.skill_put", "skill"): models.AgentSkill,
     ("tasks.submit", "spec"): models.TaskSpec,
@@ -197,6 +213,11 @@ EXTRA_PARAMS = {
     "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": 4000},
 }
 NOTES = {
+    "operations.bind": "Bind one stable consumer and optional same-session managed coordinator thread. Rebinding changes the receiver; it grants no business tools. Internal coordinators receive coalesced control notifications. External clients use inbox or SDK events; a server cannot start an idle external chat turn.",
+    "operations.inbox": "Compact durable summaries only. Keep consumer_id stable. Omit cursor to resume from the acknowledged position; limit defaults to 20, timeout=0..25 waits for a meaningful update without polling. Read selected event IDs, then ack the delivered cursor. Timeouts do not cancel work or start another Runtime.",
+    "operations.read": "Read one channel event and report body after selecting its summary. Scope and references are checked; reports and replies never authorize extra tools.",
+    "operations.reply": "Send idempotent guidance to the reporting Agent's existing thread. A suspended guidance request resumes the same task, preserving its checkpoints and logical operation keys. This is not a retry or confirmation that the underlying problem is resolved.",
+    "operations.test": "Explicit diagnostic work uses one independent ordinary instance, saved Agent grants/model and the shared scheduler. May invoke the configured real model/tools. Stable keys recover the same test; query its task_id for actual results. No arbitrary shell, credential override or separate worker pool.",
     "instances.spawn": "Atomically create 1..128 independent Thread/Task instances in one session. Reuse Agent configurations. Stable key returns the original batch; changed input conflicts. agent_ids is a same-project managed pool, routing is round_robin or least_loaded; assignment is fixed at creation. max_concurrency bounds this batch within global and Agent budgets.",
     "instances.get": "Read ordered member IDs, states, counts and queue reasons; include_outputs=true reads full results. UNCERTAIN retains capacity and requires task reconciliation.",
     "instances.list": "Session-scoped batch summaries with cursor pagination; does not include full outputs or all conversation history.",
@@ -427,7 +448,7 @@ class CompactBridge:
                     0
                     if method == "tasks.result" and name == "timeout"
                     else (
-                        25
+                        (20 if method == "operations.inbox" else 25)
                         if name == "limit" and not method.startswith("@")
                         else default
                     )
@@ -437,7 +458,7 @@ class CompactBridge:
                 entry["schema"] = model.__name__
                 schemas[model.__name__] = model.model_json_schema()
             parameters.append(entry)
-        if method == "tasks.workflow":
+        if method in {"tasks.workflow", "threads.turn"}:
             schemas["TaskSpec"] = models.TaskSpec.model_json_schema()
         if method in {"@configure", "@agent_patch"}:
             model = (
@@ -491,7 +512,7 @@ class CompactBridge:
         )
         params = dict(params)
         if "limit" in defaults and not method.startswith("@"):
-            params.setdefault("limit", 25)
+            params.setdefault("limit", 20 if method == "operations.inbox" else 25)
         if method in {"tasks.result", "workflows.result", "instances.result"}:
             params.setdefault("timeout", 0)
             require(

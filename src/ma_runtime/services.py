@@ -358,7 +358,7 @@ class Sessions:
         def read(db):
             session = public(need(db, "sessions", session_id))
             cursor = one(db, "SELECT COALESCE(MAX(seq),0) AS seq FROM events").seq
-            return SessionSnapshot(
+            snapshot = SessionSnapshot(
                 session=session,
                 threads=[
                     public(r)
@@ -394,11 +394,26 @@ class Sessions:
                 ],
                 cursor=cursor,
             )
+            attention = [r.thread_id for r in rows(db,
+                "SELECT DISTINCT t.thread_id FROM operations_reports r JOIN tasks t ON t.id=r.task_id WHERE r.session_id=? AND r.reply_message_id IS NULL",
+                (session_id,))] if presentation else []
+            failed = [r.id for r in rows(db,
+                "SELECT h.id FROM threads h WHERE h.session_id=? AND (SELECT state FROM tasks WHERE thread_id=h.id ORDER BY created_at DESC,rowid DESC LIMIT 1)='FAILED'",
+                (session_id,))] if presentation else []
+            reports = [dict(r) for r in rows(db,
+                "SELECT r.id,t.thread_id,r.task_id,r.summary AS summary_markdown,r.wait_for_guidance,r.reply_message_id IS NOT NULL AS replied,r.created_at FROM operations_reports r JOIN tasks t ON t.id=r.task_id WHERE r.session_id=? ORDER BY r.created_at DESC,r.rowid DESC LIMIT 10",
+                (session_id,))] if presentation else []
+            return snapshot, attention, failed, reports
 
-        result = await self.rt.store.call(read, transaction=True)
+        result, attention, failed, reports = await self.rt.store.call(read, transaction=True)
         if presentation:
             from .presentation import markdown_summary, result_summary
             value = result.model_dump(mode="json")
+            value["attention_thread_ids"] = attention
+            value["failed_thread_ids"] = failed
+            value["agent_reports"] = [{**report, "summary_markdown": markdown_summary(report["summary_markdown"], limit=320),
+                                       "wait_for_guidance": bool(report["wait_for_guidance"]), "replied": bool(report["replied"])}
+                                      for report in reports]
             for task in value["tasks"]:
                 task["title"] = markdown_summary(task["spec"]["payload"].get("input") or
                                                 task["spec"]["metadata"].get("stage") or "协作任务", limit=160)
@@ -504,6 +519,27 @@ class Agents:
                 return item
         raise RuntimeFault("NOT_FOUND", "Agent does not exist")
 
+    async def capabilities(self, agent_id):
+        profile = self.rt.agent_configs.get(agent_id)
+        require(profile is not None, "NOT_FOUND", "Agent does not have a managed configuration")
+        from .profiles import skill_catalog
+        from .execution_policy import PLATFORM_TOOLS
+        platform_tools = set(PLATFORM_TOOLS)
+        if profile.kind == "llm":
+            platform_tools -= {"put_file", "put_bytes"}
+        if not profile.collaboration:
+            platform_tools -= {"list_threads", "send_message", "submit_task", "spawn_instances"}
+        catalog = skill_catalog(profile.skills)
+        for binding in profile.skill_bindings:
+            entry = self.rt.skills.entry(binding.skill_id)
+            catalog.extend({**item, "enabled": entry["enabled"]} for item in skill_catalog((entry["skill"],)))
+        return {"agent_id": agent_id, "project_id": profile.project_id,
+                "skills": catalog,
+                "mcp_bindings": [b.model_dump(mode="json") for b in profile.mcp_bindings],
+                "platform_tools": sorted(platform_tools),
+                "control_tools": ["report_issue"],
+                "policy_defaults": {"tool_policy": {"mode": "auto"}, "skill_policy": {"mode": "auto"}}}
+
     async def configure(self, config: AgentConfig | dict, api_key: str | None = None):
         async with self.rt.configuration_lock:
             return await self._configure(config, api_key)
@@ -568,6 +604,8 @@ class Agents:
                 "WHERE h.agent_id=? AND s.project_id!=? LIMIT 1", (config.id, project.id)))
         require(not conflict, "PROJECT_CONFLICT", "Move existing sessions and Agents together with projects.adopt")
         self.rt.mcp.validate_bindings(config.mcp_bindings)
+        self.rt.skills.validate_bindings(config.skill_bindings)
+        self.rt.skills.validate_agent(config)
         require(
             config.id != "codex", "INVALID_REQUEST", "Codex is an external coordinator"
         )
@@ -612,12 +650,14 @@ class Agents:
 
     async def documents(self, agent_id):
         profile = self._profile(agent_id)
+        from .operations import OPERATIONS_GUIDANCE
         return {
             "agent_id": agent_id,
-            "instructions": {"filename": "AGENT.md", "content": profile["agent_md"]},
+            "instructions": {"filename": "AGENT.md", "aliases": ["AGENTS.md"], "content": profile["agent_md"]},
+            "runtime_instructions": {"content": OPERATIONS_GUIDANCE},
             "skills": [
                 {**s, "filename": f"skills/{s['id']}/SKILL.md"}
-                for s in profile["skills"]
+                for s in [skill.model_dump(mode="json") for skill in self.rt.skills.for_agent(self.rt.agent_configs[agent_id])]
             ],
         }
 
@@ -629,7 +669,8 @@ class Agents:
         return await self.documents(agent_id)
 
     async def skills_list(self, agent_id):
-        return self._profile(agent_id)["skills"]
+        self._profile(agent_id)
+        return [skill.model_dump(mode="json") for skill in self.rt.skills.for_agent(self.rt.agent_configs[agent_id])]
 
     async def skill_put(self, agent_id, skill):
         skill = AgentSkill.model_validate(skill)
@@ -874,7 +915,8 @@ class Tasks:
                 "ephemeral": not bool(task.result)}
 
     def insert(self, db, spec, identity=None, retry_of=None, caller_run_id=None):
-        digest = content_hash(spec)
+        from .execution_policy import request_hash
+        digest = request_hash(spec)
         existing = one(
             db,
             "SELECT * FROM tasks WHERE session_id=? AND idempotency_key=?",
@@ -916,6 +958,8 @@ class Tasks:
             "Thread, session and agent do not match",
         )
         self.rt.adapter(spec.agent_id)
+        from .execution_policy import validate_policies
+        validate_policies(self.rt, spec)
         queued = one(
             db, "SELECT COUNT(*) AS count FROM tasks WHERE state='QUEUED'"
         ).count
@@ -1058,6 +1102,11 @@ class Tasks:
                 if r["state"] in {"RUNNING", "UNCERTAIN"} and r["ended_at"] is None
             ]
             task["current_run"] = current[-1] if current else None
+            policy = task["spec"]
+            if any(policy.get(key, {}).get("required") or policy.get(key, {}).get("mode") == "required"
+                   for key in ("tool_policy", "skill_policy")):
+                task["execution_evidence"] = [dict(row) for row in rows(db,
+                    "SELECT kind,name,run_id,created_at FROM execution_evidence WHERE task_id=? ORDER BY kind,name", (task_id,))]
             return TaskSnapshot.model_validate(task)
 
         result = await self.rt.store.call(read)

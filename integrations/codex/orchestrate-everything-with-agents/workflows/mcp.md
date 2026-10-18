@@ -1,5 +1,7 @@
 # 共享 MCP 集成
 
+也可用 `mcp.register_directory {directory}` 从绝对目录下的 mcp.json 注册公开 MCPServerConfig。支持项目内和外部目录；STDIO 默认工作目录为来源目录。凭据仍通过秘密存储设置，目录导入不接受 env/headers/secret_values，不自动连接或执行服务器。
+
 平台内注册的是上游 MCP 服务；Codex 的 `oea` 是平台管理桥。不要把平台自身桥再次导入平台，避免递归连接。注册连接与执行业务工具是不同动作。
 
 ## 目录、注册和连接

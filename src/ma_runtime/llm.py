@@ -89,7 +89,7 @@ class ConfiguredLLM:
         self.config = config.model_copy(deep=True)
         self.api_key = api_key
 
-    async def stream_completion(self, messages, context, tools=None):
+    async def stream_completion(self, messages, context, tools=None, tool_choice=None):
         require(
             self.config.base_url and self.config.model,
             "AGENT_NOT_CONFIGURED",
@@ -102,6 +102,9 @@ class ConfiguredLLM:
             body[self.config.token_parameter] = self.config.max_output_tokens
         if tools:
             body["tools"] = tools
+            choice = tool_choice if tool_choice is not None else getattr(context, "model_tool_choice", None)
+            if choice is not None:
+                body["tool_choice"] = choice
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = "Bearer " + self.api_key
@@ -224,9 +227,9 @@ class ConfiguredLLM:
             "finish_reason": finish_reason,
         }
 
-    async def complete(self, messages, context, *, tools=None, on_event=None):
+    async def complete(self, messages, context, *, tools=None, on_event=None, tool_choice=None):
         usage, result = {}, None
-        async for event in self.stream_completion(messages, context, tools):
+        async for event in self.stream_completion(messages, context, tools, tool_choice):
             if isinstance(event, dict):
                 result = event
             else:
@@ -281,7 +284,7 @@ class RunLLM:
         }
 
     async def complete(
-        self, messages, *, tools=None, include_instructions=True, emit_progress=False
+        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None
     ):
         from pydantic import ValidationError
 
@@ -291,6 +294,7 @@ class RunLLM:
                 tools=tools,
                 include_instructions=include_instructions,
                 emit_progress=emit_progress,
+                tool_choice=tool_choice,
             )
         except ValidationError:
             raise RuntimeFault(
@@ -328,16 +332,24 @@ class RunLLM:
 
     async def _complete(self, request):
         from .presentation import OUTPUT_GUIDANCE, SummaryStream
+        from .operations import OPERATIONS_GUIDANCE, COORDINATOR_GUIDANCE
         context, runtime = self.context, self.context._runtime
         messages = list(request.messages)
         if request.include_instructions:
             instructions = "\n\n".join(
                 filter(
-                    None, [self.client.config.system_prompt, context.request.agent_md, OUTPUT_GUIDANCE]
+                    None, [self.client.config.system_prompt, context.request.agent_md, OUTPUT_GUIDANCE, OPERATIONS_GUIDANCE]
                 )
             )
             if instructions:
                 messages.insert(0, {"role": "system", "content": instructions})
+            skills = await context.list_skills()
+            if skills:
+                messages.insert(0, {"role": "system", "content": "Enabled Skill catalog; use context.read_skill to load relevant instructions:\n" + json.dumps(skills)})
+        if context.loaded_skills:
+            messages.insert(0, {"role": "system", "content": "Required Skill instructions loaded by the platform:\n" + json.dumps(list(context.loaded_skills.values()))})
+        if context.request.operations_consumer_id:
+            messages.insert(0, {"role": "system", "content": COORDINATOR_GUIDANCE})
         # Retain the run's configuration snapshot; never accept caller-supplied
         # endpoint, model, Authorization, or another Agent's identity.
         messages = runtime.clean_json(messages, 524288)
@@ -363,9 +375,16 @@ class RunLLM:
                     payload,
                 )
 
-        response = await self.client.complete(
-            messages, context, tools=request.tools, on_event=progress
-        )
+        tools, choice = request.tools, request.tool_choice
+        if tools:
+            from .execution_policy import model_tools
+            tools, enforced = model_tools(context, tools)
+            if enforced is not None:
+                choice = enforced
+        options = {"tools": tools, "on_event": progress}
+        if choice is not None:
+            options["tool_choice"] = choice
+        response = await self.client.complete(messages, context, **options)
         if request.emit_progress:
             tail = summary_stream.finish()
             if tail:

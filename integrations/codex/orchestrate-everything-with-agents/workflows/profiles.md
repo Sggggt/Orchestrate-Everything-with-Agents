@@ -1,5 +1,9 @@
 # AGENT.md 与 Skills
 
+新技能优先使用共享集成：`skills.register_directory {directory}` 注册含标准 SKILL.md 的绝对目录；`skills.list` 分页看目录，`skills.get` 看单个元数据与参考文件名，`skills.read {skill_id,path}` 读取正文或一个相对参考路径。更新源文件后显式 `skills.refresh`，启停用 `skills.set_enabled`，解除注册用 `skills.delete`（先解除 Agent 关联，保留源文件）。项目内与外部目录均可注册。
+
+Agent 用 `agents.patch {agent_id,changes:{skill_bindings:[{skill_id:...}]}}` 关联共享技能；先读目标现有绑定，保留不受本次修改影响的项。`agents.capabilities {agent_id}` 返回关联的 MCP/Skill 目录，无需读取模型配置或全部文档。下列 profiles 内嵌技能接口保留兼容，新增集成使用共享注册。
+
 所有操作明确绑定 `agent_id`。这是平台 Agent 的文档，不是本机 Codex 的全局技能；两者不会自动互相继承。
 
 - `profiles.documents`：读取该 Agent 的 AGENT.md 与 Skills；大结果按 JSON Pointer 取需要部分。

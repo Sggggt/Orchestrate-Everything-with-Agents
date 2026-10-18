@@ -242,7 +242,13 @@ class JsonlAgent:
                             tools=model_request.tools,
                             include_instructions=model_request.include_instructions,
                             emit_progress=model_request.emit_progress,
+                            tool_choice=model_request.tool_choice,
                         )
+                    elif method == "runtime.operations.report":
+                        value = await context.report_issue(params["summary"], params["idempotency_key"],
+                            details=params.get("details", ""), wait=params.get("wait", False))
+                    elif method == "runtime.operations.call":
+                        value = await context.operations(params["action"], params.get("params"))
                     elif method == "runtime.tools.list":
                         value = await context.list_tools()
                     elif method == "runtime.skills.list":

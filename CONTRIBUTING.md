@@ -9,7 +9,7 @@ Use Python 3.12 or newer. Create a virtual environment and runtime/test outputs 
 ```sh
 python -m pip install -c constraints.txt -e '.[web,mcp]'
 python -B -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs
+node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs tests/test_agent_status.mjs tests/test_browser_integration.mjs tests/test_message_feed.mjs
 python -B scripts/check_release.py
 ```
 
@@ -25,6 +25,6 @@ For synthetic concurrency measurements, run `python -B scripts/benchmark_runtime
 - Keep model keys, tokens, personal paths, company records, downloads, browser captures and generated state out of commits. Use invented generic examples and `example.com` or `example.invalid` for external addresses.
 - Keep the shared SVG and existing visual language when changing frontend controls. Verify narrow screens and keyboard access for affected flows.
 
-The source release includes generic automated tests and their source fixtures. It excludes generated test results and populated workspaces. Build packages outside the checkout with `python -m build --outdir /external/path`.
+The source release includes generic automated tests and source protocol stubs. Generate test inputs in external temporary directories; do not check in fixed datasets, captures, test reports or populated workspaces. The release check verifies tracked paths and root ignore rules as well as public files and links. Ignoring a file does not remove it from Git. Build packages outside the checkout with `python -B -m build --outdir /external/path`, then inspect the actual wheel and source archive before publishing.
 
 Use the existing MIT license and preserve required copyright notices. Do not include code or data you cannot redistribute.

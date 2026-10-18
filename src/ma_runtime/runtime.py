@@ -119,9 +119,15 @@ class Runtime:
 
         self.workflows = Workflows(self)
         self.events = EventHub(self)
+        from .operations import Operations
+
+        self.operations = Operations(self)
         from .mcp_service import MCPRegistry
 
         self.mcp = MCPRegistry(self)
+        from .skill_registry import SkillRegistry
+
+        self.skills = SkillRegistry(self)
         self.active: dict[str, ActiveRun] = {}
         self.uncertain_slots = set()
         self._uncertain_owners = {}
@@ -156,6 +162,8 @@ class Runtime:
             for adapter in self.adapters.values():
                 self.validate_adapter(adapter)
             await self.mcp.open()
+            await self.skills.open()
+            await self.operations.open()
             await self.recover()
             self.accepting = True
             self.scheduler = asyncio.create_task(
@@ -319,7 +327,7 @@ class Runtime:
             "UPDATE threads SET owner_task_id=NULL,blocked_reason=NULL WHERE id=? AND owner_task_id=? AND active_run_id IS NULL",
             (task.thread_id, task.id),
         )
-        emit(
+        seq = emit(
             db,
             "task." + state.lower(),
             session_id=task.session_id,
@@ -327,6 +335,7 @@ class Runtime:
             task_id=task.id,
             payload={"state": state, "error": error},
         )
+        self.operations.task_event(db, task, state, seq)
 
     def validate_wait(self, db, task, wait):
         if wait.kind == "tasks":
@@ -430,6 +439,10 @@ class Runtime:
                 )
                 return json.loads(prior.boundary_receipt_json)
             task, run = self.check_run(db, run_id)
+            if event.type == "completed":
+                from .execution_policy import check_completion
+                active = self.active.get(run_id)
+                check_completion(db, task, active.spec if active else None)
             thread = need(db, "threads", task.thread_id)
             descriptor = json.loads(run.adapter_snapshot_json)
             if event.type == "suspended":
@@ -566,7 +579,7 @@ class Runtime:
             )
             if event.result:
                 self.append_reply(db, task, run_id, event.result)
-            emit(
+            seq = emit(
                 db,
                 "task.suspended" if state == "WAITING" else "task.completed",
                 session_id=task.session_id,
@@ -579,6 +592,8 @@ class Runtime:
                     "wait": event.wait.model_dump() if event.wait else None,
                 },
             )
+            if state == "SUCCEEDED" and (active is None or active.spec.metadata.get("purpose") == "operations_test"):
+                self.operations.task_event(db, task, state, seq, active.spec if active else None)
             return receipt
 
         try:
@@ -620,6 +635,8 @@ class Runtime:
     async def wake_waiting(self):
         def wake(db):
             for task in rows(db, "SELECT * FROM tasks WHERE state='WAITING'"):
+                if self.operations.interrupt_wait(db, task):
+                    continue
                 wait = WaitCondition.model_validate_json(task.wait_json)
                 spec = TaskSpec.model_validate_json(task.spec_json)
                 deadlines = [
@@ -635,7 +652,8 @@ class Runtime:
                     dependencies = [
                         need(db, "tasks", identity) for identity in wait.task_ids
                     ]
-                    if all(d.state in TERMINAL for d in dependencies):
+                    settled = TERMINAL | {"UNCERTAIN"} if wait.policy == "ALL_SETTLED" else TERMINAL
+                    if all(d.state in settled for d in dependencies):
                         if wait.policy == "ALL_SUCCEEDED" and any(
                             d.state != "SUCCEEDED" for d in dependencies
                         ):
@@ -653,6 +671,7 @@ class Runtime:
                                         if d.result_json
                                         else None
                                     ),
+                                    "error": json.loads(d.error_json) if d.error_json else None,
                                 }
                                 for d in dependencies
                             }
@@ -716,6 +735,7 @@ class Runtime:
                     ),
                     transaction=True,
                 )
+                self.events.notify()
 
     async def dispatch(self):
         capacity = self.config.max_concurrency - self.config.reserved_external_slots
@@ -1013,8 +1033,11 @@ class Runtime:
             deadline_at_ms=spec.deadline_at_ms,
             attempt=attempt,
             agent_md=profile.agent_md if profile else "",
-            skills=profile.skills if profile else (),
+            skills=tuple(s for s in self.skills.for_agent(profile) if s.enabled and spec.skill_policy.permits(s.id)),
             mcp_bindings=profile.mcp_bindings if profile else (),
+            tool_policy=spec.tool_policy,
+            skill_policy=spec.skill_policy,
+            operations_consumer_id=self.operations.for_thread(task.session_id, thread.id),
         )
 
     async def consume(self, active):
@@ -1022,6 +1045,7 @@ class Runtime:
         summary_stream = SummaryStream()
         if active.context.cancelled.is_set():
             raise asyncio.CancelledError
+        await active.context.initialize()
         active.started = True
         boundary = None
         last_seq = 0
@@ -1170,7 +1194,7 @@ class Runtime:
                 if isinstance(exc, RuntimeFault)
                 else RuntimeFault("ADAPTER_FAILED", "Execution endpoint failed")
             )
-            await self.fail_run(active, error, stopped=stopped)
+            await self.fail_run(active, error, stopped=stopped, never_started=not active.started)
         finally:
             cancellation.cancel()
             self.consume_exception(cancellation)
@@ -1310,7 +1334,7 @@ class Runtime:
                     "UPDATE tool_calls SET state='UNCERTAIN',updated_at=? WHERE id=?",
                     (now_ms(), tool.id),
                 )
-            emit(
+            seq = emit(
                 db,
                 "task." + state.lower(),
                 session_id=task.session_id,
@@ -1323,6 +1347,7 @@ class Runtime:
                     "confirmed_stopped": stopped,
                 },
             )
+            self.operations.task_event(db, task, state, seq, active.spec)
             return state
 
         state = await self.store.call(fail, transaction=True)

@@ -74,6 +74,9 @@ class ToolGateway:
             lambda db: self.runtime.check_run(db, caller_run_id)
         )
         task_spec = TaskSpec.model_validate_json(task.spec_json)
+        from .execution_policy import mcp_name, record
+        identifier = mcp_name(provider.server_id, provider.tool["name"]) if hasattr(provider, "server_id") else name
+        require(task_spec.tool_policy.permits(identifier), "PERMISSION_DENIED", "Tool is disabled by this task's policy")
         require(
             task_spec.agent_id in self.allowed[name],
             "PERMISSION_DENIED",
@@ -94,7 +97,13 @@ class ToolGateway:
                 "Tool key has different input",
             )
             if prior.state == "SUCCEEDED":
-                return json.loads(prior.result_json)
+                result = json.loads(prior.result_json)
+                if not result.get("isError") and (task_spec.tool_policy.required or task_spec.tool_policy.mode == "required"):
+                    def reuse(db):
+                        self.runtime.check_run(db, caller_run_id)
+                        record(db, task.id, run.id, "tool", identifier)
+                    await self.runtime.store.call(reuse, transaction=True)
+                return result
             raise RuntimeFault(
                 (
                     "OUTCOME_UNCERTAIN"
@@ -186,6 +195,8 @@ class ToolGateway:
 
                 def complete(db):
                     self.runtime.check_run(db, caller_run_id)
+                    if not result.get("isError") and (task_spec.tool_policy.required or task_spec.tool_policy.mode == "required"):
+                        record(db, task.id, run.id, "tool", identifier)
                     db.execute(
                         "UPDATE tool_calls SET state='SUCCEEDED',result_json=?,updated_at=? WHERE id=?",
                         (json_dump(result), now_ms(), identity),

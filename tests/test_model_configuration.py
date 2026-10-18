@@ -258,6 +258,21 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
         self.assertEqual(len(self.captured), 1)
 
+    async def test_required_tool_choice_reaches_provider_and_text_is_rejected(self):
+        from ma_runtime.errors import RuntimeFault
+        config = self.config(kind="llm", command=(), llm_required=False, collaboration=True)
+        await self.rt.agents.configure(config)
+        session = await self.rt.sessions.create(title="Required tool transport")
+        thread = await self.rt.threads.create(session.id, config.id)
+        task = await self.rt.threads.turn(thread.id, "Verify", "required-transport",
+            tool_policy={"allowed": ["list_threads"], "required": ["list_threads"]})
+        with self.assertRaises(RuntimeFault):
+            await self.rt.tasks.result(task.id, timeout=10)
+        self.assertEqual(self.captured[-1]["body"]["tool_choice"], "required")
+        state = await self.rt.tasks.get(task.id)
+        self.assertEqual(state.state, "FAILED")
+        self.assertEqual(state.error["code"], "EXECUTION_REQUIREMENT_UNMET")
+
     async def test_native_agent_and_model_probe_use_the_shared_transport(self):
         config = self.config(
             kind="llm", command=(), llm_required=False, collaboration=False

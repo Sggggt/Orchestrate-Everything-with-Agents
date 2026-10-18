@@ -50,6 +50,7 @@ def skill_catalog(skills):
             "name": s.name,
             "description": s.description,
             "path": f"skills/{s.id}/SKILL.md",
+            **({"revision": s.revision} if s.revision else {}),
         }
         for s in skills
         if s.enabled

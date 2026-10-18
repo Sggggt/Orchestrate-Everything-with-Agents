@@ -320,7 +320,16 @@ class Workflows:
         self._key(idempotency_key)
         parsed = WorkflowGraph.model_validate(graph if graph is not None else default_graph())
         parsed = WorkflowGraph.model_validate(self.rt.clean_json(parsed.model_dump(mode="json"), limit=1024 * 1024))
-        digest = content_hash({"name": title, "description": description, "graph": parsed})
+        # Optional auto policies must not invalidate pre-existing creation keys.
+        from .models import UsePolicy
+        canonical = parsed.model_dump(mode="json")
+        default_policy = UsePolicy().model_dump(mode="json")
+        for node in canonical["nodes"]:
+            if node["type"] in {"agent", "map"}:
+                for key in ("tool_policy", "skill_policy"):
+                    if node["config"].get(key) == default_policy:
+                        node["config"].pop(key)
+        digest = content_hash({"name": title, "description": description, "graph": canonical})
         def insert(db):
             resolve_project(db, project_id)
             old = one(db, "SELECT * FROM workflows WHERE project_id=? AND creation_key=?", (project_id, idempotency_key))
@@ -659,6 +668,7 @@ class Workflows:
         task = TaskSpec(session_id=run.session_id, thread_id=thread_id, agent_id=identity, payload=payload,
                         idempotency_key=f"{run.id}:{spec.id}", attempt_timeout_s=spec.config["attempt_timeout_s"],
                         max_attempts=spec.config["max_attempts"], retry_policy=spec.config["retry_policy"],
+                        tool_policy=spec.config.get("tool_policy", {}), skill_policy=spec.config.get("skill_policy", {}),
                         metadata={"workflow_id": run.workflow_id, "workflow_run_id": run.id, "workflow_node_id": spec.id})
         return self.rt.tasks.insert(db, task).id
 
@@ -752,7 +762,8 @@ class Workflows:
                                     for index, item in enumerate(items)]
                         batch_spec = InstanceBatchSpec(session_id=run.session_id, agent_ids=spec.config["agent_ids"],
                             payloads=payloads, idempotency_key=f"{run.id}:{spec.id}",
-                            **{key: spec.config[key] for key in ("max_concurrency", "routing", "attempt_timeout_s", "max_attempts", "retry_policy")})
+                            **{key: spec.config[key] for key in ("max_concurrency", "routing", "attempt_timeout_s", "max_attempts", "retry_policy")},
+                            tool_policy=spec.config.get("tool_policy", {}), skill_policy=spec.config.get("skill_policy", {}))
                         batch = self.rt.instances.insert(db, batch_spec)
                         self._set_node(db, run, node, "RUNNING", inputs={"count": len(items)}, batch_id=batch["id"])
                         continue

@@ -22,8 +22,18 @@ class EventHub:
         self.runtime = runtime
         self.subscribers = {}
         self.summaries = OrderedDict()
+        self._changed = None
+
+    @property
+    def changed(self):
+        if self._changed is None:
+            self._changed = asyncio.Event()
+        return self._changed
 
     def notify(self):
+        if self._changed is not None:
+            self._changed.set()
+            self._changed = None
         for queue in tuple(self.subscribers):
             if not queue.full():
                 queue.put_nowait(None)

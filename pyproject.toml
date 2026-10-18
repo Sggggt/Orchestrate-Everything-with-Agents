@@ -31,4 +31,5 @@ multi-agent = "ma_runtime.cli:main"
 packages = ["src/oea", "src/ma_runtime", "agent"]
 
 [tool.hatch.build.targets.sdist]
+exclude = ["/skills", "/mcp", "/PROJECT_SPEC.md", "/AGENTS.md"]
 include = ["src/", "agent/", "docs/", "examples/", "tests/", "integrations/", "scripts/", ".github/", "README.md", "README.zh-CN.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "pyproject.toml", "constraints.txt", "Start-Workspace.ps1", "Start-Workspace.cmd", ".gitignore", ".gitattributes"]

@@ -36,6 +36,10 @@ Tasks may queue, run, wait, finish, fail, cancel or become uncertain. A timeout 
 
 ## Execution and access
 
+The session operations channel shares ordinary tasks, messages and durable events. A coordinator can actively inspect or test and passively receive compact reports; run-bound Agents can suspend for guidance. Internal notifications are coalesced and preserve unfinished task waits. Diagnostic work uses the same scheduler and grants. External chat activation belongs to its client, while the platform supplies event subscriptions and bounded inbox waits. See [operations and guidance](operations.md).
+
+Browser supervision uses Agent status colors in the existing views. It has no separate operations page or operations REST routes; reports and guidance remain Agent-facing SDK/RPC/MCP capabilities. Compact pending-report thread IDs join the existing session presentation and event refresh path without background polling.
+
 Adapters may run in-process or as managed JSONL subprocesses. Cancellation and checkpoint capabilities are explicitly described. The runtime controls global capacity, per-Agent concurrency and declared resources. Model settings are snapshotted per run; secrets are supplied from local encrypted storage. Skills and `AGENT.md` are loaded as instructions, with skill bodies read on demand.
 
 Agent tool access must satisfy both the run snapshot and current bindings. Administrator APIs are broader and must not be used by an Agent to evade revoked access. MCP tool results, messages, logs and imported skill text are untrusted inputs. Local process isolation is not a security sandbox.

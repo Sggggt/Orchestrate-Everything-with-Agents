@@ -1,6 +1,8 @@
 import { createIntegrationUI } from "/assets/integrations.js";
 import { markdown } from "/assets/markdown.mjs";
 import { createWorkflowUI } from "/assets/workflows.js";
+import { createAgentStatusIndex } from "/assets/agent-status.mjs";
+import { messageItems, matchesMessageFilter, agentFeedback } from "/assets/message-feed.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -72,11 +74,14 @@ const statuses = {
   OFFERED: "已交付",
   APPLIED: "已应用",
   REJECTED: "已拒绝",
+  REPORTED: "问题报告",
+  GUIDANCE: "请求指导",
+  REPLIED: "已回复",
 };
 const badge = (value) =>
   `<span class="badge ${escape(value)}">${escape(statuses[value] || value)}</span>`;
 const state = {
-  route: ["mcp", "agents", "settings", "workflows"].includes(location.hash.slice(1))
+  route: ["mcp", "skills", "agents", "settings", "workflows"].includes(location.hash.slice(1))
     ? location.hash.slice(1)
     : "workspace",
   mode: "overview",
@@ -101,6 +106,13 @@ const state = {
   selectedSkill: 0,
   profilePreview: false,
   mcpServers: [],
+  skillRegistry: { items: [], has_more: false, cursor: null },
+  skillDetail: null,
+  skillSource: "",
+  skillFile: "SKILL.md",
+  skillRaw: false,
+  skillQuery: "",
+  skillDirectory: "",
   mcpCatalogs: {},
   mcpId: null,
   mcpDraft: null,
@@ -130,7 +142,8 @@ const state = {
   messageFilter: "all",
   artifactQuery: "",
 };
-let eventSource, refreshTimer, toastTimer, modalReturnFocus;
+let eventSource, refreshTimer, toastTimer, modalReturnFocus, agentStates;
+let sessionMessages = [];
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED"]);
 const idempotency = () => crypto.randomUUID();
 const agent = (id) => state.agents.find((a) => a.id === id);
@@ -177,15 +190,15 @@ function readMessageIds(sessionId) {
 function hasUnreadMessages() {
   if (!state.session) return false;
   const read = readMessageIds(state.session.id);
-  return state.snapshot.messages.some((message) => !read.has(message.id));
+  return sessionMessages.some((message) => !read.has(message.id));
 }
 function markVisibleMessagesRead() {
   if (!state.session || state.route !== "workspace" || state.mode !== "messages" ||
       state.selectedThread || state.modal || state.sidebarOpen || document.visibilityState !== "visible") return;
   const read = readMessageIds(state.session.id);
   let changed = false;
-  for (const message of state.snapshot.messages) {
-    if ((state.messageFilter === "all" || state.messageFilter === message.state) && !read.has(message.id)) {
+  for (const message of sessionMessages) {
+    if (matchesMessageFilter(message, state.messageFilter) && !read.has(message.id)) {
       read.add(message.id);
       changed = true;
     }
@@ -201,7 +214,7 @@ function workspaceSections() {
   return [
     ["overview", "grid", "会话总览", 0],
     ["tasks", "flow", "任务与依赖", state.snapshot.tasks.length],
-    ["messages", "mail", "协作消息", state.snapshot.messages.length],
+    ["messages", "mail", "协作消息", sessionMessages.length],
     ["artifacts", "folder", "共享产物", state.snapshot.artifacts.length],
   ];
 }
@@ -221,6 +234,8 @@ const integrationUI = createIntegrationUI({
   time,
 });
 const workflowUI = createWorkflowUI({ state, escape, icon, badge, markdown, api, toast, render, idempotency, time });
+const agentStatusDot = (status) => `<span class="dot status-${status.tone}" title="${escape(status.label)}" role="img" aria-label="${escape(status.label)}"></span>`;
+const agentStatusBadge = (status) => `<span class="badge agent-state status-${status.tone}" title="当前会话 · ${escape(status.label)}">${escape(status.label)}</span>`;
 
 async function api(path, options = {}) {
   const headers = { ...options.headers };
@@ -279,6 +294,8 @@ function focusMemory() {
 }
 function render() {
   if (workflowUI.isInteracting()) return;
+  agentStates = createAgentStatusIndex(state.agents, state.snapshot, state.connection);
+  sessionMessages = messageItems(state.snapshot);
   markVisibleMessagesRead();
   const focus = focusMemory();
   const routeHash = "#" + state.route;
@@ -320,6 +337,8 @@ function shell() {
       ? "工作流画布"
       : state.route === "agents"
       ? "Agent 集成"
+      : state.route === "skills"
+        ? "Skill 集成"
       : state.route === "mcp"
         ? "MCP 集成"
         : state.route === "settings"
@@ -335,16 +354,16 @@ function shell() {
       <div class="workspace-switch"><span class="workspace-symbol">${icon("grid")}</span><div><span class="workspace-caption">当前会话</span><select id="workspace-select" class="workspace-select" aria-label="选择会话"><option value="">选择或创建会话</option>${state.sessions.map((s) => `<option value="${escape(s.id)}" ${state.session?.id === s.id ? "selected" : ""}>${escape(s.title)}${s.state !== "OPEN" ? " · 已关闭" : ""}</option>`).join("")}</select></div><button class="icon-btn" data-action="new-session" aria-label="创建会话" title="创建会话">${icon("plus")}</button><button class="icon-btn danger-icon" data-action="delete-session" aria-label="删除当前会话" title="删除会话" ${state.session ? "" : "disabled"}>${icon("trash")}</button></div>
       <button class="search-launcher" data-action="command">${icon("search")}<span>搜索或快速跳转</span><kbd>Ctrl K</kbd></button>
       <div class="section-label">工作区 <span>WORKSPACE</span></div>
-      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>会话总览</span>${unreadMessageDot()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流画布</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent 集成</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 集成</span><span class="nav-tag">${state.mcpServers.length}</span></button></nav>
+      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>会话总览</span>${unreadMessageDot()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流画布</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent 集成</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 集成</span><span class="nav-tag">${state.mcpServers.length}</span></button><button class="side-nav ${state.route === "skills" ? "active" : ""}" data-action="route" data-route="skills" ${state.route === "skills" ? 'aria-current="page"' : ""}>${icon("book")}<span>Skill 集成</span><span class="nav-tag">${state.skillRegistry.items.length}</span></button></nav>
       <div class="section-label">独立对话 <button class="icon-btn" data-action="open-agent" aria-label="打开 Agent 对话" title="打开 Agent 对话">${icon("plus")}</button></div>
-      <div class="thread-list">${state.snapshot.threads.map((t) => `<button class="thread-link ${state.route === "workspace" && state.selectedThread === t.id ? "active" : ""}" data-action="select-thread" data-id="${escape(t.id)}" title="${escape(t.title)}">${avatar(t.agent_id)}<span class="thread-name">${escape(t.title)}</span><span class="dot ${String(latestTask(t.id)?.state || "online").toLowerCase()}"></span></button>`).join("") || '<div class="thread-placeholder">每个 Agent，都有自己的思考空间。<button data-action="open-agent">开始第一段对话 ' + icon("arrow") + "</button></div>"}</div>
+      <div class="thread-list">${state.snapshot.threads.map((t) => `<button class="thread-link ${state.route === "workspace" && state.selectedThread === t.id ? "active" : ""}" data-action="select-thread" data-id="${escape(t.id)}" title="${escape(t.title)}">${avatar(t.agent_id)}<span class="thread-name">${escape(t.title)}</span>${agentStatusDot(agentStates.forThread(t))}</button>`).join("") || '<div class="thread-placeholder">每个 Agent，都有自己的思考空间。<button data-action="open-agent">开始第一段对话 ' + icon("arrow") + "</button></div>"}</div>
       <button class="external-card" data-action="codex"><span class="external-icon">${icon("terminal")}</span><span><strong>连接 Codex</strong><small>让你的协调者加入工作区</small></span>${icon("external")}</button>
       <div class="sidebar-footer"><button class="side-nav" data-action="open-trash">${icon("trash")}<span>回收站</span></button><button class="side-nav ${state.route === "settings" ? "active" : ""}" data-action="route" data-route="settings">${icon("settings")}<span>设置与配置</span></button><div class="local-status"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span>本地工作区<span>LOCAL</span></div></div>
     </aside>
     <main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="breadcrumb"><button class="icon-btn mobile-menu" data-action="toggle-sidebar" aria-label="切换导航" aria-expanded="${state.sidebarOpen}" aria-controls="workspace-nav">${icon("menu")}</button><span class="breadcrumb-root">工作区</span>${icon("chevron")}<strong>${escape(label || "会话总览")}</strong>${state.session ? `<span class="breadcrumb-divider"></span><span class="breadcrumb-session">${escape(state.session.title)}</span>` : ""}</div><div class="top-actions"><div class="connection"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span><span class="connection-text">${state.connection === "online" ? "本地连接正常" : state.connection === "connecting" ? "正在连接" : "正在重新连接"}</span></div><button class="icon-btn top-search" data-action="command" aria-label="搜索与快捷操作" title="搜索与快捷操作 · Ctrl K">${icon("search")}</button><span class="topbar-divider"></span><button class="btn" data-action="new-session">${icon("plus")}<span>新建会话</span></button></div></header>
       ${state.connection === "offline" ? '<div class="connection-banner">与本地服务的连接中断，正在重连。已接收的任务会继续执行。<button class="text-link" data-action="reconnect">重新连接</button></div>' : ""}
       ${state.route === "workspace" ? tabbar() : ""}
-      <div class="page-body">${state.route === "workflows" ? workflowUI.page() : state.route === "mcp" ? integrationUI.mcpPage() : state.route === "settings" ? settings() : state.route === "agents" ? agentsPage() : !state.session ? welcome() : state.selectedThread ? chat() : state.mode === "tasks" ? tasksPage() : state.mode === "messages" ? messagesPage() : state.mode === "artifacts" ? artifactsPage() : overview()}</div>
+      <div class="page-body">${state.route === "workflows" ? workflowUI.page() : state.route === "mcp" ? integrationUI.mcpPage() : state.route === "skills" ? integrationUI.skillPage() : state.route === "settings" ? settings() : state.route === "agents" ? agentsPage() : !state.session ? welcome() : state.selectedThread ? chat() : state.mode === "tasks" ? tasksPage() : state.mode === "messages" ? messagesPage() : state.mode === "artifacts" ? artifactsPage() : overview()}</div>
     </main></div>`;
 }
 function tabbar() {
@@ -403,11 +422,8 @@ function agentCards() {
         const tasks = state.snapshot.tasks.filter(
           (t) => t.spec?.agent_id === a.id,
         );
-        const running = tasks.filter((t) => t.state === "RUNNING").length;
         const done = tasks.filter((t) => t.state === "SUCCEEDED").length;
-        const available =
-          a.enabled && modelConfigured(a);
-        return `<article class="agent-card tone-${agentIndex(a.id)}"><div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.kind === "mock" ? "本地 Mock" : a.kind === "process" ? (requiresModel(a) ? `JSONL · ${a.model || "待配置模型"}` : "JSONL 执行端") : a.model || "尚未配置模型")}</div></div>${badge(!a.enabled ? "已禁用" : running ? "RUNNING" : available ? "准备就绪" : requiresModel(a) ? "待配置模型" : "待配置")}</div><p class="agent-description">${escape(a.system_prompt ? a.system_prompt.slice(0, 88) : a.kind === "mock" ? "在本地验证想法与协作流程，无需连接外部 API。" : a.kind === "process" ? "连接你的执行框架，在独立上下文中完成任务。" : "独立的模型与上下文，随时准备参与下一项工作。")}</p><div class="agent-card-tags"><span>${icon("chat")}${state.snapshot.threads.filter((t) => t.agent_id === a.id).length} 个对话</span><span>${icon("check")}${done} 项完成</span><span class="agent-kind">${escape(a.kind === "llm" ? "API" : a.kind === "mock" ? "LOCAL" : "PROCESS")}</span></div>${requiresModel(a) && !modelConfigured(a) ? `<p class="agent-model-reminder">需要配置模型 API <button class="text-link" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general">去配置 →</button></p>` : ""}${integrationUI.agentDocumentLinks(a)}<div class="agent-card-detail"><button class="agent-new" data-action="new-agent-thread" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>${icon("plus")}独立对话</button><button class="agent-open" data-action="agent-chat" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>打开 Agent ${icon("arrow")}</button></div></article>`;
+        return `<article class="agent-card tone-${agentIndex(a.id)}"><div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.kind === "mock" ? "本地 Mock" : a.kind === "process" ? (requiresModel(a) ? `JSONL · ${a.model || "待配置模型"}` : "JSONL 执行端") : a.model || "尚未配置模型")}</div></div>${agentStatusBadge(agentStates.forAgent(a.id))}</div><p class="agent-description">${escape(a.system_prompt ? a.system_prompt.slice(0, 88) : a.kind === "mock" ? "在本地验证想法与协作流程，无需连接外部 API。" : a.kind === "process" ? "连接你的执行框架，在独立上下文中完成任务。" : "独立的模型与上下文，随时准备参与下一项工作。")}</p><div class="agent-card-tags"><span>${icon("chat")}${state.snapshot.threads.filter((t) => t.agent_id === a.id).length} 个对话</span><span>${icon("check")}${done} 项完成</span><span class="agent-kind">${escape(a.kind === "llm" ? "API" : a.kind === "mock" ? "LOCAL" : "PROCESS")}</span></div>${requiresModel(a) && !modelConfigured(a) ? `<p class="agent-model-reminder">需要配置模型 API <button class="text-link" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general">去配置 →</button></p>` : ""}${integrationUI.agentDocumentLinks(a)}<div class="agent-card-detail"><button class="agent-new" data-action="new-agent-thread" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>${icon("plus")}独立对话</button><button class="agent-open" data-action="agent-chat" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>打开 Agent ${icon("arrow")}</button></div></article>`;
       })
       .join("") ||
     empty(
@@ -453,7 +469,7 @@ function overview() {
           `<div class="stat-card"><div><div class="stat-label">${label}</div><div class="stat-number">${value}</div><div class="stat-foot">${foot}</div></div><span class="stat-icon ${tone}">${icon(ico)}</span></div>`,
       )
       .join("")}</div>
-    <div class="overview-columns"><div class="overview-primary"><div class="section-heading"><h2>你的 Agent <span class="section-count">${state.agents.filter((a) => a.kind !== "external").length}</span></h2><button class="text-link" data-action="route" data-route="agents">管理团队 ${icon("arrow")}</button></div><div class="agent-grid">${agentCards()}</div></div><aside class="overview-secondary"><div class="section-heading"><h2>协作脉搏</h2><span class="live-label"><span class="dot online"></span>实时</span></div><div class="pulse-card"><div class="pulse-head"><span>工作区状态</span>${icon("activity")}</div><strong class="pulse-title">${running ? "想法正在推进" : attention ? "有任务需要关注" : "一切准备就绪"}</strong><div class="capacity-slots" aria-label="全局活跃 ${state.runtime.active || 0}，待核对 ${state.runtime.uncertain_slots || 0}，总执行槽 ${state.config.max_concurrency || 16}">${Array.from({ length: state.config.max_concurrency || 16 }, (_, i) => `<span class="${i >= capacity ? "reserved" : i < (state.runtime.active || 0) ? "occupied" : i < (state.runtime.active || 0) + (state.runtime.uncertain_slots || 0) ? "isolated" : ""}">${icon(i >= capacity ? "terminal" : "agents")}</span>`).join("")}</div><div class="capacity-legend"><span>全局执行槽</span><strong>${capacity} 可调度 / ${state.config.reserved_external_slots || 0} 预留</strong></div><div class="pulse-metrics"><div><span>对话上下文</span><strong>${state.snapshot.threads.length}</strong></div><div><span>待应用消息</span><strong>${state.snapshot.messages.filter((m) => m.state === "PENDING").length}</strong></div><div><span>共享产物</span><strong>${state.snapshot.artifacts.length}</strong></div></div>${attention ? `<button class="attention-link" data-action="task-filter-link" data-filter="attention">${icon("activity")}${attention} 个任务需要关注 ${icon("arrow")}</button>` : '<div class="pulse-note">' + icon("shield") + "执行状态持续保存在本机</div>"}</div><button class="connection-card" data-action="codex"><span class="connection-card-icon">${icon("terminal")}</span><strong>连接你的协调者</strong><p>在 Codex 中讨论，在这里<br>让整个团队一起行动。</p><span>查看接入方式 ${icon("arrow")}</span></button></aside></div>
+    <div class="overview-columns"><div class="overview-primary"><div class="section-heading"><h2>你的 Agent <span class="section-count">${state.agents.filter((a) => a.kind !== "external").length}</span></h2><button class="text-link" data-action="route" data-route="agents">管理团队 ${icon("arrow")}</button></div><div class="agent-grid">${agentCards()}</div>${recentFeedback()}</div><aside class="overview-secondary"><div class="section-heading"><h2>协作脉搏</h2><span class="live-label"><span class="dot online"></span>实时</span></div><div class="pulse-card"><div class="pulse-head"><span>工作区状态</span>${icon("activity")}</div><strong class="pulse-title">${running ? "想法正在推进" : attention ? "有任务需要关注" : "一切准备就绪"}</strong><div class="capacity-slots" aria-label="全局活跃 ${state.runtime.active || 0}，待核对 ${state.runtime.uncertain_slots || 0}，总执行槽 ${state.config.max_concurrency || 16}">${Array.from({ length: state.config.max_concurrency || 16 }, (_, i) => `<span class="${i >= capacity ? "reserved" : i < (state.runtime.active || 0) ? "occupied" : i < (state.runtime.active || 0) + (state.runtime.uncertain_slots || 0) ? "isolated" : ""}">${icon(i >= capacity ? "terminal" : "agents")}</span>`).join("")}</div><div class="capacity-legend"><span>全局执行槽</span><strong>${capacity} 可调度 / ${state.config.reserved_external_slots || 0} 预留</strong></div><div class="pulse-metrics"><div><span>对话上下文</span><strong>${state.snapshot.threads.length}</strong></div><div><span>待应用消息</span><strong>${state.snapshot.messages.filter((m) => m.state === "PENDING").length}</strong></div><div><span>共享产物</span><strong>${state.snapshot.artifacts.length}</strong></div></div>${attention ? `<button class="attention-link" data-action="task-filter-link" data-filter="attention">${icon("activity")}${attention} 个任务需要关注 ${icon("arrow")}</button>` : '<div class="pulse-note">' + icon("shield") + "执行状态持续保存在本机</div>"}</div><button class="connection-card" data-action="codex"><span class="connection-card-icon">${icon("terminal")}</span><strong>连接你的协调者</strong><p>在 Codex 中讨论，在这里<br>让整个团队一起行动。</p><span>查看接入方式 ${icon("arrow")}</span></button></aside></div>
     <div class="section-heading recent-heading"><h2>最近任务 <span class="subtitle">每一步进展，都在这里</span></h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${
       tasks.length
         ? `<div class="activity-list">${tasks
@@ -596,23 +612,32 @@ function tasksPage() {
     )}</div><div class="filter-tools"><label class="inline-search">${icon("search")}<input id="task-search" data-focus="task-search" value="${escape(state.taskQuery)}" placeholder="搜索任务…" aria-label="搜索任务"></label><div class="view-switch" aria-label="任务视图"><button data-action="task-view" data-view="list" class="${state.taskView === "list" ? "active" : ""}" aria-label="列表视图" aria-pressed="${state.taskView === "list"}">${icon("list")}</button><button data-action="task-view" data-view="board" class="${state.taskView === "board" ? "active" : ""}" aria-label="看板视图" aria-pressed="${state.taskView === "board"}">${icon("board")}</button></div></div></div><div id="task-results">${taskResults()}</div>
     <div class="section-heading"><h2>资源与隔离 <span class="subtitle">保障协作中的有序访问</span></h2><button class="btn small" data-action="resources">${icon("refresh")}刷新</button></div>${state.resources.length ? state.resources.map((r) => `<div class="message-card"><strong>${escape(r.key)}</strong>${r.holders.map((h) => `<p>${escape(h.mode)} · ${h.isolated ? "待核对隔离" : "占用中"} · ${escape(h.owner)}</p>`).join("")}</div>`).join("") : '<div class="resource-clear">' + icon("shield") + '<div><strong>当前没有额外资源占用</strong><p>任务声明的共享或独占资源会显示在这里。</p></div><span class="badge">可用</span></div>'}</section>`;
 }
+function messageCard(m, compact = false) {
+  const report = m.kind === "report", source = report || m.envelope?.source_run_id ? thread(m.source_thread_id) : null,
+    taskId = report ? m.task_id : m.envelope?.source_task_id;
+  return `<article class="message-card ${compact ? "feedback-card" : ""}"><div class="message-route">${source ? avatar(source.agent_id) : icon("terminal")}<strong>${escape(source?.title || "外部协调者")}</strong>${report ? `<span class="message-kind">Agent 报告</span>` : `${icon("arrow")}<strong>${escape(thread(m.target_thread_id)?.title || m.target_thread_id)}</strong>`}${badge(m.state)}</div><div class="message-text markdown">${markdown(m.summary_markdown)}</div><footer><span>${time(m.created_at)}${report ? " · 报告摘要" : ` · ${escape(m.target_port)} · ${escape(m.envelope?.message_type || "")}`}</span><div class="message-actions">${taskId ? `<button class="text-link" data-action="task-detail" data-id="${escape(taskId)}">查看任务 ${icon("arrow")}</button>` : ""}${!compact && !report && m.state === "PENDING" ? `<button class="text-link" data-action="process-target" data-id="${escape(m.target_thread_id)}">启动接收任务 ${icon("arrow")}</button>` : ""}</div></footer></article>`;
+}
+function recentFeedback() {
+  const items = agentFeedback(sessionMessages);
+  if (!items.length) return "";
+  return `<section class="agent-feedback" aria-labelledby="agent-feedback-title"><div class="section-heading"><h2 id="agent-feedback-title">Agent 反馈 <span class="subtitle">最近消息与报告</span></h2><button class="text-link" data-action="mode" data-mode="messages">查看全部 ${icon("arrow")}</button></div><div class="feedback-list">${items.map(item => messageCard(item, true)).join("")}</div></section>`;
+}
 function messagesPage() {
-  const messages = state.snapshot.messages.filter(
-    (m) => state.messageFilter === "all" || m.state === state.messageFilter,
-  );
+  const all = sessionMessages, messages = all.filter(m => matchesMessageFilter(m, state.messageFilter));
   return `<section class="panel-page"><div class="page-heading"><div><p class="eyebrow">CONNECTED CONTEXTS</p><h1>协作消息<span class="heading-dot">.</span></h1><p>让独立的思考彼此连接，每一次交接都有回音。</p></div><button class="btn primary" data-action="compose-message">${icon("send")}发送消息</button></div><div class="filter-toolbar"><div class="filter-tabs" aria-label="消息状态筛选">${[
     ["all", "全部消息"],
+    ["reports", "报告与指导"],
     ["PENDING", "待应用"],
     ["OFFERED", "已交付"],
     ["APPLIED", "已应用"],
   ]
     .map(
       ([filter, title]) =>
-        `<button class="filter-tab ${state.messageFilter === filter ? "active" : ""}" data-action="message-filter" data-filter="${filter}" aria-pressed="${state.messageFilter === filter}">${title}<span>${state.snapshot.messages.filter((m) => filter === "all" || m.state === filter).length}</span></button>`,
+        `<button class="filter-tab ${state.messageFilter === filter ? "active" : ""}" data-action="message-filter" data-filter="${filter}" aria-pressed="${state.messageFilter === filter}">${title}<span>${all.filter(m => matchesMessageFilter(m, filter)).length}</span></button>`,
     )
     .join(
       "",
-    )}</div></div>${messages.length ? messages.map((m) => `<article class="message-card"><div class="message-route">${avatar(thread(m.source_thread_id)?.agent_id)}<strong>${escape(m.envelope?.source_run_id ? thread(m.source_thread_id)?.title || "源 Agent" : "外部协调者")}</strong>${icon("arrow")}<strong>${escape(thread(m.target_thread_id)?.title || m.target_thread_id)}</strong>${badge(m.state)}</div><div class="message-text">${markdown(m.envelope?.payload?.summary_markdown || "协作消息已保存，完整内容已传递给接收 Agent。")}</div><footer><span>${time(m.created_at)} · ${escape(m.target_port)} · ${escape(m.envelope?.message_type || "")}</span>${m.state === "PENDING" ? `<button class="text-link" data-action="process-target" data-id="${escape(m.target_thread_id)}">启动接收任务 ${icon("arrow")}</button>` : ""}</footer></article>`).join("") : empty(state.messageFilter === "all" ? "好的协作，从分享信息开始" : "此状态下暂无消息", state.messageFilter === "all" ? "把发现、建议或文件引用，传递给同一会话中的 Agent。" : "切换状态，查看其他协作消息。", "compose-message", "发送协作消息")}</section>`;
+    )}</div></div>${messages.length ? messages.map(m => messageCard(m)).join("") : empty(state.messageFilter === "all" ? "好的协作，从分享信息开始" : "此状态下暂无消息", state.messageFilter === "all" ? "把发现、建议或文件引用，传递给同一会话中的 Agent。" : "切换状态，查看其他协作消息。", "compose-message", "发送协作消息")}</section>`;
 }
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -704,7 +729,7 @@ function settings() {
     .filter((a) => a.kind !== "external")
     .map(
       (a) =>
-        `<button class="settings-agent ${state.settingsId === a.id ? "active" : ""}" data-action="select-settings" data-id="${escape(a.id)}">${avatar(a.id)}${escape(a.name)}<span class="dot ${a.enabled ? "online" : "offline"}"></span></button>`,
+        `<button class="settings-agent ${state.settingsId === a.id ? "active" : ""}" data-action="select-settings" data-id="${escape(a.id)}">${avatar(a.id)}${escape(a.name)}${agentStatusDot(agentStates.forAgent(a.id))}</button>`,
     )
     .join(
       "",
@@ -981,7 +1006,7 @@ function renderModal() {
   }
   if (m.type === "codex") {
     title = "连接外部 Codex";
-    content = `<div class="codex-guide"><h3>${icon("terminal")}对话留在 Codex，协作通过接口进行</h3><p>平台不接管 Codex 的模型、密钥和聊天。当前为外部执行预留 <strong>${state.config.reserved_external_slots || 0}</strong> 个槽。</p></div><p><strong>CLI</strong><br><code>oea request METHOD --params-file PATH</code></p><p><strong>MCP · 连接已启动的平台</strong><br><code>oea mcp --connect</code></p><p><strong>HTTP</strong><br>协调端使用本机凭据调用 <code>/api/rpc</code>，可提交子任务、查询结果、发送协作消息和获取产物引用。</p><p class="form-hint">完整参数与生命周期约定见仓库的接口说明。参数文件、凭据和输出存放在源码目录之外。</p>`;
+    content = `<div class="codex-guide"><h3>${icon("terminal")}对话留在 Codex，协作通过接口进行</h3><p>平台不接管 Codex 的模型、密钥和聊天。当前为外部执行预留 <strong>${state.config.reserved_external_slots || 0}</strong> 个槽。</p></div><p><strong>CLI</strong><br><code>oea request METHOD --params-file PATH</code></p><p><strong>MCP · 连接已启动的平台</strong><br><code>oea mcp --connect --compact</code></p><p><strong>HTTP</strong><br>协调端使用本机凭据调用 <code>/api/rpc</code>，可提交子任务、查询结果、发送协作消息和获取产物引用。</p><p class="form-hint">完整参数与生命周期约定见仓库的接口说明。参数文件、凭据和输出存放在源码目录之外。</p>`;
     footer =
       '<button class="btn primary" data-action="mcp-sdk">SDK 与共享 MCP 接入</button><button class="btn" data-action="close-modal">知道了</button>';
   }
@@ -1028,6 +1053,7 @@ async function loadBootstrap(projectId = state.project?.id || localStorage.getIt
     project: value.project,
     agents: value.agents,
     mcpServers: value.mcp_servers || [],
+    skillRegistry: value.skill_registry || { items: [] },
     sessions: value.sessions,
     config: value.config,
     runtime: value.runtime,
@@ -1131,8 +1157,22 @@ function connectEvents(epoch) {
     `/api/sessions/${encodeURIComponent(state.session.id)}/events?after_seq=${state.cursor}`,
   );
   eventSource = source;
-  eventSource.onopen = () => {
+  eventSource.onopen = async () => {
     if (epoch !== state.sessionEpoch || source !== eventSource) return;
+    if (state.connection === "offline") {
+      state.connection = "connecting";
+      render();
+      try {
+        await refreshSession();
+      } catch (error) {
+        if (epoch !== state.sessionEpoch || source !== eventSource) return;
+        state.connection = "offline";
+        render();
+        toast(error.message, true);
+        return;
+      }
+      if (epoch !== state.sessionEpoch || source !== eventSource) return;
+    }
     state.connection = "online";
     render();
   };
@@ -1191,6 +1231,8 @@ function connectEvents(epoch) {
 }
 async function resync() {
   if (!state.session) return;
+  state.connection = "connecting";
+  render();
   const epoch = state.sessionEpoch,
     generation = ++state.syncGeneration;
   eventSource?.close();
@@ -1204,6 +1246,19 @@ async function resync() {
   connectEvents(state.sessionEpoch);
   await refreshConversation(state.selectedThread);
   render();
+}
+async function reconnect() {
+  state.connection = "connecting";
+  render();
+  try {
+    await loadBootstrap();
+    if (state.session) await resync();
+    else render();
+  } catch (error) {
+    state.connection = "offline";
+    render();
+    throw error;
+  }
 }
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
@@ -1229,6 +1284,7 @@ async function refreshSession() {
   state.agents = bootstrap.agents;
   state.sessions = bootstrap.sessions;
   state.mcpServers = bootstrap.mcp_servers || [];
+  state.skillRegistry = bootstrap.skill_registry || { items: [] };
   state.session = snapshot.session;
   await refreshConversation(state.selectedThread);
   for (const [id] of state.streams) {
@@ -1489,16 +1545,14 @@ async function action(name, element) {
     render();
   }
   if (name === "reconnect") {
-    await loadBootstrap();
-    if (state.session) await resync();
-    else render();
+    await reconnect();
   }
   if (name === "route") {
     state.route = element.dataset.route;
     state.modal = null;
     render();
     $(".page-body").scrollTop = 0;
-    if (state.route === "mcp") {
+    if (["mcp", "skills"].includes(state.route)) {
       await loadBootstrap();
       render();
     }
@@ -1793,12 +1847,15 @@ async function action(name, element) {
       payload: { input: r.input },
       depends_on: r.dependency === "" ? [] : [`node-${r.dependency}`],
     }));
-    await api("/workflows", {
+    await api("/rpc", {
       method: "POST",
       body: {
-        session_id: state.session.id,
-        nodes,
-        idempotency_key: state.modal.key,
+        method: "tasks.workflow",
+        params: {
+          session_id: state.session.id,
+          nodes,
+          idempotency_key: state.modal.key,
+        },
       },
     });
     state.modal = null;
@@ -1948,6 +2005,7 @@ document.addEventListener("submit", async (event) => {
         "system_prompt",
         "agent_md",
         "skills",
+        "skill_bindings",
         "mcp_bindings",
         "temperature",
         "max_output_tokens",
@@ -2113,7 +2171,7 @@ async function boot() {
 window.addEventListener("hashchange", () => {
   const route = location.hash.slice(1);
   if (
-    ["workspace", "mcp", "agents", "settings", "workflows"].includes(route) &&
+    ["workspace", "mcp", "skills", "agents", "settings", "workflows"].includes(route) &&
     route !== state.route
   ) {
     state.route = route;
@@ -2123,6 +2181,10 @@ window.addEventListener("hashchange", () => {
   }
 });
 window.addEventListener("beforeunload", () => eventSource?.close());
+// A browser network change prompts one local check; loopback may remain usable
+// while the machine is offline. SSE errors still detect host-only outages.
+window.addEventListener("offline", () => reconnect().catch(() => {}));
+window.addEventListener("online", () => reconnect().catch(() => {}));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") render();
 });

@@ -32,13 +32,14 @@ class RemoteLLM:
         return await self.context._call("runtime.llm.info")
 
     async def complete(
-        self, messages, *, tools=None, include_instructions=True, emit_progress=False
+        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None
     ):
         request = LLMRequest(
             messages=messages,
             tools=tools,
             include_instructions=include_instructions,
             emit_progress=emit_progress,
+            tool_choice=tool_choice,
         )
         result = await self.context._call(
             "runtime.llm.complete", request=request.model_dump(mode="json")
@@ -59,6 +60,12 @@ class RemoteRunContext:
 
     async def list_threads(self):
         return await self._call("runtime.threads.list")
+
+    async def report_issue(self, summary, idempotency_key, details="", wait=False):
+        return await self._call("runtime.operations.report", summary=summary, idempotency_key=idempotency_key, details=details, wait=wait)
+
+    async def operations(self, action, params=None):
+        return await self._call("runtime.operations.call", action=action, params=params or {})
 
     async def list_tools(self):
         return await self._call("runtime.tools.list")

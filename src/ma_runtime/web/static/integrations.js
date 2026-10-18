@@ -1,3 +1,4 @@
+import { createSkillIntegration } from "./skills.js";
 /* MCP registry and per-Agent profile editors. No external browser dependencies. */
 export function createIntegrationUI({
   state,
@@ -13,11 +14,13 @@ export function createIntegrationUI({
   loadBootstrap,
   time,
 }) {
+  const skillUI = createSkillIntegration({ state, escape, icon, markdown, api, toast, render, loadBootstrap });
   const server = (id) => state.mcpServers.find((s) => s.id === id);
   const mcpFields = [
     "id",
     "name",
     "description",
+    "source_directory",
     "transport",
     "command",
     "args",
@@ -100,7 +103,7 @@ export function createIntegrationUI({
   }
   function mcpPage() {
     if (state.mcpDraft) return mcpEditor();
-    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 集成<span class="heading-dot">.</span></h1><p>一次注册，按需分配。连接你的工具，也连接每个 Agent 的可能性。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button></div></div><div class="integration-banner"><span class="integration-banner-icon">${icon("plug")}</span><div><h2>你的团队，共享同一座工具库。</h2><p>平台统一管理连接、权限与调用记录。每个 Agent 保留自己的指令、技能和上下文。</p></div><button class="btn" data-action="mcp-sdk">${icon("terminal")}SDK 与 Codex 接入</button></div><div class="integration-stats">${[
+    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 集成<span class="heading-dot">.</span></h1><p>一次注册，按需分配。连接你的工具，也连接每个 Agent 的可能性。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button></div></div><div class="form-section directory-registration"><div class="section-heading"><div><h2>从目录注册 MCP</h2><p class="form-hint">选择含 mcp.json 的目录。连接配置在目录中维护，凭据在注册后单独设置。</p></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" placeholder="含 mcp.json 的绝对目录路径"></label><button class="btn primary" data-action="mcp-directory-register">${icon("plus")}注册目录</button></div></div><div class="integration-banner"><span class="integration-banner-icon">${icon("plug")}</span><div><h2>你的团队，共享同一座工具库。</h2><p>平台统一管理连接、权限与调用记录。每个 Agent 保留自己的指令、技能和上下文。</p></div><button class="btn" data-action="mcp-sdk">${icon("terminal")}SDK 与 Codex 接入</button></div><div class="integration-stats">${[
       ["已注册服务", state.mcpServers.length],
       [
         "已连接",
@@ -164,7 +167,7 @@ export function createIntegrationUI({
       [
         ["general", "基础配置", "settings"],
         ["instructions", "AGENT.md", "file"],
-        ["skills", `Skills ${(d.skills || []).length}`, "book"],
+        ["skills", `Skills ${(d.skills || []).length + (d.skill_bindings || []).length}`, "book"],
         ["mcp", `MCP 工具 ${(d.mcp_bindings || []).length}`, "plug"],
       ],
       state.settingsTab,
@@ -174,6 +177,7 @@ export function createIntegrationUI({
   function profilePanel() {
     const d = state.settingsDraft;
     d.skills ||= [];
+    d.skill_bindings ||= [];
     d.mcp_bindings ||= [];
     if (state.settingsTab === "instructions")
       return `<section class="form-section document-section"><div class="section-heading"><div><h3>AGENT.md</h3><p class="form-hint">定义这个 Agent 的职责、工作方式与交付要求。每次执行都会加载。</p></div><div class="inline-actions"><button type="button" class="btn small" data-action="agent-import-md">${icon("download")}导入</button><button type="button" class="btn small" data-action="profile-preview">${icon("file")}${state.profilePreview ? "编辑" : "预览"}</button></div></div>${state.profilePreview ? `<div class="markdown-preview">${markdown(d.agent_md || "尚未填写 AGENT.md。")}</div>` : `<label class="field"><span class="sr-only">AGENT.md 内容</span><textarea class="code-editor document-editor" data-setting="agent_md" data-focus="setting-agent_md" placeholder="# 角色与目标\n\n描述这个 Agent 应该如何工作。" spellcheck="false">${escape(d.agent_md || "")}</textarea></label>`}<div class="document-foot"><span>AGENT.md</span><span>独立于其他 Agent · 保存后生效</span></div></section>`;
@@ -182,6 +186,11 @@ export function createIntegrationUI({
     return "";
   }
   function skillPanel() {
+    const linked = state.settingsDraft.skill_bindings;
+    const registry = state.skillRegistry?.items || [];
+    return `<section class="form-section"><div class="section-heading"><div><h3>关联平台 Skill</h3><p class="form-hint">共享技能按需读入；关联不会授予 MCP 工具权限。派发任务时可进一步指定加载范围。</p></div><button type="button" class="btn small" data-action="route" data-route="skills">${icon("book")}管理 Skill</button></div><div class="binding-list">${registry.map(s => `<article class="binding-card ${linked.some(b => b.skill_id === s.id) ? "selected" : ""}"><label class="binding-header"><input type="checkbox" data-skill-binding="${escape(s.id)}" data-focus="skill-binding-${escape(s.id)}" ${linked.some(b => b.skill_id === s.id) ? "checked" : ""}><span class="integration-avatar">${icon("book")}</span><span><strong>${escape(s.name)}</strong><small>${escape(s.description)}</small></span><span class="badge">${s.enabled ? "已启用" : "已禁用"}</span></label><button type="button" class="text-link" data-action="registry-skill-select" data-id="${escape(s.id)}">查看 SKILL.md</button></article>`).join("") || '<p class="form-hint">先在 Skill 集成页注册目录，再为 Agent 关联。</p>'}</div></section>${state.settingsDraft.skills.length ? `<details class="form-section"><summary>已有内嵌技能 · ${state.settingsDraft.skills.length}</summary>${legacySkillPanel()}</details>` : ""}`;
+  }
+  function legacySkillPanel() {
     const skills = state.settingsDraft.skills;
     const index = Math.min(state.selectedSkill, Math.max(0, skills.length - 1)),
       skill = skills[index];
@@ -205,7 +214,7 @@ export function createIntegrationUI({
     }</section>`;
   }
   function agentDocumentLinks(a) {
-    return `<div class="agent-doc-links"><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="instructions" title="编辑 ${escape(a.name)} 的 AGENT.md">${icon("file")}AGENT.md<span class="dot ${a.agent_md ? "online" : "offline"}"></span></button><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="skills">${icon("book")}Skills ${(a.skills || []).filter((s) => s.enabled).length}</button><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="mcp">${icon("plug")}MCP ${(a.mcp_bindings || []).length}</button></div>`;
+    return `<div class="agent-doc-links"><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="instructions" title="编辑 ${escape(a.name)} 的 AGENT.md">${icon("file")}AGENT.md<span class="dot ${a.agent_md ? "online" : "offline"}"></span></button><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="skills">${icon("book")}Skills ${(a.skills || []).filter((s) => s.enabled).length + (a.skill_bindings || []).length}</button><button data-action="configure-agent" data-id="${escape(a.id)}" data-tab="mcp">${icon("plug")}MCP ${(a.mcp_bindings || []).length}</button></div>`;
   }
   function mcpModal(m) {
     if (m.type === "mcp-import")
@@ -328,6 +337,7 @@ export function createIntegrationUI({
     });
   }
   async function action(name, element) {
+    if (await skillUI.action(name, element)) return true;
     const id = element.dataset.id;
     if (name === "configure-agent") {
       const a = state.agents.find((a) => a.id === id);
@@ -577,7 +587,7 @@ export function createIntegrationUI({
       const servers = (await api("/mcp/codex-config")).mcp_servers;
       const serverName = servers.oea ? "oea" : "multi_agent";
       const config = servers[serverName];
-      m.text = `[mcp_servers.${serverName}]\ncommand = ${json(config.command)}\nargs = ${JSON.stringify(config.args)}\nstartup_timeout_sec = ${config.startup_timeout_sec}\ntool_timeout_sec = ${config.tool_timeout_sec}\nenv = { PYTHONUTF8 = "1", PYTHONDONTWRITEBYTECODE = "1" }`;
+      m.text = `[mcp_servers.${serverName}]\ncommand = ${json(config.command)}\nargs = ${JSON.stringify(config.args)}\nstartup_timeout_sec = ${config.startup_timeout_sec}\ntool_timeout_sec = ${config.tool_timeout_sec}\nenabled_tools = ${JSON.stringify(config.enabled_tools)}\nenv = { ${Object.entries(config.env).map(([key, value]) => `${json(key)} = ${json(value)}`).join(", ")} }`;
       m.sdk = `import asyncio\nfrom oea import PlatformClient\n\nasync def main():\n    async with PlatformClient.from_data_dir(${json(config.args.at(-1))}) as client:\n        servers = await client.mcp.list()\n        protocol = await client.protocol()\n        print(servers)\n\nasyncio.run(main())`;
       m.loading = false;
       if (state.modal === m) renderModal();
@@ -588,6 +598,7 @@ export function createIntegrationUI({
     return true;
   }
   function onInput(e) {
+    skillUI.input(e);
     if (e.id === "mcp-search") {
       state.mcpQuery = e.value;
       document.querySelector("#mcp-cards").innerHTML = mcpCards();
@@ -613,6 +624,12 @@ export function createIntegrationUI({
       state.modal.consumer = e.value;
   }
   async function onChange(e) {
+    if (e.dataset.skillBinding) {
+      state.settingsDraft.skill_bindings ||= [];
+      state.settingsDraft.skill_bindings = state.settingsDraft.skill_bindings.filter(b => b.skill_id !== e.dataset.skillBinding);
+      if (e.checked) state.settingsDraft.skill_bindings.push({ skill_id: e.dataset.skillBinding });
+      render();
+    }
     if (e.dataset.mcp === "transport") render();
     if (e.dataset.importMcp && state.modal?.type === "mcp-import") {
       state.modal.selected = state.modal.selected.filter(
@@ -648,6 +665,7 @@ export function createIntegrationUI({
     }
   }
   async function submit(event) {
+    if (await skillUI.submit(event)) return true;
     if (event.target.id !== "mcp-form") return false;
     if (state.mcpSaving) return true;
     const d = state.mcpDraft,
@@ -706,6 +724,7 @@ export function createIntegrationUI({
     return true;
   }
   return {
+    skillPage: skillUI.page,
     mcpPage,
     profileTabs,
     profilePanel,

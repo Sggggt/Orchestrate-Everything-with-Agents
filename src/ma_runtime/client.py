@@ -29,6 +29,8 @@ class _Namespace:
 
 
 class AgentClient(_Namespace):
+    async def capabilities(self, agent_id):
+        return await self.call("capabilities", agent_id=agent_id)
     async def list(self, project_id=None):
         return await self.call("list", project_id=project_id)
 
@@ -81,6 +83,8 @@ class AgentClient(_Namespace):
 
 
 class MCPClient(_Namespace):
+    async def register_directory(self, directory):
+        return await self.call("register_directory", directory=str(directory))
     """Control the platform-owned MCP clients, shared with Agents and Codex."""
 
     async def list(self):
@@ -185,6 +189,56 @@ class MCPClient(_Namespace):
 
     async def codex_config(self):
         return await super().call("codex_config")
+
+
+class SkillClient(_Namespace):
+    async def list(self, *, cursor=None, limit=50):
+        return await self.call("list", cursor=cursor, limit=limit)
+
+    async def get(self, skill_id):
+        return await self.call("get", skill_id=skill_id)
+
+    async def register_directory(self, directory, *, enabled=True):
+        return await self.call("register_directory", directory=str(directory), enabled=enabled)
+
+    async def refresh(self, skill_id):
+        return await self.call("refresh", skill_id=skill_id)
+
+    async def set_enabled(self, skill_id, enabled):
+        return await self.call("set_enabled", skill_id=skill_id, enabled=enabled)
+
+    async def read(self, skill_id, path="SKILL.md"):
+        return await self.call("read", skill_id=skill_id, path=path)
+
+    async def delete(self, skill_id):
+        return await self.call("delete", skill_id=skill_id)
+
+
+class OperationsClient(_Namespace):
+    async def bind(self, session_id, consumer_id, *, thread_id=None):
+        return await self.call("bind", session_id=session_id, consumer_id=consumer_id, thread_id=thread_id)
+
+    async def inspect(self, session_id, *, task_id=None):
+        return await self.call("inspect", session_id=session_id, task_id=task_id)
+
+    async def inbox(self, session_id, consumer_id, *, cursor=None, limit=20, timeout=0):
+        return await self.call("inbox", session_id=session_id, consumer_id=consumer_id, cursor=cursor, limit=limit, timeout=timeout)
+
+    async def read(self, session_id, event_id):
+        return await self.call("read", session_id=session_id, event_id=event_id)
+
+    async def report(self, session_id, summary, idempotency_key, *, details=""):
+        return await self.call("report", session_id=session_id, summary=summary, idempotency_key=idempotency_key, details=details)
+
+    async def reply(self, report_id, consumer_id, content, idempotency_key):
+        return await self.call("reply", report_id=report_id, consumer_id=consumer_id, content=content, idempotency_key=idempotency_key)
+
+    async def ack(self, session_id, consumer_id, cursor):
+        return await self.call("ack", session_id=session_id, consumer_id=consumer_id, cursor=cursor)
+
+    async def test(self, session_id, agent_id, input, idempotency_key, *, tool_policy=None, skill_policy=None):
+        return await self.call("test", session_id=session_id, agent_id=agent_id, input=input, idempotency_key=idempotency_key,
+                               tool_policy=tool_policy, skill_policy=skill_policy)
 
 
 class ProjectClient(_Namespace):
@@ -371,6 +425,8 @@ class PlatformClient:
             transport=transport,
         )
         self.agents, self.mcp = AgentClient(self, "agents"), MCPClient(self, "mcp")
+        self.skills = SkillClient(self, "skills")
+        self.operations = OperationsClient(self, "operations")
         self.projects = ProjectClient(self, "projects")
         self.workflows = WorkflowClient(self, "workflows")
         self.instances = InstanceClient(self, "instances")

@@ -249,6 +249,7 @@ def create_app(
             "project": selected,
             "agents": await rt().agents.list(project_id=selected.id) if selected else [],
             "mcp_servers": await rt().mcp.list(),
+            "skill_registry": await rt().skills.list(limit=200),
             "sessions": (await rt().sessions.list(project_id=selected.id))["items"] if selected else [],
             "config": rt().config.model_dump(),
             "runtime": {
@@ -587,6 +588,42 @@ def create_app(
     @app.delete("/api/agents/{agent_id}/skills/{skill_id}")
     async def agent_skill_delete(agent_id: str, skill_id: str):
         return await rt().agents.skill_delete(agent_id, skill_id)
+
+    @app.get("/api/skills")
+    async def skills_registry(cursor: str | None = None, limit: int = 50):
+        return await rt().skills.list(cursor, limit)
+
+    @app.post("/api/skills/register-directory")
+    async def skill_register_directory(request: Request):
+        return await invoke(rt().skills.register_directory, **await body(request))
+
+    @app.get("/api/skills/{skill_id}")
+    async def skill_details(skill_id: str):
+        return await rt().skills.get(skill_id)
+
+    @app.get("/api/skills/{skill_id}/read")
+    async def skill_read(skill_id: str, path: str = "SKILL.md"):
+        return await rt().skills.read(skill_id, path)
+
+    @app.post("/api/skills/{skill_id}/refresh")
+    async def skill_refresh(skill_id: str):
+        return await rt().skills.refresh(skill_id)
+
+    @app.patch("/api/skills/{skill_id}")
+    async def skill_enabled(skill_id: str, request: Request):
+        return await invoke(rt().skills.set_enabled, skill_id, **await body(request))
+
+    @app.delete("/api/skills/{skill_id}")
+    async def skill_remove(skill_id: str):
+        return await rt().skills.delete(skill_id)
+
+    @app.post("/api/mcp/register-directory")
+    async def mcp_register_directory(request: Request):
+        return await invoke(rt().mcp.register_directory, **await body(request))
+
+    @app.get("/api/agents/{agent_id}/capabilities")
+    async def agent_capabilities(agent_id: str):
+        return await rt().agents.capabilities(agent_id)
 
     @app.get("/api/mcp/servers")
     async def mcp_servers():

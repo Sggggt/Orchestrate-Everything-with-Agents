@@ -17,6 +17,7 @@ from ma_runtime.models import (
     TaskResult,
     TaskSpec,
     WaitCondition,
+    UsePolicy,
     json_dump,
 )
 
@@ -54,13 +55,16 @@ COLLABORATION_TOOLS = [
             "thread_id": {"type": "string"},
             "agent_id": {"type": "string"},
             "input": {"type": "string"},
+            "tool_policy": {**UsePolicy.model_json_schema(), "description": "Task tool restrictions; stable mcp:server_id:tool_name or platform names."},
+            "skill_policy": {**UsePolicy.model_json_schema(), "description": "Task Skill restrictions; allowed and required linked Skill IDs."},
         },
         ["thread_id", "agent_id", "input"],
     ),
     function(
         "wait_for_tasks",
-        "Checkpoint and release this execution slot until all listed tasks succeed.",
-        {"task_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1}},
+        "Checkpoint and release this slot. ALL_SETTLED returns results/errors including UNCERTAIN for your decision; uncertain child resources stay held.",
+        {"task_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+         "policy": {"type": "string", "enum": ["ALL_SETTLED", "ALL_SUCCEEDED", "ALL_TERMINAL"], "default": "ALL_SETTLED"}},
         ["task_ids"],
     ),
     function(
@@ -68,6 +72,7 @@ COLLABORATION_TOOLS = [
         "Start independent child instances in this session. Reuse the key for the same logical batch. Suspend with wait_for_tasks using returned task IDs.",
         {"agent_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32},
          "inputs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 128},
+         "tool_policy": UsePolicy.model_json_schema(), "skill_policy": UsePolicy.model_json_schema(),
          "idempotency_key": {"type": "string"}, "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 256}},
         ["agent_ids", "inputs", "idempotency_key"],
     ),
@@ -118,6 +123,11 @@ class LLMApiAgent:
             catalog = await context.list_tools()
             skills = await context.list_skills()
             tools = list(COLLABORATION_TOOLS) if self.config.collaboration else []
+            from ma_runtime.execution_policy import LIFECYCLE_TOOLS, model_tools
+            if request.operations_consumer_id and not self.config.collaboration:
+                tools.extend(tool for tool in COLLABORATION_TOOLS if tool["function"]["name"] in LIFECYCLE_TOOLS)
+            tools = [tool for tool in tools if tool["function"]["name"] in LIFECYCLE_TOOLS
+                     or request.tool_policy.permits(tool["function"]["name"])]
             if skills:
                 tools.append(
                     function(
@@ -134,8 +144,17 @@ class LLMApiAgent:
                     )
                 )
             tools.extend(catalog["tools"])
+            from ma_runtime.operations import OPERATIONS_GUIDANCE, COORDINATOR_GUIDANCE
+            tools.append(function("report_issue", "Report a platform/tool problem or request guidance. wait=true checkpoints and suspends until a reply; it does not grant capabilities.",
+                {"summary": {"type": "string", "maxLength": 320}, "details": {"type": "string", "maxLength": 8192}, "wait": {"type": "boolean", "default": False}}, ["summary"]))
+            if request.operations_consumer_id:
+                tools.append(function("operations", "Session-scoped coordinator channel. Use guide for one action's parameters; inbox summaries first, read only needed details, reply/ack, inspect or test. To wait, suspend with wait_for_message.",
+                    {"action": {"type": "string", "enum": ["guide", "inspect", "inbox", "read", "reply", "ack", "test"]}, "params": {"type": "object"}}, ["action"]))
             granted_names = {tool["function"]["name"] for tool in tools}
             prompt = self.config.system_prompt + "\n\n" + OUTPUT_GUIDANCE
+            prompt += "\n\n" + OPERATIONS_GUIDANCE
+            if request.operations_consumer_id:
+                prompt += "\n" + COORDINATOR_GUIDANCE
             if request.agent_md:
                 prompt += "\n\nAGENT.md — Agent instructions:\n" + request.agent_md
             if skills:
@@ -148,6 +167,11 @@ class LLMApiAgent:
                     "\nThread IDs identify independent contexts. Send messages or submit tasks explicitly. "
                     "To wait for other tasks or input, use a wait tool so the runtime releases your slot."
                 )
+            if context.loaded_skills:
+                prompt += "\n\nRequired Skill instructions loaded by the platform:\n" + json_dump(list(context.loaded_skills.values()))
+            if request.tool_policy != UsePolicy() or request.skill_policy != UsePolicy():
+                prompt += "\n\nTask execution policy (does not grant capabilities):\n" + json_dump({
+                    "tools": request.tool_policy, "skills": request.skill_policy})
             if catalog["instructions"]:
                 prompt += (
                     "\n\nConnected MCP server usage instructions (within granted tools only):\n"
@@ -202,8 +226,9 @@ class LLMApiAgent:
             if not any(m["role"] == "user" for m in messages):
                 messages.append({"role": "user", "content": json_dump(request.payload)})
             for round_index in range(12):
+                round_tools, context.model_tool_choice = model_tools(context, tools)
                 result = None
-                async for item in self._completion(messages, context, tools):
+                async for item in self._completion(messages, context, round_tools):
                     if isinstance(item, AdapterEvent):
                         yield item
                     else:
@@ -226,7 +251,8 @@ class LLMApiAgent:
                         > context._runtime.config.max_message_bytes // 2
                     ):
                         text = context._runtime.vault.redact(text)
-                        artifact = await context.put_bytes(
+                        artifact = await context._runtime.artifacts.put_bytes(
+                            request.session_id,
                             "response.txt",
                             text.encode("utf-8"),
                             metadata={"kind": "agent_response"},
@@ -268,7 +294,15 @@ class LLMApiAgent:
                             "Tool arguments must be an object",
                         )
                         key = f"{request.task_id}:{call['id']}"
-                        if name == "read_skill":
+                        if name == "report_issue":
+                            value = await context.report_issue(arguments["summary"], key,
+                                details=arguments.get("details", ""), wait=arguments.get("wait", False))
+                            if value["wait"]:
+                                require(wait is None, "INVALID_REQUEST", "Only one wait condition is allowed per boundary")
+                                wait = WaitCondition.model_validate(value["wait"])
+                        elif name == "operations":
+                            value = await context.operations(arguments["action"], arguments.get("params"))
+                        elif name == "read_skill":
                             value = await context.read_skill(
                                 arguments["skill_id"], arguments.get("path", "SKILL.md")
                             )
@@ -293,6 +327,8 @@ class LLMApiAgent:
                                     agent_id=arguments["agent_id"],
                                     payload={"input": arguments["input"]},
                                     idempotency_key=key,
+                                    tool_policy=arguments.get("tool_policy", {}),
+                                    skill_policy=arguments.get("skill_policy", {}),
                                 )
                             )
                         elif name == "spawn_instances":
@@ -302,6 +338,8 @@ class LLMApiAgent:
                                 "payloads": [{"input": text} for text in arguments["inputs"]],
                                 "idempotency_key": arguments["idempotency_key"],
                                 "max_concurrency": arguments.get("max_concurrency", 4),
+                                "tool_policy": arguments.get("tool_policy", {}),
+                                "skill_policy": arguments.get("skill_policy", {}),
                             })
                         elif name in {
                             "wait_for_tasks",
@@ -320,6 +358,7 @@ class LLMApiAgent:
                                     "wait_for_input": "input",
                                 }[name],
                                 task_ids=tuple(arguments.get("task_ids", ())),
+                                policy=arguments.get("policy", "ALL_SETTLED"),
                             )
                             value = {"state": "WAITING"}
                         else:
@@ -328,6 +367,8 @@ class LLMApiAgent:
                                 "Tool is not available to this agent",
                             )
                     except RuntimeFault as exc:
+                        if exc.code == "OUTCOME_UNCERTAIN":
+                            raise
                         value = {"error": exc.as_dict()}
                     except (ValueError, KeyError, TypeError):
                         value = {
