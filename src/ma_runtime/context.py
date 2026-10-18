@@ -203,7 +203,7 @@ class RunContext:
         self._runtime.workbench.authorize(self.request, "publish_artifact")
         path = Workspace(self._runtime, self.request.workbench, self.request.session_id).path(str(path))
         result = await self._runtime.artifacts.put_file(
-            self.request.session_id, path, metadata=metadata
+            self.request.session_id, path, metadata=metadata, caller_run_id=self.request.run_id
         )
         await self.record_use("tool", "put_file")
         return result
@@ -212,7 +212,7 @@ class RunContext:
         self.check_tool("put_bytes")
         await self.check_current()
         result = await self._runtime.artifacts.put_bytes(
-            self.request.session_id, name, data, metadata=metadata
+            self.request.session_id, name, data, metadata=metadata, caller_run_id=self.request.run_id
         )
         await self.record_use("tool", "put_bytes")
         return result

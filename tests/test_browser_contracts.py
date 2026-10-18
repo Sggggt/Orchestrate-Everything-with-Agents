@@ -14,6 +14,33 @@ from ma_runtime.web.app import create_app
 from test_skill_system import package
 
 
+class ArtifactPublisher:
+    def describe(self):
+        return AgentDescriptor(agent_id="publisher", cancellation="unsupported", supports_probe=False)
+
+    async def execute(self, request, context):
+        artifact = await context.put_bytes("result.md", b"# Result", metadata={"note": "kept",
+            "provenance": {"kind": "agent", "agent_id": "forged", "agent_name": "Forged"}})
+        yield AdapterEvent(type="completed", result=TaskResult(artifact_ids=(artifact.id,)))
+
+    async def aclose(self):
+        pass
+
+
+class HeldArtifactPublisher(ArtifactPublisher):
+    def __init__(self):
+        self.started, self.release = asyncio.Event(), asyncio.Event()
+
+    async def execute(self, request, context):
+        self.run_id = request.run_id
+        self.started.set()
+        await self.release.wait()
+        yield AdapterEvent(type="completed", result=TaskResult())
+
+    async def aclose(self):
+        self.release.set()
+
+
 class FeedbackReporter:
     """Emit run-authenticated feedback before the execution completes."""
     def __init__(self):
@@ -64,6 +91,68 @@ class BrowserContracts(unittest.IsolatedAsyncioTestCase):
 
     async def worker(self):
         return await self.request("PUT", "/agents/worker", json={"id": "worker", "name": "Worker", "kind": "mock"})
+
+    async def test_artifact_original_download_is_exact_and_checks_integrity(self):
+        session = await self.request("POST", "/sessions", json={"title": "Artifacts", "project_id": "default"})
+        source = "# Original\r\n\r\n<script>example()</script>\r\n原文".encode("utf-8")
+        artifact = await self.rt.artifacts.put_bytes(session["id"], "original.md", source)
+        response = await self.http.get(f"/api/artifacts/{artifact.id}/download")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, source)
+        path = await self.rt.artifacts.open(artifact.id)
+        path.write_bytes(b"x" * len(source))
+        response = await self.http.get(f"/api/artifacts/{artifact.id}/download")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "ARTIFACT_INVALID")
+
+    async def test_agent_artifact_source_comes_from_the_authenticated_execution(self):
+        await self.request("PUT", "/agents/publisher", json={"id": "publisher", "name": "Publisher", "kind": "mock"})
+        self.rt.adapters["publisher"] = ArtifactPublisher()
+        session = await self.rt.sessions.create(project_id="default")
+        thread = await self.rt.threads.create(session.id, "publisher")
+        task = await self.rt.tasks.submit({"session_id": session.id, "thread_id": thread.id, "agent_id": "publisher", "idempotency_key": "publish"})
+        result = await self.rt.tasks.result(task.id, timeout=5)
+        artifact = await self.rt.artifacts.get(result.artifact_ids[0])
+        provenance = artifact.metadata["provenance"]
+        self.assertEqual(provenance["kind"], "agent")
+        self.assertEqual(provenance["agent_id"], "publisher")
+        self.assertEqual(provenance["agent_name"], "Publisher")
+        self.assertEqual(provenance["task_id"], task.id)
+        self.assertEqual(provenance["run_id"], (await self.rt.tasks.get(task.id)).runs[0].id)
+        self.assertEqual(artifact.metadata["note"], "kept")
+        snapshot = await self.request("GET", f"/sessions/{session.id}/snapshot")
+        self.assertEqual(snapshot["artifacts"][0]["metadata"]["provenance"], provenance)
+
+    async def test_artifact_upload_and_external_submission_have_non_agent_sources(self):
+        session = await self.rt.sessions.create(project_id="default")
+        response = await self.http.post("/api/artifacts", params={"session_id": session.id}, content=b"uploaded",
+            headers={"Content-Type": "application/octet-stream", "X-Filename": "upload.txt"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["metadata"]["provenance"], {"kind": "upload"})
+        external = await self.rt.artifacts.put_bytes(session.id, "external.txt", b"external",
+            metadata={"provenance": {"kind": "agent", "agent_id": "forged"}})
+        self.assertEqual(external.metadata["provenance"], {"kind": "external"})
+
+    async def test_artifact_source_rejects_cross_session_and_stale_runs(self):
+        from ma_runtime.errors import RuntimeFault
+        await self.request("PUT", "/agents/publisher", json={"id": "publisher", "name": "Publisher", "kind": "mock"})
+        adapter = HeldArtifactPublisher()
+        self.rt.adapters["publisher"] = adapter
+        session = await self.rt.sessions.create(project_id="default")
+        other = await self.rt.sessions.create(project_id="default")
+        thread = await self.rt.threads.create(session.id, "publisher")
+        task = await self.rt.tasks.submit({"session_id": session.id, "thread_id": thread.id, "agent_id": "publisher", "idempotency_key": "held"})
+        await asyncio.wait_for(adapter.started.wait(), timeout=5)
+        try:
+            with self.assertRaises(RuntimeFault) as fault:
+                await self.rt.artifacts.put_bytes(other.id, "wrong.txt", b"wrong", caller_run_id=adapter.run_id)
+            self.assertEqual(fault.exception.code, "PERMISSION_DENIED")
+        finally:
+            adapter.release.set()
+        await self.rt.tasks.result(task.id, timeout=5)
+        with self.assertRaises(RuntimeFault) as fault:
+            await self.rt.artifacts.put_bytes(session.id, "stale.txt", b"stale", caller_run_id=adapter.run_id)
+        self.assertEqual(fault.exception.code, "STALE_RUN")
 
     async def test_one_shot_dependencies_use_current_rpc_and_return_actual_states(self):
         await self.worker()

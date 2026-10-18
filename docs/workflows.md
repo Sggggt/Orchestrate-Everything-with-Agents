@@ -4,7 +4,7 @@ A workflow is a reusable, versioned DAG owned by exactly one project. Its `proje
 
 ## Design on the canvas
 
-Select a project and open **工作流画布**. Add nodes, edit their properties, and connect output ports to input ports. A condition has `true` and `false` outputs. Drag nodes or enter coordinates; pan the background, zoom, fit the graph or use automatic layout.
+Select a project and open **工作流**. Add nodes, edit their properties, and connect output ports to input ports. A condition has `true` and `false` outputs. Drag nodes or enter coordinates; pan the background, zoom, fit the graph or use automatic layout.
 
 Delete removes a selected node or edge; Ctrl+Z and Ctrl+Shift+Z undo and redo; Ctrl+S saves. Drafts may be incomplete. Validation identifies cycles, disconnected nodes, invalid ports, missing Agents and references to non-upstream nodes. Saving uses an expected revision to protect another client's edits.
 

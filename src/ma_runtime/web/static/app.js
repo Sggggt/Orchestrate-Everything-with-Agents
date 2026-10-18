@@ -1,8 +1,11 @@
 import { createIntegrationUI } from "/assets/integrations.js";
 import { markdown } from "/assets/markdown.mjs";
+import { content, compactTitle, editorInteraction } from "/assets/presentation.mjs";
+import { createLaunchEditor } from "/assets/launch.mjs";
+import { artifactDownload, artifactSource, groupArtifacts, readArtifactPreview } from "/assets/artifacts.mjs";
 import { createWorkflowUI } from "/assets/workflows.js";
 import { createAgentStatusIndex } from "/assets/agent-status.mjs";
-import { messageItems, matchesMessageFilter, agentFeedback } from "/assets/message-feed.mjs";
+import { messageItems, matchesMessageFilter } from "/assets/message-feed.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -104,13 +107,12 @@ const state = {
   settingsDraft: null,
   settingsTab: "general",
   selectedSkill: 0,
-  profilePreview: false,
+  profilePreview: true,
   mcpServers: [],
   skillRegistry: { items: [], has_more: false, cursor: null },
   skillDetail: null,
   skillSource: "",
   skillFile: "SKILL.md",
-  skillRaw: false,
   skillQuery: "",
   skillDirectory: "",
   mcpCatalogs: {},
@@ -134,7 +136,6 @@ const state = {
   savingSettings: false,
   testingModelId: null,
   modelTestResult: null,
-  sidebarOpen: false,
   inspectorOpen: false,
   taskFilter: "all",
   taskView: "list",
@@ -144,6 +145,12 @@ const state = {
 };
 let eventSource, refreshTimer, toastTimer, modalReturnFocus, agentStates;
 let sessionMessages = [];
+const agentLaunch = createLaunchEditor({
+  scope: "agent", getDraft: () => state.settingsDraft,
+  read: draft => draft.command || [], write: (draft, command) => { draft.command = command; },
+  escape, icon, render,
+  purpose: "这里决定平台如何启动这个 Agent。平台会把任务交给它处理，再接收结果；任务目标在对话或工作流中填写。",
+});
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED"]);
 const idempotency = () => crypto.randomUUID();
 const agent = (id) => state.agents.find((a) => a.id === id);
@@ -172,7 +179,7 @@ const threadTasks = (id) =>
 const latestTask = (id) =>
   threadTasks(id).find((t) => !terminal.has(t.state)) || threadTasks(id)[0];
 const taskTitle = (task) =>
-  String(task.title || task.spec?.payload?.input || task.spec?.metadata?.stage || "协作任务").slice(0, 80);
+  compactTitle(task.title || task.spec?.payload?.input || task.spec?.metadata?.stage || "协作任务");
 
 const messageReads = new Map();
 const messageReadKey = (sessionId) => "ma-read-messages-" + sessionId;
@@ -194,7 +201,7 @@ function hasUnreadMessages() {
 }
 function markVisibleMessagesRead() {
   if (!state.session || state.route !== "workspace" || state.mode !== "messages" ||
-      state.selectedThread || state.modal || state.sidebarOpen || document.visibilityState !== "visible") return;
+      state.selectedThread || state.modal || document.visibilityState !== "visible") return;
   const read = readMessageIds(state.session.id);
   let changed = false;
   for (const message of sessionMessages) {
@@ -212,10 +219,10 @@ const unreadMessageDot = () => hasUnreadMessages()
   ? '<span class="message-unread-dot" aria-hidden="true"></span><span class="sr-only">有新协作消息</span>' : "";
 function workspaceSections() {
   return [
-    ["overview", "grid", "会话总览", 0],
-    ["tasks", "flow", "任务与依赖", state.snapshot.tasks.length],
+    ["overview", "grid", "总览", 0],
+    ["tasks", "flow", "任务", state.snapshot.tasks.length],
     ["messages", "mail", "协作消息", sessionMessages.length],
-    ["artifacts", "folder", "共享产物", state.snapshot.artifacts.length],
+    ["artifacts", "folder", "工作产物", state.snapshot.artifacts.length],
   ];
 }
 
@@ -264,14 +271,10 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => (target.className = ""), 4500);
 }
 function projectSwitcher() {
-  return `<div class="project-switch"><div class="section-label">项目
-    <span><button class="icon-btn" data-action="edit-project" aria-label="项目设置">${icon("settings")}</button>
-    <button class="icon-btn danger-icon" data-action="delete-project" aria-label="删除当前项目" title="删除项目" ${state.project ? "" : "disabled"}>${icon("trash")}</button>
-    <button class="icon-btn" data-action="new-project" aria-label="创建项目">${icon("plus")}</button></span></div>
-    <select id="project-select" aria-label="选择项目">${state.projects.map(p =>
-      `<option value="${escape(p.id)}" ${state.project?.id === p.id ? "selected" : ""}>${escape(p.name)}</option>`).join("")}</select>
-    <div class="project-folder" title="${escape(state.project?.local_folder || "")}">${icon("folder")}
-    <span>${escape(state.project?.local_folder || "尚未绑定本地文件夹")}</span></div></div>`;
+  return `<div class="project-switch"><div class="context-heading"><label for="project-select">当前项目</label><details class="context-menu" data-context="project"><summary data-focus="project-menu" aria-label="项目操作" title="项目操作">···</summary><div class="context-menu-panel"><button data-action="new-project">${icon("plus")}新建项目</button><button data-action="edit-project" ${state.project ? "" : "disabled"}>${icon("settings")}项目设置</button><button class="danger-text" data-action="delete-project" ${state.project ? "" : "disabled"}>${icon("trash")}删除当前项目</button></div></details></div><select id="project-select" aria-label="选择项目">${state.projects.map(p => `<option value="${escape(p.id)}" ${state.project?.id === p.id ? "selected" : ""}>${escape(p.name)}</option>`).join("")}</select></div>`;
+}
+function sessionSwitcher() {
+  return `<div class="workspace-switch"><div class="context-heading"><label for="workspace-select">当前会话</label><details class="context-menu" data-context="session"><summary data-focus="session-menu" aria-label="会话操作" title="会话操作">···</summary><div class="context-menu-panel"><button data-action="new-session">${icon("plus")}新建会话</button><button class="danger-text" data-action="delete-session" ${state.session ? "" : "disabled"}>${icon("trash")}删除当前会话</button></div></details></div><select id="workspace-select" class="workspace-select" aria-label="选择会话"><option value="">选择或创建会话</option>${state.sessions.map(s => `<option value="${escape(s.id)}" ${state.session?.id === s.id ? "selected" : ""}>${escape(s.title)}${s.state !== "OPEN" ? " · 已关闭" : ""}</option>`).join("")}</select></div>`;
 }
 function empty(title, description, action = "", label = "") {
   return `<div class="empty">${icon("chat")}<h3>${escape(title)}</h3><div>${escape(description)}</div>${action ? `<button class="btn" data-action="${action}">${escape(label)}</button>` : ""}</div>`;
@@ -292,21 +295,27 @@ function focusMemory() {
     page: $(".page-body")?.scrollTop,
   };
 }
+let renderedView = "";
 function render() {
   if (workflowUI.isInteracting()) return;
   agentStates = createAgentStatusIndex(state.agents, state.snapshot, state.connection);
   sessionMessages = messageItems(state.snapshot);
   markVisibleMessagesRead();
   const focus = focusMemory();
+  const view = [state.route, state.project?.id, state.session?.id, state.mode,
+    state.selectedThread, state.settingsId, state.settingsTab, state.mcpId,
+    state.mcpTab, state.skillDetail?.id, state.skillFile].join("|");
+  const viewChanged = view !== renderedView;
+  renderedView = view;
+  const openMenus = new Set(viewChanged ? [] : [...document.querySelectorAll(".context-menu[open]")].map(menu => menu.dataset.context));
   const routeHash = "#" + state.route;
   if (location.hash !== routeHash) history.replaceState(null, "", routeHash);
   if (state.modal && !$("#modal-root").firstElementChild) rememberModalOrigin();
   $("#app").innerHTML = shell();
-  $(".main").inert =
-    state.sidebarOpen && window.matchMedia("(max-width: 820px)").matches;
+  document.querySelectorAll(".context-menu").forEach(menu => { menu.open = openMenus.has(menu.dataset.context); });
   renderModal();
   workflowUI.mount();
-  if (focus.key && !state.modal && !state.sidebarOpen) {
+  if (focus.key && !state.modal) {
     const target =
       document.getElementById(focus.key) ||
       [...document.querySelectorAll("[data-focus]")].find(
@@ -324,7 +333,7 @@ function render() {
       }
     }
   }
-  if ($(".page-body") && focus.page) $(".page-body").scrollTop = focus.page;
+  if ($(".page-body")) $(".page-body").scrollTop = viewChanged ? 0 : focus.page || 0;
   if ($(".conversation"))
     $(".conversation").scrollTop = focus.chatBottom
       ? $(".conversation").scrollHeight
@@ -346,21 +355,19 @@ function shell() {
           : state.selectedThread
             ? thread(state.selectedThread)?.title
             : nav.find(([mode]) => mode === state.mode)?.[2];
-  return `<div class="layout ${state.sidebarOpen ? "nav-open" : ""}">
-    <button class="sidebar-scrim" data-action="toggle-sidebar" aria-label="收起导航"></button>
+  return `<div class="layout">
     <aside class="sidebar" id="workspace-nav" aria-label="工作区导航">
-      <a class="sidebar-brand" href="#" data-action="mode" data-mode="overview" aria-label="Orchestrate Everything with Agents" title="Orchestrate Everything with Agents"><img class="brand-mark" src="/assets/mark.svg?v=3" alt=""><span class="brand-wordmark"><strong>Orchestrate Everything</strong><small>with Agents</small></span></a>
+      <a class="sidebar-brand" href="#" data-action="mode" data-mode="overview" aria-label="Orchestrate Everything with Agents" title="Orchestrate Everything with Agents"><img class="brand-mark" src="/assets/mark.svg?v=4" alt=""><span class="brand-wordmark"><strong>OEA</strong><small>个人协作工作台</small></span></a>
       ${projectSwitcher()}
-      <div class="workspace-switch"><span class="workspace-symbol">${icon("grid")}</span><div><span class="workspace-caption">当前会话</span><select id="workspace-select" class="workspace-select" aria-label="选择会话"><option value="">选择或创建会话</option>${state.sessions.map((s) => `<option value="${escape(s.id)}" ${state.session?.id === s.id ? "selected" : ""}>${escape(s.title)}${s.state !== "OPEN" ? " · 已关闭" : ""}</option>`).join("")}</select></div><button class="icon-btn" data-action="new-session" aria-label="创建会话" title="创建会话">${icon("plus")}</button><button class="icon-btn danger-icon" data-action="delete-session" aria-label="删除当前会话" title="删除会话" ${state.session ? "" : "disabled"}>${icon("trash")}</button></div>
+      ${sessionSwitcher()}
       <button class="search-launcher" data-action="command">${icon("search")}<span>搜索或快速跳转</span><kbd>Ctrl K</kbd></button>
       <div class="section-label">工作区 <span>WORKSPACE</span></div>
-      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>会话总览</span>${unreadMessageDot()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流画布</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent 集成</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 集成</span><span class="nav-tag">${state.mcpServers.length}</span></button><button class="side-nav ${state.route === "skills" ? "active" : ""}" data-action="route" data-route="skills" ${state.route === "skills" ? 'aria-current="page"' : ""}>${icon("book")}<span>Skill 集成</span><span class="nav-tag">${state.skillRegistry.items.length}</span></button></nav>
+      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>工作台</span>${unreadMessageDot()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 工具</span><span class="nav-tag">${state.mcpServers.length}</span></button><button class="side-nav ${state.route === "skills" ? "active" : ""}" data-action="route" data-route="skills" ${state.route === "skills" ? 'aria-current="page"' : ""}>${icon("book")}<span>Skills</span><span class="nav-tag">${state.skillRegistry.items.length}</span></button></nav>
       <div class="section-label">独立对话 <button class="icon-btn" data-action="open-agent" aria-label="打开 Agent 对话" title="打开 Agent 对话">${icon("plus")}</button></div>
-      <div class="thread-list">${state.snapshot.threads.map((t) => `<button class="thread-link ${state.route === "workspace" && state.selectedThread === t.id ? "active" : ""}" data-action="select-thread" data-id="${escape(t.id)}" title="${escape(t.title)}">${avatar(t.agent_id)}<span class="thread-name">${escape(t.title)}</span>${agentStatusDot(agentStates.forThread(t))}</button>`).join("") || '<div class="thread-placeholder">每个 Agent，都有自己的思考空间。<button data-action="open-agent">开始第一段对话 ' + icon("arrow") + "</button></div>"}</div>
-      <button class="external-card" data-action="codex"><span class="external-icon">${icon("terminal")}</span><span><strong>连接 Codex</strong><small>让你的协调者加入工作区</small></span>${icon("external")}</button>
+      <div class="thread-list">${state.snapshot.threads.map((t) => `<button class="thread-link ${state.route === "workspace" && state.selectedThread === t.id ? "active" : ""}" data-action="select-thread" data-id="${escape(t.id)}" title="${escape(t.title)}">${avatar(t.agent_id)}<span class="thread-name">${escape(t.title)}</span>${agentStatusDot(agentStates.forThread(t))}</button>`).join("") || '<div class="thread-placeholder">创建会话后，选择 Agent 开始工作。<button data-action="open-agent">开始第一段对话 ' + icon("arrow") + "</button></div>"}</div>
       <div class="sidebar-footer"><button class="side-nav" data-action="open-trash">${icon("trash")}<span>回收站</span></button><button class="side-nav ${state.route === "settings" ? "active" : ""}" data-action="route" data-route="settings">${icon("settings")}<span>设置与配置</span></button><div class="local-status"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span>本地工作区<span>LOCAL</span></div></div>
     </aside>
-    <main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="breadcrumb"><button class="icon-btn mobile-menu" data-action="toggle-sidebar" aria-label="切换导航" aria-expanded="${state.sidebarOpen}" aria-controls="workspace-nav">${icon("menu")}</button><span class="breadcrumb-root">工作区</span>${icon("chevron")}<strong>${escape(label || "会话总览")}</strong>${state.session ? `<span class="breadcrumb-divider"></span><span class="breadcrumb-session">${escape(state.session.title)}</span>` : ""}</div><div class="top-actions"><div class="connection"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span><span class="connection-text">${state.connection === "online" ? "本地连接正常" : state.connection === "connecting" ? "正在连接" : "正在重新连接"}</span></div><button class="icon-btn top-search" data-action="command" aria-label="搜索与快捷操作" title="搜索与快捷操作 · Ctrl K">${icon("search")}</button><span class="topbar-divider"></span><button class="btn" data-action="new-session">${icon("plus")}<span>新建会话</span></button></div></header>
+    <main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="breadcrumb"><span class="breadcrumb-root">${escape(state.project?.name || "工作区")}</span>${icon("chevron")}<strong>${escape(label || "会话总览")}</strong>${state.session ? `<span class="breadcrumb-divider"></span><span class="breadcrumb-session">${escape(state.session.title)}</span>` : ""}</div><div class="top-actions"><div class="connection"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span><span class="connection-text">${state.connection === "online" ? "本地连接正常" : state.connection === "connecting" ? "正在连接" : "正在重新连接"}</span></div><button class="icon-btn top-search" data-action="command" aria-label="搜索与快捷操作" title="搜索与快捷操作 · Ctrl K">${icon("search")}</button><span class="topbar-divider"></span><button class="btn" data-action="new-session">${icon("plus")}<span>新建会话</span></button></div></header>
       ${state.connection === "offline" ? '<div class="connection-banner">与本地服务的连接中断，正在重连。已接收的任务会继续执行。<button class="text-link" data-action="reconnect">重新连接</button></div>' : ""}
       ${state.route === "workspace" ? tabbar() : ""}
       <div class="page-body">${state.route === "workflows" ? workflowUI.page() : state.route === "mcp" ? integrationUI.mcpPage() : state.route === "skills" ? integrationUI.skillPage() : state.route === "settings" ? settings() : state.route === "agents" ? agentsPage() : !state.session ? welcome() : state.selectedThread ? chat() : state.mode === "tasks" ? tasksPage() : state.mode === "messages" ? messagesPage() : state.mode === "artifacts" ? artifactsPage() : overview()}</div>
@@ -379,114 +386,35 @@ function tabbar() {
       "",
     )}<button class="tab-plus" data-action="open-agent" aria-label="新建 Agent 对话" ${!state.session ? "disabled" : ""}>+</button></nav>`;
 }
-function constellation() {
-  return `<div class="constellation" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><svg class="orbit-lines" viewBox="0 0 400 230"><path d="M200 115L76 58M200 115L321 45M200 115L344 159M200 115L87 188"/><circle cx="138" cy="86" r="3"/><circle cx="268" cy="80" r="3"/><circle cx="275" cy="138" r="3"/><circle cx="139" cy="154" r="3"/></svg><div class="orbit-core"><img src="/assets/mark.svg?v=3" alt=""></div><div class="orbit-node node-one">${icon("terminal")}<span>探索</span></div><div class="orbit-node node-two">${icon("file")}<span>创造</span></div><div class="orbit-node node-three">${icon("check")}<span>验证</span></div><div class="orbit-node node-four">${icon("flow")}<span>协作</span></div><span class="orbit-caption">INDEPENDENT MINDS. SHARED PURPOSE.</span></div>`;
+function readyAgents() {
+  return state.agents.filter(a => a.kind !== "external" && a.enabled && (!requiresModel(a) || modelConfigured(a)));
+}
+function workGuide() {
+  return `<details class="work-guide"><summary>如何开始</summary><p>选择 Agent，说明目标和交付要求。提交后在任务中查看进展，需要补充信息时会提示你；结果和文件保存在当前会话。</p></details>`;
+}
+function nextStep() {
+  const ready = readyAgents(), existing = state.agents.find(a => a.kind !== "external");
+  const attention = state.snapshot.tasks.find(t => t.state === "WAITING" && t.wait?.kind === "input") || state.snapshot.tasks.find(t => ["FAILED", "UNCERTAIN"].includes(t.state));
+  const title = attention ? attention.state === "WAITING" ? "补充信息，让工作继续" : "先核对需要关注的任务" : !existing ? "先添加你的第一个 Agent" : !ready.length ? "完成 Agent 配置" : !state.session ? "为目标创建一个会话" : "团队已就绪";
+  const description = attention ? escape(taskTitle(attention)) : !existing ? "连接模型或本机执行端，建立你的工作伙伴。" : !ready.length ? "启用 Agent，并填写模型地址与名称。保存后可测试连接。" : !state.session ? "会话用于集中保存同一目标的对话、任务与成果。" : "选择 Agent 开始对话，或运行已保存的工作流。";
+  const action = attention ? "task-detail" : !existing ? "add-agent" : !ready.length ? "configure-agent" : !state.session ? "new-session" : "open-agent";
+  const label = attention ? attention.state === "WAITING" ? "提供输入" : "查看任务" : !existing ? "添加 Agent" : !ready.length ? "去配置" : !state.session ? "创建会话" : "开始对话";
+  return `<div class="next-step ${attention ? "needs-attention" : ""}"><span class="next-step-icon">${icon(attention ? "activity" : "spark")}</span><div class="next-step-copy"><h2>${title}</h2><p>${description}</p></div><div class="next-step-actions"><button class="btn primary" data-action="${action}" ${attention ? `data-id="${escape(attention.id)}"` : action === "configure-agent" ? `data-id="${escape(existing.id)}" data-tab="general"` : ""}>${label}${icon("arrow")}</button>${ready.length && state.session ? '<button class="btn" data-action="route" data-route="workflows">选择工作流</button>' : ""}</div></div>`;
 }
 function welcome() {
-  return `<section class="welcome-page"><div class="welcome-top"><span class="eyebrow">ORCHESTRATE EVERYTHING WITH AGENTS</span><span class="subtle-label">本地运行 · 自由协作</span></div><div class="welcome-hero"><div><span class="hero-kicker">${icon("spark")} A personal workspace for agents</span><h1>Orchestrate Everything<br><em>with Agents.</em></h1><p>在框架内开发 Agent、接入工具，<br>把想法编排成可运行的工作流。</p><div class="toolbar"><button class="btn primary" data-action="new-session">${icon("plus")}${state.project ? "创建第一个会话" : "创建第一个项目"}</button><button class="btn" data-action="route" data-route="agents">认识你的 Agent ${icon("arrow")}</button></div><span class="welcome-note">${icon("shield")}对话、任务与产物，保存在你的本机。</span></div>${constellation()}</div><div class="welcome-steps">${[
-    [
-      "01",
-      "agents",
-      "接入你的 Agent",
-      "为不同工作选择合适的模型与执行端。",
-      "add-agent",
-    ],
-    [
-      "02",
-      "chat",
-      "开启独立对话",
-      "每个 Agent 保持专注，也能互相传递信息。",
-      "open-agent",
-    ],
-    [
-      "03",
-      "flow",
-      "让工作协同推进",
-      "安排任务依赖，集中查看进度与成果。",
-      "new-session",
-    ],
-  ]
-    .map(
-      ([n, ico, title, desc, action]) =>
-        `<button class="welcome-step" data-action="${action}"><span class="step-top">${icon(ico)}<span>${n}</span></span><h2>${title}</h2><p>${desc}</p><span class="step-arrow">${icon("arrow")}</span></button>`,
-    )
-    .join(
-      "",
-    )}</div><div class="welcome-bottom"><span>独立思考，彼此连接。</span><button class="text-link" data-action="codex">通过 Codex 协调工作 ${icon("external")}</button></div></section>`;
+  return `<section class="overview"><div class="page-heading"><div><h1>从一个目标开始</h1><p>准备 Agent，创建会话，再把工作交给它。每一步进展都可查看。</p></div></div>${nextStep()}<div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div></section>`;
 }
 function agentCards() {
-  return (
-    state.agents
-      .filter((a) => a.kind !== "external")
-      .map((a) => {
-        const tasks = state.snapshot.tasks.filter(
-          (t) => t.spec?.agent_id === a.id,
-        );
-        const done = tasks.filter((t) => t.state === "SUCCEEDED").length;
-        return `<article class="agent-card tone-${agentIndex(a.id)}"><div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.kind === "mock" ? "本地 Mock" : a.kind === "process" ? (requiresModel(a) ? `JSONL · ${a.model || "待配置模型"}` : "JSONL 执行端") : a.model || "尚未配置模型")}</div></div>${agentStatusBadge(agentStates.forAgent(a.id))}</div><p class="agent-description">${escape(a.system_prompt ? a.system_prompt.slice(0, 88) : a.kind === "mock" ? "在本地验证想法与协作流程，无需连接外部 API。" : a.kind === "process" ? "连接你的执行框架，在独立上下文中完成任务。" : "独立的模型与上下文，随时准备参与下一项工作。")}</p><div class="agent-card-tags"><span>${icon("chat")}${state.snapshot.threads.filter((t) => t.agent_id === a.id).length} 个对话</span><span>${icon("check")}${done} 项完成</span><span class="agent-kind">${escape(a.kind === "llm" ? "API" : a.kind === "mock" ? "LOCAL" : "PROCESS")}</span></div>${requiresModel(a) && !modelConfigured(a) ? `<p class="agent-model-reminder">需要配置模型 API <button class="text-link" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general">去配置 →</button></p>` : ""}${integrationUI.agentDocumentLinks(a)}<div class="agent-card-detail"><button class="agent-new" data-action="new-agent-thread" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>${icon("plus")}独立对话</button><button class="agent-open" data-action="agent-chat" data-id="${escape(a.id)}" ${!a.enabled ? "disabled" : ""}>打开 Agent ${icon("arrow")}</button></div></article>`;
-      })
-      .join("") ||
-    empty(
-      "你的团队，从一个 Agent 开始",
-      "接入模型或本地执行端，让想法开始流动。",
-      "add-agent",
-      "添加 Agent",
-    )
-  );
+  return state.agents.filter(a => a.kind !== "external").map(a => {
+    const ready = a.enabled && (!requiresModel(a) || modelConfigured(a));
+    const description = a.system_prompt || a.agent_md || (a.kind === "mock" ? "本机协议验证，不调用模型。" : a.kind === "process" ? "由本机执行程序处理任务。" : "独立上下文，使用已授权的工具执行任务。");
+    return `<article class="agent-card tone-${agentIndex(a.id)}"><div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name" title="${escape(a.name)}">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.model || (a.kind === "mock" ? "本机验证执行端" : a.kind === "process" ? "本机程序" : "等待配置模型"))}</div></div>${agentStatusBadge(agentStates.forAgent(a.id))}</div><div class="agent-description">${markdown(description.slice(0, 120))}</div>${integrationUI.agentDocumentLinks(a)}<div class="agent-card-detail"><button class="text-link" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general">配置</button><button class="btn small ${ready ? "" : "primary"}" data-action="${ready ? "agent-chat" : "configure-agent"}" data-id="${escape(a.id)}" data-tab="general">${ready ? "开始对话" : "完成配置"}${icon("arrow")}</button></div></article>`;
+  }).join("") || empty("还没有 Agent", "添加 Agent 后，就能为它配置模型、工作指令与工具。", "add-agent", "添加 Agent");
 }
 function overview() {
   const tasks = state.snapshot.tasks;
-  const running = tasks.filter((t) => t.state === "RUNNING").length;
-  const queued = tasks.filter((t) => t.state === "QUEUED").length;
-  const done = tasks.filter((t) => t.state === "SUCCEEDED").length;
-  const attention = tasks.filter((t) =>
-    ["FAILED", "UNCERTAIN", "WAITING"].includes(t.state),
-  ).length;
-  const capacity = Math.max(
-    0,
-    (state.config.max_concurrency || 16) -
-      (state.config.reserved_external_slots || 0),
-  );
-  const enabled = state.agents.filter(
-    (a) => a.enabled && a.kind !== "external",
-  ).length;
-  return `<section class="overview"><div class="page-heading"><div><p class="eyebrow">YOUR COLLABORATION SPACE</p><h1>会话总览<span class="heading-dot">.</span></h1><p>关注当下的进展，让每一份思考彼此连接。</p></div><button class="btn primary" data-action="workflow">${icon("plus")}安排任务</button></div>
-    <div class="overview-hero"><div class="hero-copy"><span class="hero-kicker"><span class="dot online"></span>${escape(state.session.title)}</span><h2>让想法，<span>并行发生。</span></h2><p>独立的上下文，共同的目标。<br>你的 Agent 团队，准备好开始下一次协作。</p><button class="hero-link" data-action="open-agent">开始一段对话 ${icon("arrow")}</button></div>${constellation()}</div>
-    <div class="stats">${[
-      ["可用 Agent", enabled, "独立执行，随时协作", "agents", "violet"],
-      [
-        "正在执行",
-        `${running}<small> / ${capacity}</small>`,
-        "当前会话 · 执行任务",
-        "activity",
-        "blue",
-      ],
-      ["等待执行", queued, "等待依赖或空闲执行槽", "clock", "amber"],
-      ["已完成", done, "每一次推进都有迹可循", "check", "green"],
-    ]
-      .map(
-        ([label, value, foot, ico, tone]) =>
-          `<div class="stat-card"><div><div class="stat-label">${label}</div><div class="stat-number">${value}</div><div class="stat-foot">${foot}</div></div><span class="stat-icon ${tone}">${icon(ico)}</span></div>`,
-      )
-      .join("")}</div>
-    <div class="overview-columns"><div class="overview-primary"><div class="section-heading"><h2>你的 Agent <span class="section-count">${state.agents.filter((a) => a.kind !== "external").length}</span></h2><button class="text-link" data-action="route" data-route="agents">管理团队 ${icon("arrow")}</button></div><div class="agent-grid">${agentCards()}</div>${recentFeedback()}</div><aside class="overview-secondary"><div class="section-heading"><h2>协作脉搏</h2><span class="live-label"><span class="dot online"></span>实时</span></div><div class="pulse-card"><div class="pulse-head"><span>工作区状态</span>${icon("activity")}</div><strong class="pulse-title">${running ? "想法正在推进" : attention ? "有任务需要关注" : "一切准备就绪"}</strong><div class="capacity-slots" aria-label="全局活跃 ${state.runtime.active || 0}，待核对 ${state.runtime.uncertain_slots || 0}，总执行槽 ${state.config.max_concurrency || 16}">${Array.from({ length: state.config.max_concurrency || 16 }, (_, i) => `<span class="${i >= capacity ? "reserved" : i < (state.runtime.active || 0) ? "occupied" : i < (state.runtime.active || 0) + (state.runtime.uncertain_slots || 0) ? "isolated" : ""}">${icon(i >= capacity ? "terminal" : "agents")}</span>`).join("")}</div><div class="capacity-legend"><span>全局执行槽</span><strong>${capacity} 可调度 / ${state.config.reserved_external_slots || 0} 预留</strong></div><div class="pulse-metrics"><div><span>对话上下文</span><strong>${state.snapshot.threads.length}</strong></div><div><span>待应用消息</span><strong>${state.snapshot.messages.filter((m) => m.state === "PENDING").length}</strong></div><div><span>共享产物</span><strong>${state.snapshot.artifacts.length}</strong></div></div>${attention ? `<button class="attention-link" data-action="task-filter-link" data-filter="attention">${icon("activity")}${attention} 个任务需要关注 ${icon("arrow")}</button>` : '<div class="pulse-note">' + icon("shield") + "执行状态持续保存在本机</div>"}</div><button class="connection-card" data-action="codex"><span class="connection-card-icon">${icon("terminal")}</span><strong>连接你的协调者</strong><p>在 Codex 中讨论，在这里<br>让整个团队一起行动。</p><span>查看接入方式 ${icon("arrow")}</span></button></aside></div>
-    <div class="section-heading recent-heading"><h2>最近任务 <span class="subtitle">每一步进展，都在这里</span></h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${
-      tasks.length
-        ? `<div class="activity-list">${tasks
-            .slice(0, 5)
-            .map(
-              (t) =>
-                `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</small></span>${badge(t.state)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`,
-            )
-            .join("")}</div>`
-        : empty(
-            "下一项好想法，从这里开始",
-            "打开一个 Agent，描述你的目标。后续进展会汇聚在这里。",
-            "open-agent",
-            "发起第一个任务",
-          )
-    }
-    <footer class="overview-footer"><span>${icon("shield")} 本地运行，持续保存</span><span>MULTI-AGENT WORKSPACE</span></footer></section>`;
+  const attention = tasks.filter(t => ["FAILED", "UNCERTAIN", "WAITING"].includes(t.state));
+  return `<section class="overview"><div class="page-heading"><div><h1>今天，推进什么？</h1><p>先明确目标，再选择 Agent。执行进度和成果会保存在此会话。</p></div><button class="btn" data-action="workflow">${icon("flow")}安排依赖任务</button></div><div class="workspace-brief">${nextStep()}<div class="workspace-summary"><span><strong>${readyAgents().length}</strong> 个可用 Agent</span><span class="summary-running"><strong>${tasks.filter(t => t.state === "RUNNING").length}</strong> 项执行中</span><span class="summary-attention"><strong>${attention.length}</strong> 项需要关注</span><span class="summary-done"><strong>${tasks.filter(t => t.state === "SUCCEEDED").length}</strong> 项已完成</span></div></div><div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div><div class="workspace-history"><section class="recent-tasks"><div class="section-heading"><h2>最近任务</h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${tasks.length ? `<div class="activity-list">${tasks.slice(0, 5).map(t => `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || "Agent")}</small></span>${badge(t.state)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`).join("")}</div>` : empty("发起第一项工作", "打开 Agent 对话，写下目标和期望的交付内容。", "open-agent", "开始对话")}</section><section class="session-updates">${attention.length ? `<div class="section-heading"><h2>需要你处理</h2><button class="text-link" data-action="task-filter-link" data-filter="attention">查看全部 ${icon("arrow")}</button></div><div class="attention-list">${attention.slice(0, 4).map(t => `<button class="attention-item ${t.state}" data-action="task-detail" data-id="${escape(t.id)}"><div><strong>${escape(taskTitle(t))}</strong><small>${t.state === "WAITING" ? t.wait?.kind === "input" ? "提供输入，继续执行" : "等待协作，可查看进度" : "查看状态说明并核对结果"}</small></div>${badge(t.state)}${icon("arrow")}</button>`).join("")}</div>` : ""}${recentArtifacts()}</section></div></section>`;
 }
 function chat() {
   const t = thread(state.selectedThread);
@@ -504,8 +432,8 @@ function chat() {
       <div id="live-messages">${live.map((stream) => streamMessage(stream, t)).join("")}</div>
       ${current?.state === "WAITING" ? `<div class="storage-note">${icon("clock")}<div>任务已暂停并保存进度，可在补充信息后继续。${current.wait?.kind === "input" ? '<button class="text-link" data-action="task-detail" data-id="' + escape(current.id) + '">提供输入并恢复 →</button>' : current.wait?.kind === "message" ? "等待协作消息到达。" : "等待子任务完成。"}</div></div>` : ""}
       ${current?.state === "UNCERTAIN" ? `<div class="storage-note">${icon("shield")}<div>执行结果需要核对，相关上下文和资源保持隔离。<button class="text-link" data-action="task-detail" data-id="${escape(current.id)}">查看待核对任务 →</button></div></div>` : ""}
-    </div><div class="composer-area"><form id="composer" class="composer"><textarea id="chat-input" data-focus="chat-input" aria-label="发送给 ${escape(t.title)} 的消息" placeholder="向 ${escape(a?.name || t.title)} 发送指令…" rows="2" ${state.session.state !== "OPEN" ? "disabled" : ""}>${escape(state.drafts.get(t.id) || "")}</textarea><div class="composer-footer"><div class="composer-tools"><button type="button" class="icon-btn" data-action="upload" title="添加共享产物" aria-label="上传产物">${icon("clip")}</button><span>${pending.length ? `${pending.length} 条协作消息待应用` : "Enter 发送 · Shift + Enter 换行"}</span>${pending.length ? '<button type="button" class="text-link" data-action="process-messages">处理消息</button>' : ""}</div>${current?.state === "RUNNING" ? `<button type="button" class="btn small" data-action="cancel-task" data-id="${escape(current.id)}">停止当前任务</button>` : ""}<button type="submit" class="btn primary" ${state.busy || state.session.state !== "OPEN" ? "disabled" : ""}>发送 ${icon("send")}</button></div></form><div class="composer-note">${tasks.some((t) => t.state === "RUNNING") ? "执行期间的新指令会排队，在下一次调用时读取。" : "关闭分页后，任务和对话仍会保留。"}</div></div></section>
-    <aside class="inspector" aria-label="执行详情"><button class="icon-btn inspector-close" data-action="toggle-inspector" aria-label="关闭执行详情">${icon("close")}</button><div class="inspector-section"><h3>${icon("flow")}执行上下文</h3><div class="kv"><span>当前状态</span>${current ? badge(current.state) : "<strong>准备就绪</strong>"}</div><div class="kv"><span>上下文版本</span><strong>${t.revision}</strong></div><div class="kv"><span>待应用消息</span><strong>${pending.length}</strong></div><div class="kv"><span>Thread</span><code title="${escape(t.id)}">${escape(t.id)}</code></div><div class="kv"><span>执行端</span><strong>${escape(a?.kind || "custom")}</strong></div></div>
+    </div><div class="composer-area"><form id="composer" class="composer"><textarea id="chat-input" data-focus="chat-input" aria-label="发送给 ${escape(t.title)} 的消息" placeholder="向 ${escape(a?.name || t.title)} 发送指令…" rows="2" ${state.session.state !== "OPEN" ? "disabled" : ""}>${escape(state.drafts.get(t.id) || "")}</textarea><div class="composer-footer"><div class="composer-tools"><button type="button" class="icon-btn" data-action="upload" title="添加工作产物" aria-label="上传产物">${icon("clip")}</button><span>${pending.length ? `${pending.length} 条协作消息待应用` : "Enter 发送 · Shift + Enter 换行"}</span>${pending.length ? '<button type="button" class="text-link" data-action="process-messages">处理消息</button>' : ""}</div>${current?.state === "RUNNING" ? `<button type="button" class="btn small" data-action="cancel-task" data-id="${escape(current.id)}">停止当前任务</button>` : ""}<button type="submit" class="btn primary" ${state.busy || state.session.state !== "OPEN" ? "disabled" : ""}>发送 ${icon("send")}</button></div></form><div class="composer-note">${tasks.some((t) => t.state === "RUNNING") ? "执行期间的新指令会排队，在下一次调用时读取。" : "关闭分页后，任务和对话仍会保留。"}</div></div></section>
+    <aside class="inspector" aria-label="执行详情"><button class="icon-btn inspector-close" data-action="toggle-inspector" aria-label="关闭执行详情">${icon("close")}</button><div class="inspector-section"><h3>${icon("flow")}执行上下文</h3><div class="kv"><span>当前状态</span>${current ? badge(current.state) : "<strong>准备就绪</strong>"}</div><div class="kv"><span>上下文版本</span><strong>${t.revision}</strong></div><div class="kv"><span>待应用消息</span><strong>${pending.length}</strong></div><div class="kv"><span>对话标识</span><code title="${escape(t.id)}">${escape(t.id)}</code></div><div class="kv"><span>执行端</span><strong>${escape(a?.kind || "custom")}</strong></div></div>
       <div class="inspector-section"><h3>${icon("clock")}任务记录</h3>${
         tasks
           .slice(0, 8)
@@ -617,10 +545,13 @@ function messageCard(m, compact = false) {
     taskId = report ? m.task_id : m.envelope?.source_task_id;
   return `<article class="message-card ${compact ? "feedback-card" : ""}"><div class="message-route">${source ? avatar(source.agent_id) : icon("terminal")}<strong>${escape(source?.title || "外部协调者")}</strong>${report ? `<span class="message-kind">Agent 报告</span>` : `${icon("arrow")}<strong>${escape(thread(m.target_thread_id)?.title || m.target_thread_id)}</strong>`}${badge(m.state)}</div><div class="message-text markdown">${markdown(m.summary_markdown)}</div><footer><span>${time(m.created_at)}${report ? " · 报告摘要" : ` · ${escape(m.target_port)} · ${escape(m.envelope?.message_type || "")}`}</span><div class="message-actions">${taskId ? `<button class="text-link" data-action="task-detail" data-id="${escape(taskId)}">查看任务 ${icon("arrow")}</button>` : ""}${!compact && !report && m.state === "PENDING" ? `<button class="text-link" data-action="process-target" data-id="${escape(m.target_thread_id)}">启动接收任务 ${icon("arrow")}</button>` : ""}</div></footer></article>`;
 }
-function recentFeedback() {
-  const items = agentFeedback(sessionMessages);
-  if (!items.length) return "";
-  return `<section class="agent-feedback" aria-labelledby="agent-feedback-title"><div class="section-heading"><h2 id="agent-feedback-title">Agent 反馈 <span class="subtitle">最近消息与报告</span></h2><button class="text-link" data-action="mode" data-mode="messages">查看全部 ${icon("arrow")}</button></div><div class="feedback-list">${items.map(item => messageCard(item, true)).join("")}</div></section>`;
+function artifactSourceLabel(item) {
+  const source = artifactSource(item, state.agents);
+  return source.kind === "agent" ? `来源 Agent：${source.label}` : source.label;
+}
+function recentArtifacts() {
+  const items = state.snapshot.artifacts.slice(0, 5);
+  return `<section class="recent-artifacts"><div class="section-heading"><h2>最近产物</h2><button class="text-link" data-action="mode" data-mode="artifacts">查看全部 ${icon("arrow")}</button></div>${items.length ? `<div class="recent-artifact-list">${items.map(a => `<div class="recent-artifact-row"><button class="recent-artifact-open" data-action="artifact-preview" data-id="${escape(a.id)}" data-focus="artifact-${escape(a.id)}" aria-label="查看原文：${escape(a.name)}">${icon("file")}<span><strong>${escape(a.name)}</strong><small>${escape(artifactSourceLabel(a))}</small><small>${formatBytes(a.size)} · ${time(a.created_at)}</small></span>${icon("chevron")}</button><a class="icon-btn" href="${artifactDownload(a.id)}" aria-label="下载 ${escape(a.name)}" title="下载产物">${icon("download")}</a></div>`).join("")}</div>` : `<p class="quiet-state">${icon("file")}Agent 交付成果或你上传文件后，会在这里显示。<button class="text-link" data-action="upload">添加产物</button></p>`}</section>`;
 }
 function messagesPage() {
   const all = sessionMessages, messages = all.filter(m => matchesMessageFilter(m, state.messageFilter));
@@ -644,28 +575,22 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+function artifactCard(a) {
+  return `<article class="artifact-card"><button class="artifact-card-open" data-action="artifact-preview" data-id="${escape(a.id)}" data-focus="artifact-${escape(a.id)}" aria-label="查看原文：${escape(a.name)}"><span class="file-symbol">${icon("file")}</span><h3 title="${escape(a.name)}">${escape(a.name)}</h3><p>${formatBytes(a.size)}<span>·</span>${time(a.created_at)}</p><span class="artifact-open-hint">查看原文 ${icon("arrow")}</span></button><a class="icon-btn artifact-download" href="${artifactDownload(a.id)}" aria-label="下载 ${escape(a.name)}" title="下载产物">${icon("download")}</a></article>`;
+}
 function artifactResults() {
-  const items = state.snapshot.artifacts.filter((a) =>
-    a.name
-      .toLocaleLowerCase()
-      .includes(state.artifactQuery.trim().toLocaleLowerCase()),
-  );
-  return items.length
-    ? `<div class="artifact-grid">${items.map((a) => `<article class="artifact-card"><div class="artifact-card-top"><span class="file-symbol">${icon("file")}</span><a class="icon-btn" href="/api/artifacts/${encodeURIComponent(a.id)}/download" aria-label="下载 ${escape(a.name)}" title="下载产物">${icon("download")}</a></div><h2 title="${escape(a.name)}">${escape(a.name)}</h2><p>${formatBytes(a.size)}<span>·</span>${time(a.created_at)}</p><div class="artifact-integrity" title="SHA256: ${escape(a.sha256)}">${icon("shield")}SHA256<span>${escape(a.sha256.slice(0, 10))}</span></div></article>`).join("")}</div>`
-    : empty(
-        state.artifactQuery ? "没有找到这个文件" : "把成果，留在团队的共享空间",
-        state.artifactQuery
-          ? "试试文件名中的其他关键词。"
-          : "上传参考材料或保存执行成果，让每个 Agent 都能接着推进。",
-        "upload",
-        "添加产物",
-      );
+  const query = state.artifactQuery.trim().toLocaleLowerCase();
+  const items = state.snapshot.artifacts.filter(a => {
+    const source = artifactSource(a, state.agents);
+    return `${a.name} ${source.label} ${source.agent_id || ""}`.toLocaleLowerCase().includes(query);
+  });
+  return items.length ? `<div class="artifacts-by-agent">${groupArtifacts(items, state.agents).map(({ source, items }) => `<section class="artifact-source-group" data-source-key="${escape(source.key)}"><div class="section-heading"><h2>${source.kind === "agent" ? avatar(source.agent_id) : icon(source.kind === "upload" ? "clip" : "file")}${escape(source.label)}</h2><span class="artifact-group-count">${items.length} 项产物</span></div><div class="artifact-grid">${items.map(artifactCard).join("")}</div></section>`).join("")}</div>` : empty(state.artifactQuery ? "没有匹配的产物" : "还没有工作产物", state.artifactQuery ? "试试文件名或来源 Agent 的名称。" : "Agent 交付的成果和你上传的文件会保存在当前会话。", "upload", "添加产物");
 }
 function artifactsPage() {
-  return `<section class="panel-page"><div class="page-heading"><div><p class="eyebrow">A PLACE FOR EVERY OUTCOME</p><h1>共享产物<span class="heading-dot">.</span></h1><p>参考、交接、成果。让重要的文件在协作中流动。</p></div><button class="btn primary" data-action="upload">${icon("plus")}添加产物</button></div><div class="filter-toolbar"><span class="artifact-total">${state.snapshot.artifacts.length} 个文件 <span>· ${formatBytes(state.snapshot.artifacts.reduce((sum, a) => sum + a.size, 0))}</span></span><label class="inline-search">${icon("search")}<input id="artifact-search" data-focus="artifact-search" value="${escape(state.artifactQuery)}" placeholder="搜索文件…" aria-label="搜索文件"></label></div><div id="artifact-results">${artifactResults()}</div><div class="storage-note">${icon("shield")}<div>文件安全保存在本机；上传后可通过产物引用，在任务与消息之间共享。</div></div></section>`;
+  return `<section class="panel-page"><div class="page-heading"><div><h1>工作产物</h1><p>按来源 Agent 整理当前会话的成果，点开文件可查看原文。</p></div><button class="btn primary" data-action="upload">${icon("plus")}添加产物</button></div><div class="filter-toolbar"><span class="artifact-total">${state.snapshot.artifacts.length} 个文件 <span>· ${formatBytes(state.snapshot.artifacts.reduce((sum, a) => sum + a.size, 0))}</span></span><label class="inline-search">${icon("search")}<input id="artifact-search" data-focus="artifact-search" value="${escape(state.artifactQuery)}" placeholder="搜索文件或来源 Agent…" aria-label="搜索文件或来源 Agent"></label></div><div id="artifact-results">${artifactResults()}</div><div class="storage-note">${icon("shield")}<div>文件保存在本机。用户上传、外部提交和历史来源未记录的产物单独列出。</div></div></section>`;
 }
 function agentsPage() {
-  return `<section class="overview"><p class="eyebrow">CONNECTED AGENTS</p><div class="page-heading"><div><h1>为每一项工作，找到合适的伙伴。</h1><p>不同模型，各有所长。连接你的执行端，组建自己的协作团队。</p></div><button class="btn primary" data-action="add-agent">${icon("plus")}添加 Agent</button></div><div class="agent-grid">${agentCards()}</div><div class="codex-guide"><h3>${icon("terminal")}外部协调 · Codex</h3><p>Codex 在自身客户端执行，不在平台中设置模型或密钥。通过有限协调接口控制这里的子任务。</p><button class="text-link" data-action="codex">查看接入方式 →</button></div></section>`;
+  return `<section class="overview"><p class="eyebrow">CONNECTED AGENTS</p><div class="page-heading"><div><h1>管理你的 Agent</h1><p>先连接模型，再补充工作指令和工具。配置完成后即可开始对话。</p></div><button class="btn primary" data-action="add-agent">${icon("plus")}添加 Agent</button></div><div class="agent-grid">${agentCards()}</div><details class="codex-guide"><summary>${icon("terminal")}外部协调 · Codex</summary><p>Codex 在自身客户端执行，通过平台接口协调子任务。</p><button class="text-link" data-action="codex">连接 Codex ${icon("arrow")}</button></details></section>`;
 }
 function ensureSettings() {
   if (!state.settingsDraft) {
@@ -717,15 +642,15 @@ function modelSetupNotice(d) {
   return `<div class="model-setup-note ${modelConfigured(d) ? "" : "pending"}"><div><strong>${modelConfigured(d) ? "模型参数已填写" : "请完成模型配置"}</strong><p>${modelConfigured(d) ? "保存后可测试接口连接；新执行会使用当前配置。无需认证的本地接口可留空密钥。" : "填写 API 地址、模型和所需密钥。保存后，等待模型配置的任务会继续执行。"}</p>${d.kind === "process" ? "<p>模型调用由平台统一管理，密钥保存在本机。修改配置无需改动 Agent 代码。</p>" : ""}</div><button type="button" class="btn small" data-action="test-model" ${!state.settingsId || state.testingModelId || state.savingSettings ? "disabled" : ""}>${state.testingModelId === d.id ? "正在测试…" : "测试已保存配置"}</button></div>${result ? `<p class="model-test-result ${result.ok ? "success" : "failure"}" role="status">${escape(result.message)}</p>` : ""}`;
 }
 function agentGeneral(d) {
-  return `<section class="form-section"><h3>基本信息</h3><div class="form-grid">${field("显示名称", "name", d.name, { placeholder: "为这个 agent 命名" })}${field("Agent ID", "id", d.id, { readonly: !!state.settingsId, placeholder: "小写字母、数字和连字符" })}<label class="field">执行方式<select data-setting="kind" data-focus="setting-kind"><option value="llm" ${d.kind === "llm" ? "selected" : ""}>LLM API · OpenAI-compatible</option><option value="mock" ${d.kind === "mock" ? "selected" : ""}>Mock · 无网络执行端</option><option value="process" ${d.kind === "process" ? "selected" : ""}>受管 JSONL 执行端</option></select></label>${field("并发上限", "max_concurrency", d.max_concurrency, { type: "number", hint: "同一 thread 始终只有一个执行者。" })}</div></section>
+  return `<section class="form-section"><h3>基本信息</h3><div class="form-grid">${field("显示名称", "name", d.name, { placeholder: "为这个 agent 命名" })}${field("Agent ID", "id", d.id, { readonly: !!state.settingsId, placeholder: "小写字母、数字和连字符" })}<label class="field">执行方式<select data-setting="kind" data-focus="setting-kind"><option value="llm" ${d.kind === "llm" ? "selected" : ""}>模型 API（兼容 OpenAI）</option><option value="mock" ${d.kind === "mock" ? "selected" : ""}>本机协议验证（无模型）</option><option value="process" ${d.kind === "process" ? "selected" : ""}>本机 Agent 程序</option></select></label>${field("并发上限", "max_concurrency", d.max_concurrency, { type: "number", hint: "同一对话每次只执行一个任务。" })}</div></section>
     ${d.kind === "process" ? `<section class="form-section"><h3>模型接入</h3><label class="toggle-row"><span>使用平台统一模型<small>此执行端需要模型推理时开启；纯文件处理或计算可以关闭。</small></span><input type="checkbox" data-setting="llm_required" data-focus="setting-llm_required" ${d.llm_required ? "checked" : ""}></label></section>` : ""}
-    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API Base URL", "base_url", d.base_url, { full: true, placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { full: true, placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
-    ${d.kind === "process" ? `<section class="form-section"><h3>执行程序</h3><label class="field">命令与参数 · JSON 数组<textarea class="code-editor" data-setting="command_text" data-focus="setting-command_text" spellcheck="false">${escape(d.command_text ?? JSON.stringify(d.command || [], null, 2))}</textarea><small>第一个元素为程序路径，随后为独立参数。执行端须实现平台 JSONL 协议。</small></label></section>` : ""}<section class="form-section"><h3>行为与协作</h3><label class="field">系统指令<textarea data-setting="system_prompt" data-focus="setting-system_prompt" placeholder="定义执行端的工作方式与输出要求。">${escape(d.system_prompt)}</textarea></label><label class="toggle-row"><span>启用协作工具<small>允许同空间消息、子任务提交和 checkpoint 等待。</small></span><input type="checkbox" data-setting="collaboration" ${d.collaboration ? "checked" : ""}></label><label class="toggle-row"><span>启用 Agent<small>关闭后停止新派发，保留历史记录。</small></span><input type="checkbox" data-setting="enabled" ${d.enabled ? "checked" : ""}></label></section>`;
+    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API 地址", "base_url", d.base_url, { placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}</div><details class="form-advanced"><summary>模型高级参数</summary><div class="form-grid">${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></details></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
+    ${d.kind === "process" ? agentLaunch.panel(d) : ""}<section class="form-section"><h3>行为与协作</h3><details class="form-advanced"><summary>编辑系统指令</summary><label class="field">系统指令<textarea data-setting="system_prompt" data-focus="setting-system_prompt" placeholder="定义执行端的工作方式与输出要求。">${escape(d.system_prompt)}</textarea></label></details><div class="instruction-preview">${content(d.system_prompt || "尚未添加系统指令。可在“工作指令”中定义职责与交付要求。")}</div><label class="toggle-row"><span>启用协作工具<small>允许同空间消息、子任务提交和 checkpoint 等待。</small></span><input type="checkbox" data-setting="collaboration" ${d.collaboration ? "checked" : ""}></label><label class="toggle-row"><span>启用 Agent<small>关闭后停止新派发，保留历史记录。</small></span><input type="checkbox" data-setting="enabled" ${d.enabled ? "checked" : ""}></label></section>`;
 }
 function workbenchSettings(d) {
   const workbench = d.workbench || {};
   const labels = { read_file: "读取文本", search_files: "搜索文件", write_file: "写入文件", edit_file: "修改文本", exec_command: "执行命令", read_image: "读取图片", publish_artifact: "交付产物" };
-  return `<section class="form-section"><h3>工作能力</h3><div class="form-grid"><label class="field">执行环境<select id="workbench-environment"><option value="">未分配</option>${(state.environments || []).filter(environment => environment.enabled).map(environment => `<option value="${escape(environment.id)}" ${workbench.environment_id === environment.id ? "selected" : ""}>${escape(environment.id)} · v${environment.revision}</option>`).join("")}</select></label><label class="field">目录权限<select id="workbench-permission"><option value="read-only" ${!workbench.permission_profile || workbench.permission_profile === "read-only" ? "selected" : ""}>只读</option><option value="workspace-write" ${workbench.permission_profile === "workspace-write" ? "selected" : ""}>任务目录可写</option><option value="trusted-local" ${workbench.permission_profile === "trusted-local" ? "selected" : ""} ${state.runtime?.trusted_local_execution ? "" : "disabled"}>可信本机执行${state.runtime?.trusted_local_execution ? "" : "（宿主未启用）"}</option></select></label></div>${Object.entries(labels).map(([name, label]) => `<label class="toggle-row"><span>${label}</span><input type="checkbox" data-workbench-tool="${name}" ${(workbench.tools || []).includes(name) ? "checked" : ""}></label>`).join("")}<small>环境由管理员准备。项目目录默认只读；可信本机命令使用宿主用户权限，需宿主明确允许。</small></section>`;
+  return `<section class="form-section"><h3>工作能力</h3><div class="form-grid"><label class="field">执行环境<select id="workbench-environment"><option value="">未分配</option>${(state.environments || []).filter(environment => environment.enabled).map(environment => `<option value="${escape(environment.id)}" ${workbench.environment_id === environment.id ? "selected" : ""}>${escape(environment.id)} · v${environment.revision}</option>`).join("")}</select></label><label class="field">目录权限<select id="workbench-permission"><option value="read-only" ${!workbench.permission_profile || workbench.permission_profile === "read-only" ? "selected" : ""}>只读</option><option value="workspace-write" ${workbench.permission_profile === "workspace-write" ? "selected" : ""}>任务目录可写</option><option value="trusted-local" ${workbench.permission_profile === "trusted-local" ? "selected" : ""} ${state.runtime?.trusted_local_execution ? "" : "disabled"}>可信本机执行${state.runtime?.trusted_local_execution ? "" : "（宿主未启用）"}</option></select></label></div><div class="workbench-tools">${Object.entries(labels).map(([name, label]) => `<label class="toggle-row"><span>${label}</span><input type="checkbox" data-workbench-tool="${name}" ${(workbench.tools || []).includes(name) ? "checked" : ""}></label>`).join("")}</div><small>环境由管理员准备。项目目录默认只读；可信本机命令使用宿主用户权限，需宿主明确允许。</small></section>`;
 }
 function settings() {
   ensureSettings();
@@ -738,8 +663,8 @@ function settings() {
     )
     .join(
       "",
-    )}<button class="settings-agent" data-action="add-agent">${icon("plus")}添加 Agent</button><div class="runtime-settings"><h3>执行预算</h3><label class="field">全局执行槽<input id="global-slots" type="number" min="1" max="256" value="${state.config.max_concurrency || 16}" aria-label="全局执行槽"></label><label class="field">外部预留执行槽<select id="reserved-slots" aria-label="外部预留执行槽">${Array.from({ length: state.config.max_concurrency || 16 }, (_, n) => n).map((n) => `<option value="${n}" ${state.config.reserved_external_slots === n ? "selected" : ""}>${n} 个 · 受管最多 ${(state.config.max_concurrency || 16) - n} 个</option>`).join("")}</select></label><button class="btn small" data-action="save-budget">保存预算</button><p class="form-hint">Codex 同时执行时预留 1 个槽。独立 mock 压测可设为 0。</p></div></aside>
-    <form id="agent-form" class="settings-form"><p class="eyebrow">AGENT SETTINGS</p><h1>${escape(state.settingsId ? d.name : "接入一个新 Agent")}</h1><p>为这个 Agent 设定工作方式。保存后，新的执行将使用最新配置。</p>${integrationUI.profileTabs()}${state.settingsTab === "general" ? agentGeneral(d) + workbenchSettings(d) : integrationUI.profilePanel()}<footer class="settings-footer"><div>${d.has_api_key ? '<span class="secret-status">密钥已设置</span> <button type="button" class="text-link" data-action="delete-secret">删除密钥</button>' : '<span class="secret-status">本机配置 · 仓库之外</span>'}</div><button class="btn primary" type="submit" ${state.savingSettings ? "disabled" : ""}>${icon("check")}${state.savingSettings ? "正在保存…" : "保存配置"}</button></footer><div class="storage-note">${icon("shield")}<div>运行数据库、配置、凭据与产物都保存在源码仓库之外。Codex 的模型配置继续由 Codex 管理。</div></div></form></div>`;
+    )}<button class="settings-agent" data-action="add-agent">${icon("plus")}添加 Agent</button><details class="runtime-settings"><summary>执行预算（全局）</summary><label class="field">全局执行槽<input id="global-slots" type="number" min="1" max="256" value="${state.config.max_concurrency || 16}" aria-label="全局执行槽"></label><label class="field">外部预留执行槽<select id="reserved-slots" aria-label="外部预留执行槽">${Array.from({ length: state.config.max_concurrency || 16 }, (_, n) => n).map((n) => `<option value="${n}" ${state.config.reserved_external_slots === n ? "selected" : ""}>${n} 个 · 受管最多 ${(state.config.max_concurrency || 16) - n} 个</option>`).join("")}</select></label><button class="btn small" data-action="save-budget">保存预算</button><p class="form-hint">全局预算限制同时执行的任务数量；外部执行可预留容量。</p></details></aside>
+    <form id="agent-form" class="settings-form"><p class="eyebrow">AGENT SETTINGS</p><h1>${escape(state.settingsId ? "配置" + d.name : "添加 Agent")}</h1><p>先连接模型，再补充工作指令与工具。保存后可测试连接。</p><ol class="setup-path"><li>基础与模型</li><li>工作指令</li><li>工具与技能</li></ol>${integrationUI.profileTabs()}${state.settingsTab === "general" ? agentGeneral(d) + workbenchSettings(d) : integrationUI.profilePanel()}<footer class="settings-footer"><div>${d.has_api_key ? '<span class="secret-status">密钥已设置</span> <button type="button" class="text-link" data-action="delete-secret">删除密钥</button>' : '<span class="secret-status">本机配置 · 仓库之外</span>'}</div><button class="btn primary" type="submit" ${state.savingSettings ? "disabled" : ""}>${icon("check")}${state.savingSettings ? "正在保存…" : "保存配置"}</button></footer><div class="storage-note">${icon("shield")}<div>配置、凭据与产物保存在本机。新的执行使用已保存配置。</div></div></form></div>`;
 }
 function commandResults() {
   const query = (state.modal?.query || "").trim().toLocaleLowerCase();
@@ -784,10 +709,10 @@ function commandResults() {
       icon: "agents",
     },
     ...[
-      ["overview", "会话总览", "grid"],
-      ["tasks", "任务与依赖", "flow"],
+      ["overview", "总览", "grid"],
+      ["tasks", "任务", "flow"],
       ["messages", "协作消息", "mail"],
-      ["artifacts", "共享产物", "folder"],
+      ["artifacts", "工作产物", "folder"],
     ].map(([mode, title, ico]) => ({
       group: "页面",
       title,
@@ -926,6 +851,8 @@ function renderModal() {
   const wasOpen = !!root.firstElementChild;
   const memory = focusMemory();
   const modalScroll = root.querySelector(".modal-content")?.scrollTop || 0;
+  const sourceScroll = root.querySelector(".artifact-source");
+  const sourcePosition = sourceScroll ? [sourceScroll.scrollTop, sourceScroll.scrollLeft] : [0, 0];
   if (!wasOpen && m && !modalReturnFocus) rememberModalOrigin();
   $("#app").inert = !!m;
   if (!m) {
@@ -934,7 +861,7 @@ function renderModal() {
     return;
   }
   if (m.type === "command") {
-    root.innerHTML = `<div class="modal-backdrop"><section class="modal command-modal" role="dialog" aria-modal="true" aria-labelledby="command-title"><h2 id="command-title" class="sr-only">搜索与快捷操作</h2><header><label class="command-input-wrap">${icon("search")}<input id="command-input" data-focus="command-input" aria-label="搜索与快捷操作" value="${escape(m.query || "")}" placeholder="搜索对话、Agent、任务，或跳转页面…" autocomplete="off"><kbd>Esc</kbd></label></header><div class="modal-content" id="command-results">${commandResults()}</div><footer><span><kbd>↑</kbd> <kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 打开</span><span><kbd>Esc</kbd> 关闭</span></footer></section></div>`;
+    root.innerHTML = `<div class="modal-backdrop ${wasOpen ? "continuing" : ""}"><section class="modal command-modal" role="dialog" aria-modal="true" aria-labelledby="command-title"><h2 id="command-title" class="sr-only">搜索与快捷操作</h2><header><label class="command-input-wrap">${icon("search")}<input id="command-input" data-focus="command-input" aria-label="搜索与快捷操作" value="${escape(m.query || "")}" placeholder="搜索对话、Agent、任务，或跳转页面…" autocomplete="off"><kbd>Esc</kbd></label></header><div class="modal-content" id="command-results">${commandResults()}</div><footer><span><kbd>↑</kbd> <kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 打开</span><span><kbd>Esc</kbd> 关闭</span></footer></section></div>`;
     restoreModalFocus(memory);
     $("#command-results").scrollTop = modalScroll;
     return;
@@ -1009,6 +936,13 @@ function renderModal() {
     content = taskDetail(m.task);
     footer = `${m.task ? `<button class="btn" data-action="select-thread" data-id="${escape(m.task.thread_id)}">打开对话</button>` : ""}<button class="btn" data-action="close-modal">关闭</button>`;
   }
+  if (m.type === "artifact") {
+    title = escape(m.artifact.name);
+    wide = true;
+    const preview = m.preview;
+    content = `<div class="artifact-preview-meta"><span>只读原文</span><span>${escape(artifactSourceLabel(m.artifact))}</span><span>${formatBytes(m.artifact.size)}</span>${preview?.encoding ? `<span>${escape(preview.encoding.toUpperCase())}</span>` : ""}</div>${m.loading ? '<p class="loading-inline" role="status">正在读取产物原文…</p>' : m.error ? `<p class="artifact-preview-error" role="alert">${escape(m.error)}</p>` : preview?.kind === "text" ? `${preview.truncated ? '<p class="artifact-preview-notice">文件较大，仅显示前 1 MB；下载可获取完整文件。</p>' : ""}${preview.text ? `<pre class="artifact-source" data-focus="artifact-source" tabindex="0" role="region" aria-label="产物原文"><code></code></pre>` : '<p class="quiet-state">这是一个空文本文件。</p>'}` : `<p class="quiet-state">${escape(preview?.message || "此格式暂不支持原文预览。")}</p>`}`;
+    footer = `${preview?.kind === "text" ? `<button class="btn" data-action="copy-artifact-text">${preview.truncated ? "复制已显示文本" : "复制原文"}</button>` : ""}<a class="btn" href="${artifactDownload(m.artifact.id)}">${icon("download")}下载文件</a><button class="btn primary" data-action="close-modal">关闭</button>`;
+  }
   if (m.type === "codex") {
     title = "连接外部 Codex";
     content = `<div class="codex-guide"><h3>${icon("terminal")}对话留在 Codex，协作通过接口进行</h3><p>平台不接管 Codex 的模型、密钥和聊天。当前为外部执行预留 <strong>${state.config.reserved_external_slots || 0}</strong> 个槽。</p></div><p><strong>CLI</strong><br><code>oea request METHOD --params-file PATH</code></p><p><strong>MCP · 连接已启动的平台</strong><br><code>oea mcp --connect --compact</code></p><p><strong>HTTP</strong><br>协调端使用本机凭据调用 <code>/api/rpc</code>，可提交子任务、查询结果、发送协作消息和获取产物引用。</p><p class="form-hint">完整参数与生命周期约定见仓库的接口说明。参数文件、凭据和输出存放在源码目录之外。</p>`;
@@ -1022,14 +956,22 @@ function renderModal() {
     footer = extensionModal.footer;
     wide = !!extensionModal.wide;
   }
-  root.innerHTML = `<div class="modal-backdrop"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><header><h2 id="dialog-title">${title}</h2><button class="icon-btn" data-action="close-modal" aria-label="关闭对话框" ${m.pending ? "disabled" : ""}>${icon("close")}</button></header><div class="modal-content">${content}</div><footer>${footer}</footer></section></div>`;
+  root.innerHTML = `<div class="modal-backdrop ${wasOpen ? "continuing" : ""}"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><header><h2 id="dialog-title">${title}</h2><button class="icon-btn" data-action="close-modal" aria-label="关闭对话框" ${m.pending ? "disabled" : ""}>${icon("close")}</button></header><div class="modal-content">${content}</div><footer>${footer}</footer></section></div>`;
+  if (m.type === "artifact") {
+    const source = root.querySelector(".artifact-source code");
+    if (source) {
+      source.textContent = m.preview.text;
+      source.parentElement.scrollTop = sourcePosition[0];
+      source.parentElement.scrollLeft = sourcePosition[1];
+    }
+  }
   restoreModalFocus(memory);
   root.querySelector(".modal-content").scrollTop = modalScroll;
 }
 function taskDetail(task) {
   if (!task) return '<div class="loading-inline">正在读取任务…</div>';
-  return `<div class="task-detail"><div class="split">${badge(task.state)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3><pre>${escape(task.title || task.spec?.payload?.input || "协作任务")}</pre>${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>状态说明</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>完成结果</h3><div class="message-text">${markdown(task.result.summary_markdown || "任务已完成，完整内容已保留供协作使用。")}</div>` : ""}
-    <h3>执行尝试</h3>${(task.runs || []).map((r) => `<div class="kv"><span>Run ${r.attempt_no} · ${time(r.started_at)}</span><strong>${escape(r.state)}</strong></div>`).join("") || "<p>尚未派发。</p>"}
+  return `<div class="task-detail"><div class="split">${badge(task.state)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3>${content(task.spec?.payload?.input || task.title || "协作任务")}${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>状态说明</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>完成结果</h3><div class="message-text">${markdown(task.result.summary_markdown || "任务已完成，完整内容已保留供协作使用。")}</div>` : ""}
+    <h3>执行尝试</h3>${(task.runs || []).map((r) => `<div class="kv"><span>Run ${r.attempt_no} · ${time(r.started_at)}</span><strong>${escape(statuses[r.state] || r.state)}</strong></div>`).join("") || "<p>尚未派发。</p>"}
     ${task.spec?.depends_on?.length ? `<h3>依赖任务</h3>${task.spec.depends_on.map((id) => `<button class="text-link" data-action="task-detail" data-id="${escape(id)}">${escape(id)}</button>`).join("<br>")}` : ""}
     <div class="inline-actions">${["RUNNING", "QUEUED", "WAITING"].includes(task.state) ? `<button class="btn danger" data-action="cancel-task" data-id="${escape(task.id)}">提交取消申请</button>` : ""}${terminal.has(task.state) ? `<button class="btn" data-action="retry-task" data-id="${escape(task.id)}">创建重试任务</button>` : ""}</div>
     ${task.state === "WAITING" && task.wait?.kind === "input" ? `<h3>提供等待输入</h3><label class="field"><textarea id="resume-content" data-focus="resume-content" aria-label="恢复任务的补充信息" placeholder="为当前任务提供输入">${escape(state.modal?.resume || "")}</textarea></label><div class="toolbar"><button class="btn primary" data-action="resume-task" data-id="${escape(task.id)}">恢复任务</button></div>` : ""}
@@ -1123,7 +1065,6 @@ async function selectSession(id) {
   state.modal = null;
   state.connection = "connecting";
   state.selectedThread = null;
-  state.sidebarOpen = false;
   state.taskFilter = "all";
   state.taskQuery = "";
   state.artifactQuery = "";
@@ -1323,7 +1264,6 @@ async function refreshConversation(id, older = false) {
 async function selectThread(id) {
   if (!thread(id)) return;
   state.modal = null;
-  state.sidebarOpen = false;
   state.route = "workspace";
   state.selectedThread = id;
   if (!state.openTabs.includes(id)) {
@@ -1418,8 +1358,26 @@ async function upload() {
   input.click();
 }
 async function action(name, element) {
+  if (agentLaunch.action(name, element)) return;
   if (name.startsWith("wf-")) return workflowUI.action(name, element);
   const id = element.dataset.id;
+  if (name === "artifact-preview") {
+    const artifact = state.snapshot.artifacts.find(item => item.id === id);
+    if (!artifact) throw new Error("当前会话中未找到此产物。");
+    const modal = { type: "artifact", artifact, loading: true };
+    state.modal = modal;
+    renderModal();
+    try { modal.preview = await readArtifactPreview(artifact); }
+    catch (error) { modal.error = error.message; }
+    if (state.modal === modal) { modal.loading = false; renderModal(); }
+    return;
+  }
+  if (name === "copy-artifact-text") {
+    if (state.modal?.type !== "artifact" || state.modal.preview?.kind !== "text") return;
+    await navigator.clipboard.writeText(state.modal.preview.text);
+    toast("已复制产物原文");
+    return;
+  }
   if (name === "delete-project" || name === "delete-session") {
     const project = name === "delete-project", target = project ? state.project : state.session;
     if (!target) return;
@@ -1496,26 +1454,6 @@ async function action(name, element) {
     return;
   }
   if (await integrationUI.action(name, element)) return;
-  if (
-    state.sidebarOpen &&
-    [
-      "route",
-      "mode",
-      "new-session",
-      "open-agent",
-      "add-agent",
-      "command",
-      "codex",
-    ].includes(name)
-  ) {
-    state.sidebarOpen = false;
-    render();
-  }
-  if (name === "toggle-sidebar") {
-    state.sidebarOpen = !state.sidebarOpen;
-    render();
-    (state.sidebarOpen ? $("#workspace-select") : $(".mobile-menu"))?.focus();
-  }
   if (name === "toggle-inspector") {
     state.inspectorOpen = !state.inspectorOpen;
     render();
@@ -1620,7 +1558,7 @@ async function action(name, element) {
   if (name === "add-agent") {
     state.settingsTab = "general";
     state.selectedSkill = 0;
-    state.profilePreview = false;
+    state.profilePreview = true;
     state.settingsId = null;
     state.settingsDraft = {
       id: "",
@@ -1649,7 +1587,7 @@ async function action(name, element) {
   }
   if (name === "select-settings") {
     state.selectedSkill = 0;
-    state.profilePreview = false;
+    state.profilePreview = true;
     state.settingsId = id;
     state.settingsDraft = { ...structuredClone(agent(id)), api_key: "" };
     render();
@@ -1899,6 +1837,7 @@ const writeActions = new Set([
   "delete-secret",
 ]);
 document.addEventListener("click", async (event) => {
+  if (editorInteraction(event)) return;
   if (
     event.target.classList.contains("modal-backdrop") &&
     state.modal?.type === "command"
@@ -1907,9 +1846,14 @@ document.addEventListener("click", async (event) => {
     renderModal();
     return;
   }
+  for (const menu of document.querySelectorAll(".context-menu[open]")) {
+    if (!menu.contains(event.target)) menu.open = false;
+  }
   const button = event.target.closest("[data-action]");
   if (!button || button.disabled) return;
   event.preventDefault();
+  const menu = button.closest(".context-menu");
+  if (menu) menu.open = false;
   const key = `${button.dataset.action}:${button.dataset.id || ""}`;
   const guarded = writeActions.has(button.dataset.action);
   if (guarded && pendingActions.has(key)) return;
@@ -1924,10 +1868,15 @@ document.addEventListener("click", async (event) => {
     button.removeAttribute("aria-busy");
   }
 });
+document.addEventListener("toggle", (event) => {
+  agentLaunch.toggle(event.target);
+  integrationUI.toggle(event.target);
+}, true);
 document.addEventListener("input", (event) => {
   const e = event.target;
   integrationUI.input(e);
   workflowUI.input(e);
+  agentLaunch.input(e);
   if (e.id === "command-input" && state.modal?.type === "command") {
     state.modal.query = e.value;
     $("#command-results").innerHTML = commandResults();
@@ -1967,7 +1916,9 @@ document.addEventListener("input", (event) => {
     state.workflowRows[Number(e.dataset.index)][e.dataset.workflow] = e.value;
 });
 document.addEventListener("change", (event) => {
+  if (editorInteraction(event)) return;
   const e = event.target;
+  agentLaunch.change(e);
   if (e.id?.startsWith("workbench-") || e.dataset.workbenchTool) {
     const environment = $("#workbench-environment").value;
     state.settingsDraft.workbench = environment ? {
@@ -2036,21 +1987,7 @@ document.addEventListener("submit", async (event) => {
         toast("填写 Agent ID 和显示名称");
         return;
       }
-      if (d.kind === "process") {
-        try {
-          config.command = JSON.parse(
-            d.command_text ?? JSON.stringify(d.command || []),
-          );
-        } catch {
-          throw new Error("执行程序需要填写 JSON 字符串数组。");
-        }
-        if (
-          !Array.isArray(config.command) ||
-          !config.command.length ||
-          config.command.some((v) => typeof v !== "string")
-        )
-          throw new Error("请填写可执行程序及其参数。");
-      }
+      if (d.kind === "process") config.command = agentLaunch.commit(d);
       if (d.api_key) config.api_key = d.api_key;
       const submittedDraft = JSON.stringify(d);
       state.savingSettings = true;
@@ -2076,6 +2013,10 @@ document.addEventListener("submit", async (event) => {
   }
 });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const menu = document.querySelector(".context-menu[open]");
+    if (menu) { menu.open = false; menu.querySelector("summary").focus(); event.preventDefault(); return; }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     // Preserve unfinished forms; Escape closes them explicitly.
@@ -2091,12 +2032,6 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     state.modal = null;
     renderModal();
-    return;
-  }
-  if (event.key === "Escape" && state.sidebarOpen) {
-    state.sidebarOpen = false;
-    render();
-    $(".mobile-menu")?.focus();
     return;
   }
   if (event.key === "Escape" && state.inspectorOpen) {
@@ -2140,9 +2075,9 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     $("#composer").requestSubmit();
   }
-  if (event.key === "Tab" && (state.modal || state.sidebarOpen)) {
+  if (event.key === "Tab" && state.modal) {
     const elements = [
-      ...(state.modal ? $("#modal-root") : $(".sidebar")).querySelectorAll(
+      ...$("#modal-root").querySelectorAll(
         "button,input,textarea,select,a[href]",
       ),
     ].filter((e) => !e.disabled && e.getClientRects().length);
@@ -2195,7 +2130,6 @@ window.addEventListener("hashchange", () => {
     if (route === "workflows") workflowUI.load().catch((error) => toast(error.message, true));
   }
 });
-window.addEventListener("beforeunload", () => eventSource?.close());
 // A browser network change prompts one local check; loopback may remain usable
 // while the machine is offline. SSE errors still detect host-only outages.
 window.addEventListener("offline", () => reconnect().catch(() => {}));
@@ -2208,9 +2142,5 @@ window.addEventListener("storage", (event) => {
     messageReads.delete(state.session.id);
     render();
   }
-});
-window.matchMedia("(max-width: 820px)").addEventListener("change", () => {
-  state.sidebarOpen = false;
-  render();
 });
 boot();

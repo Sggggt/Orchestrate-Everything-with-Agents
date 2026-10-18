@@ -121,7 +121,7 @@ AREAS = {
         )},
     ),
     "artifacts": (
-        "共享产物元数据及本机文件传输",
+        "工作产物元数据及本机文件传输",
         {
             "get": "artifacts.get",
             "upload_file": "@upload_file",

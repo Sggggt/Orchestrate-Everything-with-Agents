@@ -35,7 +35,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 | 派任务、一次性依赖、等待、取消、恢复、核对 | [任务与依赖](workflows/tasks.md) | `tasks` |
 | 并行启动多个子 Agent 实例、Agent 池路由、批次结果和取消 | [多实例编排](workflows/instances.md) | `instances` |
 | Agent 之间交流、发送上下文、检查回执 | [交流](workflows/messages.md) | `messages` |
-| 上传、查询、下载共享文件与产物 | [产物](workflows/artifacts.md) | `artifacts` |
+| 上传、查询、下载工作产物 | [产物](workflows/artifacts.md) | `artifacts` |
 | 启动、升级、备份、接口或连接故障 | [维护](workflows/maintenance.md) | `control`；有限本机操作 |
 | 双向运维、报告问题、请求/回复指导、接收异常或派发诊断测试 | [运维通道](workflows/operations.md) | `operations` |
 

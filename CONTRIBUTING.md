@@ -25,7 +25,7 @@ For synthetic concurrency measurements, run `python -B scripts/benchmark_runtime
 - Update the relevant public guide and focused Codex workflow when a contract changes.
 - Add tests for behavior that can regress; avoid tests that merely repeat implementation details.
 - Keep model keys, tokens, personal paths, company records, downloads, browser captures and generated state out of commits. Use invented generic examples and `example.com` or `example.invalid` for external addresses.
-- Keep the shared SVG and existing visual language when changing frontend controls. Verify narrow screens and keyboard access for affected flows.
+- Keep the shared SVG and existing visual language when changing frontend controls. Verify desktop viewport sizes and keyboard access for affected flows.
 
 The source release includes generic automated tests and source protocol stubs. Generate test inputs in external temporary directories; do not check in fixed datasets, captures, test reports or populated workspaces. The release check verifies tracked paths and root ignore rules as well as public files and links. Ignoring a file does not remove it from Git. Build packages outside the checkout with `python -B -m build --outdir /external/path`, then inspect the actual wheel and source archive before publishing.
 

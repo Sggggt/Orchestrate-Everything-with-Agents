@@ -14,7 +14,7 @@
 
 平台外部协调者不要伪造 source_run_id / source_task_id / source_thread_id 代表某个 Agent；由正在执行的 Agent 自行调用 RunContext.send_message 时，平台才验证该 run 的来源与范围。关联文件使用同空间 artifact_ids，必要时补 correlation_id / causation_id。
 
-主动消息可在 payload 中同时放简短 Markdown 的 summary_markdown 和完整 content。前端总览展示最近三条 Agent 消息/报告，协作消息页渲染摘要；完整内容继续交给接收 Agent。无需为摘要再调用模型。平台或工具问题、请求指导转 [运维通道](operations.md)，不伪装成普通任务成功。
+主动消息可在 payload 中同时放简短 Markdown 的 summary_markdown 和完整 content。协作消息页渲染消息与报告摘要；完整内容继续交给接收 Agent。总览展示最近工作产物及来源 Agent。无需为摘要再调用模型。平台或工具问题、请求指导转 [运维通道](operations.md)，不伪装成普通任务成功。
 
 `messages.get {message_id}` 检查单条；`messages.list {session_id, cursor, limit:25}` 取一页。PENDING 为待应用，OFFERED 为已交付执行端，APPLIED 才表示已确认消费；投递成功不等于对方已经处理。
 

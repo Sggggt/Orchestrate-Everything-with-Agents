@@ -1,3 +1,5 @@
+import { createLaunchEditor } from "./launch.mjs";
+import { content, schemaView, valueEditor, readEditor, toolResult } from "./presentation.mjs";
 import { createSkillIntegration } from "./skills.js";
 /* MCP registry and per-Agent profile editors. No external browser dependencies. */
 export function createIntegrationUI({
@@ -14,6 +16,13 @@ export function createIntegrationUI({
   loadBootstrap,
   time,
 }) {
+  const serviceLaunch = createLaunchEditor({
+    scope: "mcp", getDraft: () => state.mcpDraft,
+    read: draft => draft.command ? [draft.command, ...(draft.args || [])] : [],
+    write: (draft, command) => { draft.command = command[0]; draft.args = command.slice(1); state.mcpDirty = true; },
+    escape, icon, render, defaultMode: "program",
+    purpose: "这里决定平台如何启动本机 MCP 服务。连接后可发现工具；实际调用在工具试运行或 Agent 任务中进行。",
+  });
   const skillUI = createSkillIntegration({ state, escape, icon, markdown, api, toast, render, loadBootstrap });
   const server = (id) => state.mcpServers.find((s) => s.id === id);
   const mcpFields = [
@@ -63,7 +72,6 @@ export function createIntegrationUI({
       transport: "stdio",
       command: "",
       args: [],
-      args_text: "[]",
       cwd: "",
       url: "",
       enabled: true,
@@ -103,7 +111,7 @@ export function createIntegrationUI({
   }
   function mcpPage() {
     if (state.mcpDraft) return mcpEditor();
-    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 集成<span class="heading-dot">.</span></h1><p>一次注册，按需分配。连接你的工具，也连接每个 Agent 的可能性。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button></div></div><div class="form-section directory-registration"><div class="section-heading"><div><h2>从目录注册 MCP</h2><p class="form-hint">选择含 mcp.json 的目录。连接配置在目录中维护，凭据在注册后单独设置。</p></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" placeholder="含 mcp.json 的绝对目录路径"></label><button class="btn primary" data-action="mcp-directory-register">${icon("plus")}注册目录</button></div></div><div class="integration-banner"><span class="integration-banner-icon">${icon("plug")}</span><div><h2>你的团队，共享同一座工具库。</h2><p>平台统一管理连接、权限与调用记录。每个 Agent 保留自己的指令、技能和上下文。</p></div><button class="btn" data-action="mcp-sdk">${icon("terminal")}SDK 与 Codex 接入</button></div><div class="integration-stats">${[
+    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 工具</h1><p>注册服务 → 连接并发现工具 → 在 Agent 配置中授权使用。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button></div></div><details class="form-section directory-registration"><summary>已有 mcp.json？从目录注册</summary><div class="section-heading"><div><h2>从目录注册 MCP</h2><p class="form-hint">选择含 mcp.json 的目录。连接配置在目录中维护，凭据在注册后单独设置。</p></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" placeholder="含 mcp.json 的绝对目录路径"></label><button class="btn primary" data-action="mcp-directory-register">${icon("plus")}注册目录</button></div></details><div class="integration-banner"><span class="integration-banner-icon">${icon("plug")}</span><div><h2>工具需要单独授权给 Agent</h2><p>连接测试仅发现工具。实际调用由 Agent 的工具配置与运行时权限共同约束。</p></div><button class="btn" data-action="mcp-sdk">${icon("terminal")}SDK 与 Codex 接入</button></div><div class="integration-stats">${[
       ["已注册服务", state.mcpServers.length],
       [
         "已连接",
@@ -139,7 +147,7 @@ export function createIntegrationUI({
     )}${saved?.last_error ? `<div class="integration-error">${escape(saved.last_error.safe_message)}<small>${escape(saved.last_error.code)}</small></div>` : ""}${content}</section>`;
   }
   function mcpConnectionForm(d, saved) {
-    return `<form id="mcp-form" class="integration-form"><section class="form-section"><h3>服务信息</h3><div class="form-grid">${input("显示名称", "name", d.name, { placeholder: "例如：文档工具" })}${input("服务 ID", "id", d.id, { placeholder: "小写字母、数字和连字符", readonly: !!state.mcpId })}${input("服务描述", "description", d.description, { full: true, placeholder: "这个服务提供什么能力？" })}<label class="field">连接方式<select data-mcp="transport" data-focus="mcp-transport"><option value="stdio" ${d.transport === "stdio" ? "selected" : ""}>STDIO · 本地服务</option><option value="streamable-http" ${d.transport === "streamable-http" ? "selected" : ""}>Streamable HTTP</option><option value="sse" ${d.transport === "sse" ? "selected" : ""}>HTTP + SSE · 兼容模式</option></select></label><label class="field">会话共享方式<select data-mcp="session_scope" data-focus="mcp-session_scope"><option value="consumer" ${d.session_scope === "consumer" ? "selected" : ""}>按调用方隔离（推荐）</option><option value="shared" ${d.session_scope === "shared" ? "selected" : ""}>共享同一个会话</option></select><small>有当前项目或浏览器状态的服务，推荐隔离；服务配置仍由所有 Agent 共用。</small></label></div></section><section class="form-section"><h3>${d.transport === "stdio" ? "启动本地服务" : "连接服务地址"}</h3><div class="form-grid">${d.transport === "stdio" ? `${input("可执行程序", "command", d.command, { full: true, placeholder: "python、node 或可执行文件的绝对路径" })}${textarea("启动参数 · JSON 数组", "args_text", d.args_text, '例如：["-m", "your_mcp_server"]。每个参数独立填写，不使用 Shell 命令拼接。')}${input("工作目录（可选）", "cwd", d.cwd, { full: true, placeholder: "本机目录的绝对路径" })}${textarea("环境变量 · JSON 对象", "env_text", d.env_text, `${saved?.env_keys?.length ? "已配置：" + escape(saved.env_keys.join("、")) + "。" : ""}留空保留；填写对象替换；填写 {} 清空。值仅写入本机加密存储。`)}` : `${input("MCP 服务 URL", "url", d.url, { full: true, type: "url", placeholder: "https://your-service/mcp" })}${textarea("认证及请求头 · JSON 对象", "headers_text", d.headers_text, `${saved?.header_keys?.length ? "已配置：" + escape(saved.header_keys.join("、")) + "。" : ""}例如 Authorization。留空保留，填写 {} 清空；敏感值不会回传浏览器。`)}`}</div></section><section class="form-section"><h3>访问与运行</h3><div class="form-grid">${input("启动超时（秒）", "startup_timeout_seconds", d.startup_timeout_seconds, { type: "number" })}${input("工具调用超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}${input("每个连接的并发调用", "max_concurrency", d.max_concurrency, { type: "number" })}${input("最多保留的连接数", "max_connections", d.max_connections, { type: "number" })}${textarea("工具允许列表（可选）", "allowed_text", d.allowed_text, "每行一个原始工具名称；留空表示允许服务发现的全部工具。Agent 还可以选择更小的工具范围。")}</div><label class="toggle-row"><span>启用服务<small>关闭后不再建立连接或接受新的调用。</small></span><input type="checkbox" data-mcp="enabled" ${d.enabled ? "checked" : ""}></label><label class="toggle-row"><span>允许 Codex 与外部 SDK 调用<small>通过平台接口共用服务；仍需平台的本机访问凭据。</small></span><input type="checkbox" data-mcp="expose_to_codex" ${d.expose_to_codex ? "checked" : ""}></label><label class="toggle-row"><span>在 MCP 调用历史中持久保存结果<small>默认仅保留调用元数据。Agent 的对话与执行记录由其运行时另行保存。</small></span><input type="checkbox" data-mcp="persist_results" ${d.persist_results ? "checked" : ""}></label></section><footer class="settings-footer"><div class="inline-actions">${state.mcpId ? `<button type="button" class="btn small" data-action="mcp-disconnect" data-id="${escape(state.mcpId)}">断开连接</button><button type="button" class="text-link danger-text" data-action="mcp-delete-confirm" data-id="${escape(state.mcpId)}">移除服务</button>` : '<span class="form-hint">凭据加密保存 · 配置独立于源码</span>'}</div><button class="btn primary" type="submit" ${state.mcpSaving ? "disabled" : ""}>${icon("check")}${state.mcpSaving ? "保存中…" : "保存服务"}</button></footer></form>`;
+    return `<form id="mcp-form" class="integration-form"><section class="form-section"><h3>服务信息</h3><div class="form-grid">${input("显示名称", "name", d.name, { placeholder: "例如：文档工具" })}${input("服务 ID", "id", d.id, { placeholder: "小写字母、数字和连字符", readonly: !!state.mcpId })}${input("服务描述", "description", d.description, { full: true, placeholder: "这个服务提供什么能力？" })}<label class="field">连接方式<select data-mcp="transport" data-focus="mcp-transport"><option value="stdio" ${d.transport === "stdio" ? "selected" : ""}>STDIO · 本地服务</option><option value="streamable-http" ${d.transport === "streamable-http" ? "selected" : ""}>Streamable HTTP</option><option value="sse" ${d.transport === "sse" ? "selected" : ""}>HTTP + SSE · 兼容模式</option></select></label><label class="field">会话共享方式<select data-mcp="session_scope" data-focus="mcp-session_scope"><option value="consumer" ${d.session_scope === "consumer" ? "selected" : ""}>按调用方隔离（推荐）</option><option value="shared" ${d.session_scope === "shared" ? "selected" : ""}>共享同一个会话</option></select><small>有当前项目或浏览器状态的服务，推荐隔离；服务配置仍由所有 Agent 共用。</small></label></div></section>${d.transport === "stdio" ? serviceLaunch.panel(d) : ""}<section class="form-section"><h3>${d.transport === "stdio" ? "运行目录与环境变量" : "连接服务地址"}</h3><div class="form-grid">${d.transport === "stdio" ? `${input("工作目录（可选）", "cwd", d.cwd, { full: true, placeholder: "本机目录的绝对路径" })}<div class="field full"><span>环境变量</span><small>${saved?.env_keys?.length ? "已保存：" + escape(saved.env_keys.join("、")) + "。" : ""}保留已保存的值；编辑后将整组替换并加密保存。</small>${valueEditor(JSON.parse(d.env_text || "{}"), "mcp-env", { type: "object", additionalProperties: { type: "string", writeOnly: true } })}<button type="button" class="text-link danger-text" data-action="mcp-clear-secrets" data-secret="env">清空已保存的环境变量</button></div>` : `${input("MCP 服务 URL", "url", d.url, { full: true, type: "url", placeholder: "https://your-service/mcp" })}<div class="field full"><span>认证及请求头</span><small>${saved?.header_keys?.length ? "已保存：" + escape(saved.header_keys.join("、")) + "。" : ""}编辑后将整组替换并加密保存；敏感值不会回传浏览器。</small>${valueEditor(JSON.parse(d.headers_text || "{}"), "mcp-headers", { type: "object", additionalProperties: { type: "string", writeOnly: true } })}<button type="button" class="text-link danger-text" data-action="mcp-clear-secrets" data-secret="headers">清空已保存的请求头</button></div>`}</div></section><details class="form-section form-advanced"><summary>访问与运行高级设置</summary><div class="form-grid">${input("启动超时（秒）", "startup_timeout_seconds", d.startup_timeout_seconds, { type: "number" })}${input("工具调用超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}${input("每个连接的并发调用", "max_concurrency", d.max_concurrency, { type: "number" })}${input("最多保留的连接数", "max_connections", d.max_connections, { type: "number" })}${textarea("工具允许列表（可选）", "allowed_text", d.allowed_text, "每行一个原始工具名称；留空表示允许服务发现的全部工具。Agent 还可以选择更小的工具范围。")}</div><label class="toggle-row"><span>启用服务<small>关闭后不再建立连接或接受新的调用。</small></span><input type="checkbox" data-mcp="enabled" ${d.enabled ? "checked" : ""}></label><label class="toggle-row"><span>允许 Codex 与外部 SDK 调用<small>通过平台接口共用服务；仍需平台的本机访问凭据。</small></span><input type="checkbox" data-mcp="expose_to_codex" ${d.expose_to_codex ? "checked" : ""}></label><label class="toggle-row"><span>在 MCP 调用历史中持久保存结果<small>默认仅保留调用元数据。Agent 的对话与执行记录由其运行时另行保存。</small></span><input type="checkbox" data-mcp="persist_results" ${d.persist_results ? "checked" : ""}></label></details><footer class="settings-footer"><div class="inline-actions">${state.mcpId ? `<button type="button" class="btn small" data-action="mcp-disconnect" data-id="${escape(state.mcpId)}">断开连接</button><button type="button" class="text-link danger-text" data-action="mcp-delete-confirm" data-id="${escape(state.mcpId)}">移除服务</button>` : '<span class="form-hint">凭据加密保存 · 配置独立于源码</span>'}</div><button class="btn primary" type="submit" ${state.mcpSaving ? "disabled" : ""}>${icon("check")}${state.mcpSaving ? "保存中…" : "保存服务"}</button></footer></form>`;
   }
   function mcpTools() {
     const tools = state.mcpDetail?.catalog?.tools || [];
@@ -152,7 +160,7 @@ export function createIntegrationUI({
               const allowed =
                 state.mcpDetail.allowed_tools == null ||
                 state.mcpDetail.allowed_tools.includes(t.name);
-              return `<article class="tool-card"><div class="tool-card-head"><span class="tool-symbol">${icon("terminal")}</span><h3>${escape(t.name)}</h3><span class="badge ${allowed ? "" : "DISABLED"}">${!allowed ? "未开放" : t.annotations?.readOnlyHint ? "只读提示" : "可执行"}</span><button class="btn small" data-action="mcp-test-tool" data-tool="${escape(t.name)}" ${!allowed || !state.mcpDetail.expose_to_codex ? "disabled" : ""}>试运行 ${icon("arrow")}</button></div><p>${escape(t.description || "此工具未提供描述。")}</p><details><summary>参数协议</summary><pre>${escape(json(t.inputSchema || {}))}</pre></details></article>`;
+              return `<article class="tool-card"><div class="tool-card-head"><span class="tool-symbol">${icon("terminal")}</span><h3>${escape(t.name)}</h3><span class="badge ${allowed ? "" : "DISABLED"}">${!allowed ? "未开放" : t.annotations?.readOnlyHint ? "只读提示" : "可执行"}</span><button class="btn small" data-action="mcp-test-tool" data-tool="${escape(t.name)}" ${!allowed || !state.mcpDetail.expose_to_codex ? "disabled" : ""}>试运行 ${icon("arrow")}</button></div>${content(t.description || "此工具未提供描述。") }<details><summary>参数协议</summary>${schemaView(t.inputSchema || {})}</details></article>`;
             })
             .join("")}</div>`
         : `<div class="empty">${icon("plug")}<h3>工具会在连接后出现在这里</h3><div>发现工具只读取服务能力，不执行具体业务操作。</div></div>`
@@ -166,7 +174,7 @@ export function createIntegrationUI({
     return tabs(
       [
         ["general", "基础配置", "settings"],
-        ["instructions", "AGENT.md", "file"],
+        ["instructions", "工作指令", "file"],
         ["skills", `Skills ${(d.skills || []).length + (d.skill_bindings || []).length}`, "book"],
         ["mcp", `MCP 工具 ${(d.mcp_bindings || []).length}`, "plug"],
       ],
@@ -234,7 +242,7 @@ export function createIntegrationUI({
       return {
         title: m.tool.name,
         wide: true,
-        content: `<p>${escape(m.tool.description || "填写参数，试运行这个 MCP 工具。")}</p><div class="form-grid"><label class="field full">调用上下文<input id="mcp-consumer" data-focus="mcp-consumer" value="${escape(m.consumer || "console")}" placeholder="console"><small>同一上下文会保留服务中的项目选择等状态。</small></label><label class="field full">调用参数 · JSON 对象<textarea id="mcp-arguments" class="code-editor" data-focus="mcp-arguments" spellcheck="false">${escape(m.arguments)}</textarea></label></div><details class="tool-schema"><summary>查看参数协议</summary><pre>${escape(json(m.tool.inputSchema || {}))}</pre></details>${m.error ? `<div class="integration-error">${escape(m.error)}</div>` : ""}${m.result ? `<div class="section-heading"><h2>返回结果</h2>${badge(m.result.isError ? "FAILED" : "SUCCEEDED")}</div><pre class="tool-result">${escape(json(m.result))}</pre>` : ""}`,
+        content: `${content(m.tool.description || "填写参数，试运行这个 MCP 工具。")}<div class="form-grid"><label class="field full">调用上下文<input id="mcp-consumer" data-focus="mcp-consumer" value="${escape(m.consumer || "console")}" placeholder="console"><small>同一上下文会保留服务中的项目选择等状态。</small></label><div class="field full"><span>调用参数</span>${valueEditor(JSON.parse(m.arguments), "mcp-arguments", m.tool.inputSchema)}</div></div><details class="tool-schema"><summary>查看参数协议</summary>${schemaView(m.tool.inputSchema || {})}</details>${m.error ? `<div class="integration-error">${escape(m.error)}</div>` : ""}${m.result ? `<div class="section-heading"><h2>返回结果</h2>${badge(m.result.isError ? "FAILED" : "SUCCEEDED")}</div><div class="tool-result rendered-result">${toolResult(m.result)}</div>` : ""}`,
         footer: `<button class="btn" data-action="close-modal">关闭</button><button class="btn primary" data-action="mcp-run-tool" ${m.running ? "disabled" : ""}>${icon("terminal")}${m.running ? "调用中…" : "运行工具"}</button>`,
       };
     if (m.type === "mcp-sdk")
@@ -243,7 +251,7 @@ export function createIntegrationUI({
         wide: true,
         content: m.loading
           ? '<div class="loading-inline">正在读取接入配置…</div>'
-          : `<p>将以下配置合并到 Codex 的 config.toml。Codex 通过平台使用 MCP 服务，也可以注册服务、配置 Agent 与编排任务。</p><pre class="tool-result">${escape(m.text)}</pre><button class="btn small" data-action="copy-mcp-config">复制 Codex 配置</button><div class="section-heading"><h2>Python SDK</h2><a class="text-link" href="/api/protocol" target="_blank" rel="noopener">查看接口与 JSON Schema ${icon("external")}</a></div><pre class="tool-result">${escape(m.sdk)}</pre><p class="form-hint">接口调用复用正在运行的平台。凭据从本机数据目录读取，无需复制到代码或聊天中。</p>`,
+          : `<p>将以下配置合并到 Codex 的 config.toml。Codex 通过平台使用 MCP 服务，也可以注册服务、配置 Agent 与编排任务。</p><div class="markdown tool-result">${markdown("```toml\n" + m.text + "\n```")}</div><button class="btn small" data-action="copy-mcp-config">复制 Codex 配置</button><div class="section-heading"><h2>Python SDK</h2><a class="text-link" href="/api/protocol" target="_blank" rel="noopener">查看接口与 JSON Schema ${icon("external")}</a></div><div class="markdown tool-result">${markdown("```python\n" + m.sdk + "\n```")}</div><p class="form-hint">接口调用复用正在运行的平台。凭据从本机数据目录读取，无需复制到代码或聊天中。</p>`,
         footer: '<button class="btn" data-action="close-modal">完成</button>',
       };
     if (m.type === "skill-preview")
@@ -259,7 +267,6 @@ export function createIntegrationUI({
     return {
       ...defaultMcp(),
       ...structuredClone(detail),
-      args_text: json(detail.args || []),
       allowed_text: (detail.allowed_tools || []).join("\n"),
       env_text: "",
       headers_text: "",
@@ -337,6 +344,11 @@ export function createIntegrationUI({
     });
   }
   async function action(name, element) {
+    if (serviceLaunch.action(name, element)) return true;
+    if (name === "mcp-clear-secrets") {
+      state.mcpDraft[element.dataset.secret === "env" ? "env_text" : "headers_text"] = "{}";
+      state.mcpDirty = true; render(); toast("已标记清空，保存服务后生效"); return true;
+    }
     if (await skillUI.action(name, element)) return true;
     const id = element.dataset.id;
     if (name === "configure-agent") {
@@ -345,14 +357,13 @@ export function createIntegrationUI({
       state.settingsDraft = { ...structuredClone(a), api_key: "" };
       state.settingsTab = element.dataset.tab || "general";
       state.selectedSkill = 0;
-      state.profilePreview = false;
+      state.profilePreview = true;
       state.route = "settings";
       state.modal = null;
-      state.sidebarOpen = false;
       render();
     } else if (name === "profile-tab") {
       state.settingsTab = element.dataset.tab;
-      state.profilePreview = false;
+      state.profilePreview = true;
       render();
       if (state.settingsTab === "mcp") {
         for (const b of state.settingsDraft.mcp_bindings || []) {
@@ -369,7 +380,7 @@ export function createIntegrationUI({
       const content = await pickMarkdown();
       if (content != null && state.settingsDraft === draft) {
         draft.agent_md = content;
-        state.profilePreview = false;
+        state.profilePreview = true;
         render();
         toast("文档已载入，保存 Agent 后生效");
       }
@@ -446,7 +457,6 @@ export function createIntegrationUI({
     } else if (name === "mcp-select") {
       state.route = "mcp";
       state.modal = null;
-      state.sidebarOpen = false;
       await selectMcp(id);
     } else if (name === "mcp-tab") {
       state.mcpTab = element.dataset.tab;
@@ -555,7 +565,8 @@ export function createIntegrationUI({
     } else if (name === "mcp-run-tool") {
       const m = state.modal;
       if (m.running) return true;
-      const args = parseObject(m.arguments, "调用参数");
+      const args = readEditor(document.querySelector('[data-value-editor="mcp-arguments"]'));
+      m.arguments = json(args);
       m.running = true;
       m.error = "";
       m.key ||= idempotency();
@@ -598,7 +609,18 @@ export function createIntegrationUI({
     return true;
   }
   function onInput(e) {
+    serviceLaunch.input(e);
     skillUI.input(e);
+    const editor = e.closest?.("[data-value-editor]");
+    const field = { "mcp-env": "env_text", "mcp-headers": "headers_text" }[editor?.dataset.valueEditor];
+    if (editor && (field || editor.dataset.valueEditor === "mcp-arguments")) {
+      try {
+        const value = json(readEditor(editor));
+        if (field) { state.mcpDraft[field] = value; state.mcpDirty = true; }
+        else { state.modal.arguments = value; state.modal.key = idempotency(); }
+        editor.removeAttribute("data-invalid");
+      } catch (error) { editor.dataset.invalid = error.message; }
+    }
     if (e.id === "mcp-search") {
       state.mcpQuery = e.value;
       document.querySelector("#mcp-cards").innerHTML = mcpCards();
@@ -624,6 +646,7 @@ export function createIntegrationUI({
       state.modal.consumer = e.value;
   }
   async function onChange(e) {
+    serviceLaunch.change(e);
     if (e.dataset.skillBinding) {
       state.settingsDraft.skill_bindings ||= [];
       state.settingsDraft.skill_bindings = state.settingsDraft.skill_bindings.filter(b => b.skill_id !== e.dataset.skillBinding);
@@ -670,18 +693,18 @@ export function createIntegrationUI({
     if (state.mcpSaving) return true;
     const d = state.mcpDraft,
       config = {};
-    for (const key of mcpFields) config[key] = d[key];
-    try {
-      config.args =
-        d.transport === "stdio" ? JSON.parse(d.args_text || "[]") : [];
-    } catch {
-      throw new Error("启动参数需要是 JSON 字符串数组。");
+    for (const id of ["mcp-env", "mcp-headers"]) {
+      const editor = document.querySelector(`[data-value-editor="${id}"]`);
+      if (editor?.hasAttribute("data-invalid")) throw new Error(editor.dataset.invalid);
     }
+    if (d.transport === "stdio") serviceLaunch.commit(d);
+    for (const key of mcpFields) config[key] = d[key];
+    config.args = d.transport === "stdio" ? d.args : [];
     if (
       !Array.isArray(config.args) ||
       config.args.some((a) => typeof a !== "string")
     )
-      throw new Error("启动参数需要是 JSON 字符串数组。");
+      throw new Error("请检查本地服务的启动选项。");
     if (d.transport === "stdio") config.url = "";
     else {
       config.command = "";
@@ -733,6 +756,7 @@ export function createIntegrationUI({
     action,
     input: onInput,
     change: onChange,
+    toggle: serviceLaunch.toggle,
     submit,
   };
 }

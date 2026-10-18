@@ -1,16 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <title>Orchestrate Everything with Agents</title>
-  <rect width="64" height="64" rx="18" fill="#7361D9"/>
-  <path d="M51.79 16.88
-    A22.6 22.6 0 1 0 51.79 47.12
-    A2.6 2.6 0 0 0 47.93 43.64
-    A17.4 17.4 0 0 1 18.65 37.95
-    C17.43 34.6 18.4 34.6 21.4 34.6
-    H49.1
-    A2.6 2.6 0 0 0 49.1 29.4
-    H21.4
-    C18.4 29.4 17.43 29.4 18.65 26.05
-    A17.4 17.4 0 0 1 47.93 20.36
-    A2.6 2.6 0 0 0 51.79 16.88Z"
-    fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Orchestrate Everything with Agents</title>
+  <desc id="desc">Three interwoven cyan, blue and violet ribbons form an open triangular knot.</desc>
+  <defs>
+    <linearGradient id="upper-color" x1="380" y1="260" x2="970" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#71F6F4"/><stop offset=".46" stop-color="#00C9F2"/><stop offset="1" stop-color="#0042ED"/>
+    </linearGradient>
+    <linearGradient id="left-color" x1="160" y1="650" x2="660" y2="1100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#31F0EA"/><stop offset=".55" stop-color="#00BDE7"/><stop offset="1" stop-color="#0579ED"/>
+    </linearGradient>
+    <linearGradient id="lower-color" x1="470" y1="700" x2="1160" y2="1010" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#008DFB"/><stop offset=".5" stop-color="#3569FF"/><stop offset="1" stop-color="#A533FA"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="570" y1="600" x2="880" y2="1020" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#043CA4"/><stop offset="1" stop-color="#17166C"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="670" y1="1000" x2="1160" y2="1060" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2585FF"/><stop offset=".58" stop-color="#7554FF"/><stop offset="1" stop-color="#BC3CF8"/>
+    </linearGradient>
+    <path id="outline" fill-rule="evenodd" d="M635 100C807 171 982 354 1016 553C1110 670 1178 818 1192 930C1080 1042 940 1126 809 1115C761 1132 723 1148 676 1147C425 1144 213 1099 67 930C84 805 137 683 227 588C274 381 431 193 635 100ZM736 493C635 491 534 533 478 625C447 680 468 752 525 800C558 827 600 843 641 850C733 800 800 732 811 663C813 596 787 536 736 493Z"/>
+    <path id="upper" d="M635 100C807 171 982 354 1016 553C1003 738 849 825 643 850C745 777 810 713 811 656C823 537 651 360 431 383C353 454 288 516 227 588C274 381 431 193 635 100Z"/>
+    <path id="left" d="M736 493C586 414 391 519 227 588C137 683 84 805 67 930C213 1099 425 1144 676 1147C535 1056 434 952 443 852C434 747 467 646 528 570C594 516 655 493 736 493Z"/>
+    <path id="lower" d="M470 655C489 759 596 846 643 850C772 853 926 828 1031 779C1052 684 1038 588 1016 553C1110 670 1178 818 1192 930C1080 1042 940 1126 809 1115C668 1096 520 980 456 885C416 812 430 715 470 655Z"/>
+    <clipPath id="mark"><use href="#outline" clip-rule="evenodd"/></clipPath>
+    <clipPath id="upper-clip"><use href="#upper"/></clipPath>
+    <clipPath id="left-clip"><use href="#left"/></clipPath>
+    <clipPath id="lower-clip"><use href="#lower"/></clipPath>
+  </defs>
+  <g clip-path="url(#mark)">
+    <use href="#outline" fill="url(#fold)"/>
+    <g clip-path="url(#upper-clip)">
+      <use href="#upper" fill="url(#upper-color)"/>
+      <path d="M635 100L538 240L340 348Z" fill="#82F8F3"/>
+      <path d="M635 100L678 281L538 240Z" fill="#00CFF1"/>
+      <path d="M635 100L758 212L678 281Z" fill="#0089FA"/>
+      <path d="M635 100C807 171 982 354 1016 553L890 456L758 212Z" fill="#00B9F5"/>
+      <path d="M678 281L758 212L890 456L744 335Z" fill="url(#fold)"/>
+      <path d="M340 348L538 240L431 383Z" fill="#22D9F3"/>
+      <path d="M340 348L431 383L227 588Z" fill="#00C9E5"/>
+      <path d="M538 240L744 335L736 493L431 383Z" fill="#24D7F3"/>
+      <path d="M538 240L678 281L744 335Z" fill="#36D7F7"/>
+      <path d="M744 335L890 456C904 610 828 772 643 850C745 777 810 713 811 656C814 551 774 425 744 335Z" fill="#0049E8"/>
+      <path d="M890 456L1016 553L980 653L643 850C833 790 906 610 890 456Z" fill="#0076FA"/>
+      <path d="M890 456L980 653L1016 553Z" fill="#008FFC"/>
+      <path d="M431 383C551 376 647 412 736 493L488 466L394 499Z" fill="#052575"/>
+      <path d="M431 383L488 466L394 499Z" fill="#093B9E"/>
+    </g>
+    <g clip-path="url(#left-clip)">
+      <use href="#left" fill="url(#left-color)"/>
+      <path d="M227 588L300 654L488 466Z" fill="#68F3EF"/>
+      <path d="M300 654L488 466L736 493Z" fill="#00AAF5"/>
+      <path d="M300 654L736 493L528 570Z" fill="#0068DA"/>
+      <path d="M300 654C285 801 356 914 421 989L443 852L528 570Z" fill="#00B6EB"/>
+      <path d="M300 654L443 852L421 989L245 855Z" fill="#30E4ED"/>
+      <path d="M300 654L245 855L134 816Z" fill="#063977"/>
+      <path d="M134 816L245 855L67 930Z" fill="#009CBF"/>
+      <path d="M245 855L421 989L388 1115Z" fill="#006197"/>
+      <path d="M67 930L245 855L388 1115Z" fill="#00BBD0"/>
+      <path d="M67 930L174 1033L245 855Z" fill="#26E8E2"/>
+      <path d="M245 855L388 1115L676 1147L421 989Z" fill="#064F9E"/>
+      <path d="M443 852C434 952 535 1056 676 1147C544 1147 516 1144 388 1115L421 989Z" fill="#00B8EC"/>
+    </g>
+    <g clip-path="url(#lower-clip)">
+      <use href="#lower" fill="url(#fold)"/>
+      <path d="M1016 553L1089 652L1031 779L941 831Z" fill="#4930D8"/>
+      <path d="M1089 652L1117 833L1031 779Z" fill="#AE83FA"/>
+      <path d="M1089 652L1192 930L1117 833Z" fill="#D69CFA"/>
+      <path d="M1117 833L1192 930L1117 1010Z" fill="#9C38F0"/>
+      <path d="M470 655C489 759 596 846 643 850C772 853 926 828 1031 779L887 954L675 1000C570 953 491 804 470 655Z" fill="url(#lower-color)"/>
+      <path d="M643 850C772 853 926 828 1031 779L887 954Z" fill="#92A1FF"/>
+      <path d="M1031 779L1117 833L887 954Z" fill="#9565F8"/>
+      <path d="M887 954L1117 833L1117 1010L754 1030Z" fill="#4423C9"/>
+      <path d="M887 954L998 930L1117 1010Z" fill="#282299"/>
+      <path d="M675 1000L887 954L754 1030Z" fill="#1644DD"/>
+      <path d="M470 655C489 759 596 846 643 850L675 1000C570 953 491 804 470 655Z" fill="#0876F1"/>
+      <path d="M675 1000L754 1030C904 1058 1080 1044 1117 1010L1192 930C1080 1042 940 1126 809 1115C745 1103 695 1069 675 1000Z" fill="url(#rim)"/>
+      <path d="M1117 1010L809 1115L960 1090Z" fill="#9F45F8"/>
+    </g>
+  </g>
 </svg>

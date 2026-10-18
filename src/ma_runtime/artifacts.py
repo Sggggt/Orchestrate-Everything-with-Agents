@@ -23,7 +23,7 @@ class ArtifactStore:
         self.root.mkdir(exist_ok=True)
         self.staging.mkdir(exist_ok=True)
 
-    async def put_file(self, session_id: str, path: str | Path, *, metadata=None):
+    async def put_file(self, session_id: str, path: str | Path, *, metadata=None, caller_run_id=None, source_kind="external"):
         source = Path(path).resolve(strict=True)
         require(
             source.is_file(),
@@ -31,15 +31,17 @@ class ArtifactStore:
             "Artifact source must be a regular file",
         )
         return await self._put(
-            session_id, source.name, source=source, metadata=metadata
+            session_id, source.name, source=source, metadata=metadata,
+            caller_run_id=caller_run_id, source_kind=source_kind,
         )
 
     async def put_bytes(
-        self, session_id: str, name: str, data: bytes, *, metadata=None
+        self, session_id: str, name: str, data: bytes, *, metadata=None, caller_run_id=None, source_kind="external"
     ):
-        return await self._put(session_id, name, data=data, metadata=metadata)
+        return await self._put(session_id, name, data=data, metadata=metadata,
+                               caller_run_id=caller_run_id, source_kind=source_kind)
 
-    async def _put(self, session_id, name, *, source=None, data=None, metadata=None):
+    async def _put(self, session_id, name, *, source=None, data=None, metadata=None, caller_run_id=None, source_kind="external"):
         session = await self.runtime.sessions.get(session_id)
         require(session.state != "DELETED", "SESSION_DELETED", "Restore the session before adding artifacts")
         name = (
@@ -113,6 +115,15 @@ class ArtifactStore:
             session = one(db, "SELECT state FROM sessions WHERE id=?", (session_id,))
             require(session is not None and session.state != "DELETED", "SESSION_DELETED",
                     "Restore the session before adding artifacts")
+            provenance = {"kind": source_kind}
+            if caller_run_id:
+                task, run = self.runtime.check_run(db, caller_run_id)
+                require(task.session_id == session_id, "PERMISSION_DENIED", "Artifact source run belongs to another session")
+                agent_id = json.loads(task.spec_json)["agent_id"]
+                agent = self.runtime.agent_configs.get(agent_id)
+                provenance = {"kind": "agent", "agent_id": agent_id,
+                              "agent_name": agent.name if agent else agent_id,
+                              "task_id": task.id, "run_id": run.id}
             db.execute(
                 "INSERT INTO artifacts(id,session_id,sha256,size,relative_path,name,media_type,state,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -124,7 +135,7 @@ class ArtifactStore:
                     name,
                     mimetypes.guess_type(name)[0] or "application/octet-stream",
                     "READY",
-                    json_dump(meta),
+                    json_dump({**meta, "provenance": provenance}),
                     now_ms(),
                 ),
             )

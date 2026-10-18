@@ -258,7 +258,8 @@ async def execute(workspace, request):
               "isolation": "trusted-local: host user permissions, no filesystem or network isolation"}
     for label, path, count in logs:
         if count > env["output_bytes"]:
-            artifact = await workspace.runtime.artifacts.put_file(workspace.session_id, path)
+            artifact = await workspace.runtime.artifacts.put_file(workspace.session_id, path,
+                caller_run_id=request["caller_run_id"])
             result["artifacts"].append({"stream": label, "artifact_id": artifact.id,
                 "bytes": count, "truncated": count > 4 * 1024 * 1024})
     return result

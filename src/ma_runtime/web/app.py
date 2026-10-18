@@ -515,6 +515,7 @@ def create_app(
             session_id,
             unquote(request.headers.get("x-filename", "artifact")),
             bytes(content),
+            source_kind="upload",
         )
 
     @app.get("/api/artifacts/{artifact_id}")

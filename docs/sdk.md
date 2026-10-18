@@ -24,7 +24,7 @@ asyncio.run(main())
 
 Pass the same external `data_dir` used by the host if it is not the CLI default. The client reads loopback connection metadata and a local token; no token belongs in application source. Remote client methods return JSON dictionaries. `client.call(method, params)` exposes the RPC catalog.
 
-Common services are `projects`, `sessions`, `threads`, `agents`, `tasks`, `messages`, `artifacts`, `workflows` and `mcp`. A project groups Agents and sessions; a session groups independent Agent threads. Tasks are durable units of execution. Messages exchange complete context, and artifacts share files by reference.
+Common services are `projects`, `sessions`, `threads`, `agents`, `tasks`, `messages`, `artifacts`, `workflows` and `mcp`. A project groups Agents and sessions; a session groups independent Agent threads. Tasks are durable units of execution. Messages exchange complete context. Artifacts store session-owned work files and provenance; their references can be included in messages and results. A reference alone does not give an Agent a text-reading tool.
 
 ## Run independent instances
 

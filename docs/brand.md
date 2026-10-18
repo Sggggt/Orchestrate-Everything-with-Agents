@@ -1,11 +1,11 @@
 # Brand
 
-The product name is **Orchestrate Everything with Agents**. Use the full English name in introductions and visible product headings. `OEA` is an abbreviation for technical contexts; `oea` is the Python package, command and default MCP server ID. There is no separate translated product name.
+The product name is **Orchestrate Everything with Agents**. Use the full English name in introductions and accessible product labels. `OEA` is the compact wordmark; `oea` is the Python package, command and default MCP server ID. There is no separate translated product name.
 
 <img src="../src/ma_runtime/web/static/mark.svg" width="128" height="128" alt="Orchestrate Everything with Agents logo">
 
-The logo is a circular, open **E**. The outer arc forms the upper and lower arms, and the middle bar flows directly from the left side. All three ends face right. Rounded terminals and smooth junctions make the letter one connected silhouette, with generous open space above and below its center bar.
+The logo is a threefold interwoven ribbon knot with a rounded triangular silhouette and an open center. Cyan, electric blue and violet facets distinguish the overlapping ribbons; deep blue folds give the mark depth.
 
-The canonical asset is [mark.svg](../src/ma_runtime/web/static/mark.svg). It is a self-contained vector without fonts or external dependencies. The white E sits on a solid `#7361D9` tile with rounded corners. Preserve its proportions, consistent visual weight and clear space; use the same tile on light and dark surfaces. Keep the right-facing opening and horizontal center bar clearly visible at small sizes. The browser retains the established purple, charcoal and warm-neutral palette.
+The canonical asset is [mark.svg](../src/ma_runtime/web/static/mark.svg). It uses scalable paths and gradients, with a transparent background and center; it contains no bitmap, fonts or external dependencies. Preserve its proportions and clear space on light and dark surfaces. The browser favicon, loading screen, sidebar and supplied Codex skill use the same mark. The interface retains its purple, charcoal and neutral palette.
 
-For a narrow sidebar, the wordmark may wrap after “Everything”, with “with Agents” on the second line. Keep the complete name available as accessible text. Do not replace the mark with generic stacked layers or unrelated network icons.
+Use `OEA` beside the mark where space is limited, while keeping the full product name available as accessible text.

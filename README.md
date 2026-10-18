@@ -15,12 +15,12 @@ Orchestrate Everything with Agents is a lightweight multi-agent development and 
 - **Your own execution logic.** Use an LLM Agent, write a Python process Agent, or wrap a framework such as LangGraph.
 - **Independent parallel instances.** Reuse Agent configurations with separate contexts, Agent-pool routing, batch limits, ordered results and cancellation.
 - **Reusable workflows.** Connect start, Agent, parallel map, condition, template and end nodes on a visual canvas or with the same Python SDK. Every workflow belongs to one project.
-- **Shared tools and artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and share files by reference.
+- **Tools and work artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and keep session files with source attribution and downloadable references.
 - **Practical work tools.** Grant file edits, images, artifacts and explicitly authorized local commands through one [workbench](docs/workbench.md), with optional external language environments.
 - **Durable local execution.** Keep task receipts, checkpoints, run history and backups outside the source tree, with explicit cancellation and uncertain-outcome handling.
 - **MCP control.** Connect a compatible client through two compact tools and a focused Codex skill. The browser remains available for configuration and observation.
 
-The frontend is served directly from local assets, with no build step. Task dependencies, collaboration messages and shared artifacts live in the session overview's top tabs; red dots flag new activity. The workflow canvas includes validation, revisions, import/export, deletion and a recycle bin.
+The frontend is served directly from local assets, with no build step. Task dependencies, collaboration messages and work artifacts live in the session overview's top tabs; red dots flag new activity. The workflow canvas includes validation, revisions, import/export, deletion and a recycle bin.
 
 ## Run locally
 
@@ -33,7 +33,7 @@ oea serve --port 8890
 
 Open **http://127.0.0.1:8890** ; the loopback page establishes a local authenticated browser session automatically. Windows users can run **Start-Workspace.cmd** for environment setup and startup. See [getting started](docs/getting-started.md) for platform-specific environment commands and data paths.
 
-Create a project, add an Agent and open a session. For model-backed Agents, save the endpoint, model and key in **Agent 集成 → 配置 → 模型 API**, then test the saved configuration. Keys are stored locally, outside this repository.
+Create a project, add an Agent and open a session. For model-backed Agents, save the endpoint, model and key in **Agent → 配置 → 模型 API**, then test the saved configuration. Keys are stored locally, outside this repository.
 
 For a model-free trial, run `oea serve --mock --port 8890 --data-dir EXTERNAL_DIRECTORY` with a separate empty directory. Normal startup does not seed demonstration sessions or tasks.
 

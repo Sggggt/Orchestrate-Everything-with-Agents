@@ -8,7 +8,7 @@ const message = (id, created_at, run = "run") => ({ id, created_at, state: "PEND
 const report = (id, created_at, extra = {}) => ({ id, created_at, thread_id: "child", task_id: "task",
   summary_markdown: "**Needs guidance**", replied: false, wait_for_guidance: true, ...extra });
 
-test("overview shows the latest three Agent messages/reports, excluding external coordinator messages", () => {
+test("feedback selection returns the latest three Agent messages/reports, excluding external coordinator messages", () => {
   const snapshot = { messages: [message("old", 1), message("external", 9, null), message("recent", 4)],
     agent_reports: [report("older-report", 2), report("new-report", 5)] };
   assert.deepEqual(agentFeedback(messageItems(snapshot)).map(item => item.id), ["new-report", "recent", "older-report"]);

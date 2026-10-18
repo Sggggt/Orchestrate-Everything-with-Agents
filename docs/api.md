@@ -52,3 +52,5 @@ Persistent events have monotonic SQLite sequence numbers; SSE IDs support replay
 Managed Agent subprocesses use a separate JSONL contract: describe, execute, cancel, probe and run-bound reverse requests. Events carry a run ID and increasing local sequence. Committed boundaries are deduplicated by run, sequence and content hash. See the [Agent SDK](sdk.md).
 
 Model reverse calls use the run's configured provider; they cannot choose a different endpoint, model or key through request parameters. Tool access is checked at invocation. Size limits apply to frames, messages, events and artifacts; JSONL artifact uploads are capped at 512 KiB per frame.
+
+Work artifact metadata includes platform-owned `provenance`: `kind` is `agent`, `upload` or `external`. Agent publications include `agent_id`, `agent_name`, `task_id` and `run_id` from the current authenticated execution. Caller-supplied provenance is replaced. Missing provenance on legacy artifacts means the source was not recorded; it is not inferred from filenames or forwarded references. This metadata does not grant file access or add an Agent reading capability.

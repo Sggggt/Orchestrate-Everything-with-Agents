@@ -7,12 +7,7 @@
 .directory-registration-row .field { flex: 1; min-width: 0; margin: 0; }
 .directory-registration-row input { min-height: 42px; }
 .directory-registration-row .btn { min-height: 42px; flex-shrink: 0; padding-inline: 20px; }
-@media (max-width: 640px) {
-  .directory-registration { padding: 20px; gap: 16px; }
-  .directory-registration-row { flex-direction: column; align-items: stretch; gap: 14px; }
-  .directory-registration-row .field { flex: auto; }
-  .directory-registration-row .btn { align-self: flex-end; }
-}
+
 .integration-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -32,7 +27,6 @@
 .skill-registry-card p { color: var(--muted); font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
 .skill-registry-card h3 { margin: 16px 0 8px; }
 .skill-markdown { padding: 20px 4px; overflow-wrap: anywhere; }
-.skill-source { padding: 20px; background: #f8f6fb; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skill-picker { flex-wrap: wrap; }
 .heading-actions {
   display: flex;
@@ -657,211 +651,7 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@media (max-width: 1080px) {
-  .integration-banner {
-    flex-wrap: wrap;
-    padding: 23px;
-  }
-  .integration-banner > .btn {
-    margin-left: 72px;
-  }
-  .profile-tabs {
-    gap: 18px;
-  }
-  .profile-tab {
-    font-size: 11px;
-    gap: 5px;
-  }
-  .mcp-card {
-    padding: 19px;
-  }
-  .mcp-card-metrics {
-    gap: 12px;
-  }
-  .binding-tools {
-    grid-template-columns: 1fr;
-  }
-  .agent-doc-links {
-    gap: 9px;
-  }
-}
-@media (max-width: 600px) {
-  .mcp-page .page-heading {
-    flex-wrap: wrap;
-  }
-  .mcp-page .heading-actions {
-    width: 100%;
-    gap: 8px;
-  }
-  .mcp-page .heading-actions .btn {
-    font-size: 11px;
-    padding: 8px 11px;
-  }
-  .integration-banner {
-    display: grid;
-    grid-template-columns: 39px minmax(0, 1fr);
-    align-items: start;
-    gap: 14px;
-    padding: 21px 19px;
-  }
-  .integration-banner-icon {
-    width: 39px;
-    height: 39px;
-    border-radius: 11px;
-  }
-  .integration-banner h2 {
-    font-size: 15px;
-    line-height: 1.7;
-  }
-  .integration-banner p {
-    font-size: 11px;
-  }
-  .integration-banner > .btn {
-    grid-column: 2;
-    justify-self: start;
-    margin: 0;
-    font-size: 10px;
-  }
-  .integration-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    padding: 3px 0;
-  }
-  .integration-stats > div {
-    padding: 17px 20px;
-  }
-  .integration-stats > div:nth-child(2) {
-    border-right: 0;
-  }
-  .integration-stats > div:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--line);
-  }
-  .integration-stats strong {
-    font-size: 24px;
-  }
-  .mcp-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 14px;
-  }
-  .mcp-card {
-    padding: 20px;
-  }
-  .mcp-name {
-    font-size: 13px;
-  }
-  .mcp-card-head {
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .mcp-card-head .badge {
-    margin-left: auto;
-  }
-  .mcp-description {
-    min-height: 0;
-    font-size: 11px;
-  }
-  .mcp-card-metrics {
-    gap: 12px;
-    font-size: 9px;
-  }
-  .integration-form .form-section {
-    padding: 21px 18px;
-  }
-  .profile-tabs {
-    gap: 17px;
-    margin: 20px 0;
-  }
-  .profile-tab {
-    font-size: 10px;
-    gap: 5px;
-    padding-bottom: 12px;
-  }
-  .profile-tab .icon {
-    width: 13px;
-    height: 13px;
-  }
-  .field .document-editor {
-    min-height: 340px;
-  }
-  .form-section .section-heading {
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .document-foot {
-    font-size: 9px;
-    gap: 10px;
-  }
-  .document-foot .text-link {
-    font-size: 10px;
-  }
-  .binding-header {
-    padding: 14px;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .binding-header .integration-avatar {
-    display: none;
-  }
-  .binding-header strong {
-    font-size: 11px;
-  }
-  .binding-header small {
-    font-size: 9px;
-  }
-  .binding-header .badge {
-    font-size: 8px;
-  }
-  .binding-options {
-    padding: 13px 14px 16px;
-  }
-  .check-row {
-    font-size: 10px;
-  }
-  .tool-card {
-    padding: 17px;
-  }
-  .tool-card-head {
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .tool-card h3 {
-    font-size: 11px;
-    min-width: 130px;
-  }
-  .tool-card .btn {
-    font-size: 10px;
-  }
-  .tool-card p {
-    font-size: 10px;
-  }
-  .tool-result {
-    font-size: 10px;
-    padding: 13px;
-  }
-  .mcp-history article {
-    padding: 15px;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .mcp-history strong {
-    font-size: 11px;
-  }
-  .mcp-history .call-duration {
-    margin-left: auto;
-  }
-  .mcp-history .tool-symbol {
-    display: none;
-  }
-  .mcp-history .badge {
-    font-size: 9px;
-  }
-  .import-candidate {
-    padding: 14px;
-    gap: 8px;
-  }
-  .agent-doc-links {
-    gap: 15px;
-  }
-}
+
 /* Shared model configuration for native and SDK Agents. */
 .model-setup-note {
   display: flex;
@@ -882,4 +672,60 @@
 .model-test-result.success { color: #21654d; background: #edf7f1; }
 .model-test-result.failure { color: #9c403b; background: #fff0ed; }
 .agent-model-reminder { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: #8b6327; font-size: 12px; }
-@media (max-width: 650px) { .model-setup-note { flex-direction: column; } }
+
+/* Directory rows share the workspace hierarchy. */
+.integration-grid, .mcp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 36px; row-gap: 0; align-items: start; }
+.skill-registry-card, .mcp-card { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 22px 0; background: transparent; }
+.skill-registry-card:hover, .mcp-card:hover { background: #fafbfe; border-color: var(--line); transform: none; box-shadow: none; }
+.skill-registry-card h3 { display: inline-block; font-size: 16px; margin: 0 0 8px 12px; vertical-align: middle; }
+.skill-registry-card .integration-avatar { display: inline-flex; vertical-align: middle; }
+.mcp-description { min-height: 0; font-size: 14px; color: var(--muted); }
+.mcp-name { color: var(--ink); font-size: 16px; }
+.mcp-type, .mcp-card-metrics, .document-foot { font-size: 12px; color: var(--muted); }
+.mcp-card footer { border: 0; padding-top: 12px; margin-top: 10px; }
+.integration-banner { background: transparent; border: 0; border-left: 3px solid #c8bff0; border-radius: 0; padding: 12px 18px; margin: 22px 0; }
+.integration-banner h2 { font-size: 15px; color: var(--ink); }
+.integration-banner p { font-size: 13px; color: var(--muted); }
+.integration-banner-icon { display: none; }
+.integration-stats { border: 0; border-radius: 0; background: transparent; border-bottom: 1px solid var(--line); }
+.integration-stats > div { padding: 16px 0; border: 0; }
+.integration-stats strong { font-size: 22px; color: var(--ink); }
+.integration-stats span { font-size: 12px; color: var(--muted); }
+.directory-registration { padding: 18px 0; }
+.directory-registration > summary { cursor: pointer; font-size: 14px; color: var(--accent); }
+.directory-registration[open] > summary { margin-bottom: 18px; }
+.directory-registration-row .btn { min-height: 42px; }
+.binding-card, .tool-card { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 18px 0; }
+.binding-card.selected { background: transparent; border-color: var(--line); }
+.binding-header strong { font-size: 14px; }
+.binding-header small { font-size: 12px; color: var(--muted); }
+.tool-card-head h3 { font-size: 14px; }
+.tool-card > p, .tool-card .markdown { font-size: 14px; }
+.tool-result { font-family: inherit; font-size: 14px; background: #fafbfe; border: 1px solid var(--line); border-radius: 7px; white-space: normal; overflow-wrap: anywhere; }
+.tool-result.markdown { padding: 0; border: 0; background: transparent; }
+.tool-result.markdown pre { margin: 12px 0; }
+
+.agent-doc-links { margin: 0; padding: 0; border: 0; flex-wrap: wrap; }
+.agent-doc-links button { font-size: 12px; }
+.model-setup-note { width: fit-content; max-width: 70ch; gap: 20px; padding: 0; margin: 0 0 20px; border: 0; border-radius: 0; background: transparent; }
+.model-setup-note strong { color: var(--ink); font-size: 14px; }
+.model-setup-note p { color: var(--muted); font-size: 13px; }
+
+.integration-banner { display: block; width: fit-content; max-width: 76ch; padding: 0; margin: 20px 0; border: 0; border-radius: 0; background: transparent; }
+.integration-banner .btn { margin-top: 12px; }
+.integration-stats { display: flex; flex-wrap: wrap; width: fit-content; gap: 30px; padding: 8px 0 12px; border: 0; }
+.integration-stats > div { display: flex; align-items: baseline; gap: 8px; padding: 0; }
+.integration-stats strong { margin: 0; font-size: 18px; }
+.integration-stats span { display: inline; }
+.mcp-card .mcp-description, .skill-registry-card > p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 3.4em; line-height: 1.7; }
+.tool-catalog { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 36px; align-items: start; }
+.tool-card { min-width: 0; }
+.tool-card-head { flex-wrap: wrap; }
+.model-setup-note.pending { background: transparent; }
+.model-setup-note > div { min-width: 0; }
+
+.model-test-result { width: fit-content; max-width: 76ch; padding: 0; border-radius: 0; }
+.model-test-result.success, .model-test-result.failure { background: transparent; }
+
+.integration-error { width: fit-content; max-width: 76ch; padding: 10px 0; border: 0; border-radius: 0; background: transparent; }
+.mcp-history article { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }

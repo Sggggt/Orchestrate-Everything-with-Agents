@@ -206,11 +206,12 @@ class NativeTool:
                         picture.verify()
                 except (UnidentifiedImageError, Image.DecompressionBombError, OSError):
                     raise RuntimeFault("INVALID_REQUEST", "Image cannot be decoded safely") from None
-                artifact = await self.runtime.artifacts.put_file(request["session_id"], path)
+                artifact = await self.runtime.artifacts.put_file(request["session_id"], path,
+                    caller_run_id=request["caller_run_id"])
                 return {"image": {"artifact_id": artifact.id, "detail": args.get("detail", "auto")},
                     "width": width, "height": height}
             artifact = await self.runtime.artifacts.put_file(request["session_id"], path,
-                metadata={"display_name": args.get("name", path.name)})
+                metadata={"display_name": args.get("name", path.name)}, caller_run_id=request["caller_run_id"])
             return {"artifact_id": artifact.id, "name": artifact.name}
         except RuntimeFault as exc:
             if exc.code == "OUTCOME_UNCERTAIN":

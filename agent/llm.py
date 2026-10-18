@@ -257,6 +257,7 @@ class LLMApiAgent:
                             "response.txt",
                             text.encode("utf-8"),
                             metadata={"kind": "agent_response"},
+                            caller_run_id=request.run_id,
                         )
                         # Preserve the complete peer message; only the UI projection is short.
                         output["full_text_artifact_id"] = artifact.id

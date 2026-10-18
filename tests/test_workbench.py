@@ -74,6 +74,9 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         artifact = await self.rt.artifacts.open(values[3]["artifact_id"])
         self.assertIn(values[3]["artifact_id"], result.artifact_ids)
         self.assertEqual(artifact.read_text(), "hello")
+        provenance = (await self.rt.artifacts.get(values[3]["artifact_id"])).metadata["provenance"]
+        self.assertEqual(provenance["agent_id"], "worker")
+        self.assertEqual(provenance["task_id"], task.id)
         self.assertEqual(len((await self.rt.workbench.calls(task.id))["items"]), 4)
         scope = await self.rt.workbench.inspect(task_id=task.id)
         self.assertEqual(scope["revision"], 1)
