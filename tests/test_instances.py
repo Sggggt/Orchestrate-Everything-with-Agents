@@ -20,11 +20,14 @@ from ma_runtime.web.app import create_app
 
 
 class Worker:
-    def __init__(self, identity="worker", capacity=64):
+    def __init__(self, identity="worker", capacity=64, *, release=None, metrics=None):
         self.identity, self.capacity = identity, capacity
         self.active = self.peak = 0
         self.seen = []
         self.running = {}
+        self.release = release
+        self.started = asyncio.Queue()
+        self.metrics = metrics
 
     def describe(self):
         return AgentDescriptor(agent_id=self.identity, max_concurrency=self.capacity)
@@ -34,7 +37,13 @@ class Worker:
         self.peak = max(self.peak, self.active)
         self.seen.append(request.payload)
         self.running[request.run_id] = context.cancelled
+        if self.metrics is not None:
+            self.metrics["active"] += 1
+            self.metrics["peak"] = max(self.metrics["peak"], self.metrics["active"])
         try:
+            self.started.put_nowait(request.run_id)
+            if self.release is not None:
+                await self.release.wait()
             await asyncio.sleep(request.payload.get("delay", 0.04))
             if context.cancelled.is_set():
                 raise asyncio.CancelledError
@@ -44,6 +53,8 @@ class Worker:
         finally:
             self.active -= 1
             self.running.pop(request.run_id, None)
+            if self.metrics is not None:
+                self.metrics["active"] -= 1
 
     async def cancel(self, ref):
         event = self.running.get(ref["run_id"])
@@ -93,9 +104,21 @@ class InstanceTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.fail("Batch did not settle")
 
+    async def wait_started(self, worker, count):
+        async def receive():
+            for _ in range(count):
+                await worker.started.get()
+        await asyncio.wait_for(receive(), timeout=5)
+
     async def test_independent_instances_order_budget_and_idempotency(self):
         spec = self.spec(max_concurrency=3)
-        first, second = await asyncio.gather(self.rt.instances.spawn(spec), self.rt.instances.spawn(spec))
+        self.worker.release = asyncio.Event()
+        try:
+            first, second = await asyncio.gather(self.rt.instances.spawn(spec), self.rt.instances.spawn(spec))
+            await self.wait_started(self.worker, 3)
+            self.assertEqual(self.worker.active, 3)
+        finally:
+            self.worker.release.set()
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["reused"])
         self.assertEqual(len({item["thread_id"] for item in first["instances"]}), 12)
@@ -108,14 +131,22 @@ class InstanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conflict.exception.code, "IDEMPOTENCY_CONFLICT")
 
     async def test_global_budget_and_least_loaded_pool(self):
-        second = Worker("second")
+        release = asyncio.Event()
+        metrics = {"active": 0, "peak": 0}
+        self.worker.release, self.worker.metrics = release, metrics
+        second = Worker("second", release=release, metrics=metrics)
         self.rt.adapters["second"] = second
-        batch = await self.rt.instances.spawn(self.spec(count=24, max_concurrency=32).model_copy(
-            update={"agent_ids": ("worker", "second"), "routing": "least_loaded"}))
+        try:
+            batch = await self.rt.instances.spawn(self.spec(count=24, max_concurrency=32).model_copy(
+                update={"agent_ids": ("worker", "second"), "routing": "least_loaded"}))
+            await self.wait_started(self.worker, 4)
+            await self.wait_started(second, 4)
+            self.assertEqual(metrics["active"], 8)
+        finally:
+            release.set()
         self.assertEqual([m["agent_id"] for m in batch["instances"]], ["worker", "second"] * 12)
         await self.rt.instances.result(batch["id"], timeout=4)
-        self.assertLessEqual(self.worker.peak + second.peak, 8)
-        self.assertGreater(self.worker.peak + second.peak, 3)
+        self.assertEqual(metrics["peak"], 8)
 
     async def test_atomic_rollback_for_invalid_dependency_and_queue_capacity(self):
         with self.assertRaises(RuntimeFault):
@@ -145,9 +176,15 @@ class InstanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_configured_agent_budget_and_available_pool_routing(self):
         for limit in (1, 4):
             await self.rt.agents.configure(AgentConfig(id="worker", name="Worker", kind="mock", max_concurrency=limit))
-            worker = Worker()
+            release = asyncio.Event()
+            worker = Worker(release=release)
             self.rt.adapters["worker"] = worker
-            batch = await self.rt.instances.spawn(self.spec(f"limit-{limit}", count=8, max_concurrency=8))
+            try:
+                batch = await self.rt.instances.spawn(self.spec(f"limit-{limit}", count=8, max_concurrency=8))
+                await self.wait_started(worker, limit)
+                self.assertEqual(worker.active, limit)
+            finally:
+                release.set()
             await self.rt.instances.result(batch["id"], timeout=3)
             self.assertEqual(worker.peak, limit)
         await self.rt.agents.configure(AgentConfig(id="unconfigured", name="Unconfigured", kind="llm"))
@@ -178,8 +215,14 @@ class InstanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_map_dynamic_fanout_order_empty_input_and_reused_run(self):
         workflow = await self.rt.workflows.create("default", "Map", "map", graph=map_graph(max_concurrency=3))
-        run = await self.rt.workflows.run(workflow.id, {"items": list(range(17))}, "run")
-        replay = await self.rt.workflows.run(workflow.id, {"items": list(range(17))}, "run")
+        self.worker.release = asyncio.Event()
+        try:
+            run = await self.rt.workflows.run(workflow.id, {"items": list(range(17))}, "run")
+            replay = await self.rt.workflows.run(workflow.id, {"items": list(range(17))}, "run")
+            await self.wait_started(self.worker, 3)
+            self.assertEqual(self.worker.active, 3)
+        finally:
+            self.worker.release.set()
         self.assertEqual(run.id, replay.id)
         result = await self.rt.workflows.result(run.id, timeout=4)
         self.assertEqual([item["value"] for item in result["outputs"]["items"]], list(range(17)))
