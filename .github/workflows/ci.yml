@@ -15,9 +15,6 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PYTHONDONTWRITEBYTECODE: '1'
-      TMPDIR: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +24,11 @@ jobs:
         with:
           node-version: '22'
       - run: python -m pip install -c constraints.txt -e ".[web,mcp,langgraph,workbench]"
-      - run: python -B -m unittest discover -s tests -p "test_*.py"
+      - name: Run Python contracts
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python -B -m unittest discover -s tests -p "test_*.py"
       - run: node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs tests/test_agent_status.mjs tests/test_browser_integration.mjs tests/test_message_feed.mjs
       - run: python -B scripts/check_release.py
