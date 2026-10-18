@@ -19,6 +19,7 @@ from ma_runtime.models import (
     WaitCondition,
     UsePolicy,
     json_dump,
+    WORKBENCH_TOOLS,
 )
 
 
@@ -276,6 +277,7 @@ class LLMApiAgent:
                     yield boundary
                     return
                 wait = None
+                images = []
                 for call in calls:
                     name = call["function"]["name"]
                     yield AdapterEvent(
@@ -306,7 +308,7 @@ class LLMApiAgent:
                             value = await context.read_skill(
                                 arguments["skill_id"], arguments.get("path", "SKILL.md")
                             )
-                        elif name.startswith("mcp_"):
+                        elif name.startswith("mcp_") or name in WORKBENCH_TOOLS:
                             value = await context.invoke_tool(name, arguments, key)
                         elif name == "list_threads":
                             value = await context.list_threads()
@@ -377,13 +379,11 @@ class LLMApiAgent:
                                 "safe_message": "Invalid collaboration tool arguments",
                             }
                         }
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call["id"],
-                            "content": json_dump(value),
-                        }
-                    )
+                    from ma_runtime.workspace import tool_messages
+                    response = tool_messages(call["id"], value)
+                    messages.append(response[0])
+                    images.extend(response[1:])
+                messages.extend(images)
                 if wait:
                     boundary = AdapterEvent(
                         type="suspended",

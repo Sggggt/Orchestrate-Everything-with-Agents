@@ -15,6 +15,7 @@ class RunContext:
         self.collaboration = collaboration
         self.cancelled = asyncio.Event()
         self._mcp_tools = None
+        self._workspace = None
         self.loaded_skills = {}
         self.used_tools = set()
         self.loaded_skill_ids = set()
@@ -52,7 +53,7 @@ class RunContext:
             self._mcp_tools = await self._runtime.mcp.schemas_for_run(
                 self.request.run_id
             )
-        return self._mcp_tools
+        return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request)]}
 
     async def list_skills(self):
         from .profiles import skill_catalog
@@ -197,6 +198,10 @@ class RunContext:
     async def put_file(self, path, *, metadata=None):
         self.check_tool("put_file")
         await self.check_current()
+        from .workspace import Workspace
+        require(self.request.workbench, "PERMISSION_DENIED", "File delivery requires a workbench source grant")
+        self._runtime.workbench.authorize(self.request, "publish_artifact")
+        path = Workspace(self._runtime, self.request.workbench, self.request.session_id).path(str(path))
         result = await self._runtime.artifacts.put_file(
             self.request.session_id, path, metadata=metadata
         )

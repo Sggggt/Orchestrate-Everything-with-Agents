@@ -29,11 +29,11 @@ from agent.mock import configure_mocks
 
 
 def create_app(
-    workspace=None, config=None, *, mock=False, runtime=None, client_url=None
+    workspace=None, config=None, *, mock=False, runtime=None, client_url=None, allow_trusted_local=False
 ):
     @asynccontextmanager
     async def lifespan(app):
-        rt = runtime or Runtime.open(workspace, config)
+        rt = runtime or Runtime.open(workspace, config, allow_trusted_local=allow_trusted_local)
         if runtime is None:
             await rt.__aenter__()
         try:
@@ -248,11 +248,13 @@ def create_app(
             "projects": projects,
             "project": selected,
             "agents": await rt().agents.list(project_id=selected.id) if selected else [],
+            "environments": await rt().environments.list(project_id=selected.id) if selected else [],
             "mcp_servers": await rt().mcp.list(),
             "skill_registry": await rt().skills.list(limit=200),
             "sessions": (await rt().sessions.list(project_id=selected.id))["items"] if selected else [],
             "config": rt().config.model_dump(),
             "runtime": {
+                "trusted_local_execution": rt().allow_trusted_local,
                 "active": len(rt().active),
                 "uncertain_slots": len(rt().uncertain_slots),
                 "accepting": rt().accepting,

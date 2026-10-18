@@ -2,6 +2,8 @@
 
 Orchestrate Everything with Agents combines a Python library, a durable local host, MCP bridges and a browser workspace. These surfaces call the same application services; the frontend and bridges do not contain separate schedulers.
 
+The [workbench](workbench.md) shares file, command, image and delivery semantics through RunContext and ToolGateway. External environment versions and task snapshots live in SQLite. Local commands reuse owned process trees and require a host startup grant; file authorization does not imply system isolation. LangGraph can receive an ephemeral managed context while keeping its own persistent graph state separate.
+
 ```mermaid
 flowchart LR
   Browser[Browser workspace] --> HTTP[Loopback HTTP gateway]

@@ -88,7 +88,7 @@ class ActiveRun:
 
 
 class Runtime:
-    def __init__(self, workspace=None, config=None, adapters=None):
+    def __init__(self, workspace=None, config=None, adapters=None, *, allow_trusted_local=False):
         self.root = external_path(workspace or default_data_dir())
         require_local_state(self.root)
         self.config = (
@@ -102,6 +102,7 @@ class Runtime:
         self.retired_adapters = []
         self.configuration_lock = asyncio.Lock()
         self.host_instance_id = new_id("host")
+        self.allow_trusted_local = allow_trusted_local
         self.lock = WorkspaceLock(self.root)
         self.store = StoreActor(self.root)
         self.resources = ResourceCoordinator()
@@ -128,6 +129,10 @@ class Runtime:
         from .skill_registry import SkillRegistry
 
         self.skills = SkillRegistry(self)
+        from .execution import Environments
+        from .workspace import Workbench
+        self.environments = Environments(self)
+        self.workbench = Workbench(self)
         self.active: dict[str, ActiveRun] = {}
         self.uncertain_slots = set()
         self._uncertain_owners = {}
@@ -139,8 +144,8 @@ class Runtime:
         self.last_session = None
 
     @classmethod
-    def open(cls, workspace=None, config=None, adapters=None):
-        return cls(workspace, config, adapters)
+    def open(cls, workspace=None, config=None, adapters=None, *, allow_trusted_local=False):
+        return cls(workspace, config, adapters, allow_trusted_local=allow_trusted_local)
 
     async def __aenter__(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -152,6 +157,8 @@ class Runtime:
             from .tools import ToolGateway
 
             self.tools = ToolGateway(self)
+            self.workbench.register()
+            await self.environments.open()
             configs = await self.store.call(
                 lambda db: rows(db, "SELECT * FROM agent_configs")
             )
@@ -211,6 +218,9 @@ class Runtime:
         self.wake.set()
 
     def make_adapter(self, config):
+        if config.kind == "environment":
+            from .execution import EnvironmentAgent
+            return EnvironmentAgent(config.id, self.environments)
         if config.kind == "mock":
             from agent.mock import MockAgent
 
@@ -439,10 +449,18 @@ class Runtime:
                 )
                 return json.loads(prior.boundary_receipt_json)
             task, run = self.check_run(db, run_id)
+            result = event.result
             if event.type == "completed":
                 from .execution_policy import check_completion
                 active = self.active.get(run_id)
                 check_completion(db, task, active.spec if active else None)
+                if active is None or active.request.workbench:
+                    published = [json.loads(call.result_json).get("artifact_id") for call in rows(db,
+                        "SELECT c.result_json FROM tool_calls c JOIN runs r ON r.id=c.run_id "
+                        "WHERE r.task_id=? AND c.tool_name='publish_artifact' AND c.state='SUCCEEDED' ORDER BY c.created_at,c.id",
+                        (task.id,))]
+                    result = result.model_copy(update={"artifact_ids": tuple(dict.fromkeys(
+                        (*result.artifact_ids, *(identity for identity in published if identity))))})
             thread = need(db, "threads", task.thread_id)
             descriptor = json.loads(run.adapter_snapshot_json)
             if event.type == "suspended":
@@ -482,8 +500,8 @@ class Runtime:
                 "UNSUPPORTED_CAPABILITY",
                 "Execution endpoint does not support message receipts",
             )
-            if event.result:
-                self.check_artifacts(db, task.session_id, event.result.artifact_ids)
+            if result:
+                self.check_artifacts(db, task.session_id, result.artifact_ids)
             unresolved = one(
                 db,
                 "SELECT id FROM tool_calls WHERE run_id=? AND state IN ('DISPATCHED','UNCERTAIN') LIMIT 1",
@@ -562,7 +580,7 @@ class Runtime:
                 "UPDATE tasks SET state=?,result_json=?,wait_json=?,resume_input_json=NULL,error_json=NULL,queue_reason=NULL,updated_at=? WHERE id=?",
                 (
                     state,
-                    json_dump(event.result) if event.result else None,
+                    json_dump(result) if result else None,
                     json_dump(event.wait) if event.wait else None,
                     now_ms(),
                     task.id,
@@ -577,8 +595,8 @@ class Runtime:
                     thread.id,
                 ),
             )
-            if event.result:
-                self.append_reply(db, task, run_id, event.result)
+            if result:
+                self.append_reply(db, task, run_id, result)
             seq = emit(
                 db,
                 "task.suspended" if state == "WAITING" else "task.completed",
@@ -872,7 +890,7 @@ class Runtime:
                     )
             except RuntimeFault as exc:
                 self.resources.release(run_id)
-                if exc.code in {"UNSUPPORTED_CAPABILITY", "ADAPTER_PROTOCOL_ERROR"}:
+                if exc.code in {"UNSUPPORTED_CAPABILITY", "ADAPTER_PROTOCOL_ERROR", "PERMISSION_DENIED"}:
                     await self.store.call(
                         lambda db, t=task, e=exc: self.finish_idle(
                             db, t, "FAILED", e.as_dict()
@@ -1038,6 +1056,7 @@ class Runtime:
             tool_policy=spec.tool_policy,
             skill_policy=spec.skill_policy,
             operations_consumer_id=self.operations.for_thread(task.session_id, thread.id),
+            workbench=self.environments.snapshot(db, task_id, profile, project),
         )
 
     async def consume(self, active):

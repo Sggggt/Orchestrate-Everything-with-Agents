@@ -497,6 +497,7 @@ class MCPRegistry:
             if isinstance(provider, MCPToolProvider):
                 self.rt.tools.providers.pop(name, None)
                 self.rt.tools.allowed.pop(name, None)
+                self.rt.tools.validators.pop(name, None)
         for server_id, catalog in self.catalogs.items():
             config = self.configs.get(server_id)
             if not config or not config.enabled:

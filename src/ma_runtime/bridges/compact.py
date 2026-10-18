@@ -19,8 +19,12 @@ from ..workflows import Workflows
 from ..instances import Instances
 from ..skill_registry import SkillRegistry
 from ..operations import Operations, OPERATIONS_ACTIONS
+from ..execution import Environments
+from ..workspace import Workbench
 
 AREAS = {
+    "environments": ("外部受限执行环境与受管准备任务", {name: "environments." + name for name in ("list", "get", "configure", "prepare", "check")}),
+    "workbench": ("Agent 工作能力、目录映射与原生工具回执", {name: "workbench." + name for name in ("inspect", "calls", "reconcile")}),
     "projects": (
         "项目、本地文件夹、项目内会话和 Agent",
         {name: "projects." + name for name in ("create", "get", "list", "update", "archive", "adopt", "delete", "restore")},
@@ -154,6 +158,8 @@ AREAS = {
 }
 
 OWNERS = {
+    "environments": Environments,
+    "workbench": Workbench,
     "projects": services.Projects,
     "sessions": services.Sessions,
     "agents": services.Agents,
@@ -170,6 +176,8 @@ OWNERS = {
     "instances": Instances,
 }
 PARAM_MODELS = {
+    ("workbench.reconcile", "resolution"): models.Reconciliation,
+    ("environments.configure", "config"): models.EnvironmentConfig,
     ("operations.test", "tool_policy"): models.UsePolicy,
     ("operations.test", "skill_policy"): models.UsePolicy,
     ("agents.configure", "config"): models.AgentConfig,
@@ -185,6 +193,9 @@ PARAM_MODELS = {
     ("workflows.reconcile_node", "resolution"): models.Reconciliation,
 }
 DEV_MODELS = {
+    "workbench": models.WorkbenchConfig,
+    "environment": models.EnvironmentConfig,
+    "graph_adapter": models.GraphAdapterConfig,
     "result": models.TaskResult,
     "project": models.ProjectInfo,
     "request": models.ExecutionRequest,
@@ -317,7 +328,7 @@ class ResultCache:
             "ok": True,
             "result_ref": key,
             "characters": len(encoded),
-            "preview": encoded[:2000],
+            "preview": encoded[:500],
             "expires_in_seconds": self.ttl,
             "next": {
                 "area": "control",

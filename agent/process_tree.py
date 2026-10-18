@@ -119,3 +119,8 @@ class OwnedProcessTree:
         if self.job:
             self.kernel.CloseHandle(self.job)
             self.job = None
+        elif os.name != "nt":
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

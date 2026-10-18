@@ -16,6 +16,7 @@ Orchestrate Everything with Agents is a lightweight multi-agent development and 
 - **Independent parallel instances.** Reuse Agent configurations with separate contexts, Agent-pool routing, batch limits, ordered results and cancellation.
 - **Reusable workflows.** Connect start, Agent, parallel map, condition, template and end nodes on a visual canvas or with the same Python SDK. Every workflow belongs to one project.
 - **Shared tools and artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and share files by reference.
+- **Practical work tools.** Grant file edits, images, artifacts and explicitly authorized local commands through one [workbench](docs/workbench.md), with optional external language environments.
 - **Durable local execution.** Keep task receipts, checkpoints, run history and backups outside the source tree, with explicit cancellation and uncertain-outcome handling.
 - **MCP control.** Connect a compatible client through two compact tools and a focused Codex skill. The browser remains available for configuration and observation.
 

@@ -95,6 +95,8 @@ class ConfiguredLLM:
             "AGENT_NOT_CONFIGURED",
             "Configure an API endpoint and model first",
         )
+        from .workspace import model_images
+        messages = await model_images(messages, context)
         body = {"model": self.config.model, "messages": messages, "stream": True}
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature
@@ -121,6 +123,10 @@ class ConfiguredLLM:
                     headers=headers,
                 ) as response:
                     if response.status_code >= 400:
+                        if response.status_code in {400, 415, 422} and any(
+                            isinstance(message.get("content"), list) and any(block.get("type") == "image_url" for block in message["content"])
+                            for message in messages):
+                            raise RuntimeFault("MODEL_IMAGE_REJECTED", "The configured model rejected the image request")
                         raise AdapterFailure(
                             f"LLM API returned HTTP {response.status_code}",
                             retryable=response.status_code in {429, 502, 503, 504},

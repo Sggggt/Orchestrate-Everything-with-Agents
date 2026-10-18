@@ -24,6 +24,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 | 创建项目、绑定本地文件夹、项目内团队、归档、删除/恢复或归入现有会话 | [项目管理](workflows/projects.md) | `projects` |
 | 看运行状态、执行预算、事件、资源占用 | [控制](workflows/control.md) | `control` |
 | 配模型、并发、启停 Agent、改执行命令 | [配置](workflows/configure.md) | `agents` |
+| 分配文件、图片和本机命令能力，准备外部环境 | [工作能力](workflows/workbench.md) | `environments/workbench` |
 | 按业务拆节点、编写或修改执行端代码 | [开发](workflows/develop.md) | `development`；源码用文件工具 |
 | 注册已有执行端、更新版本并验收 | [注册](workflows/register.md) | `agents`，随后 `sessions/threads/tasks` |
 | 编辑 AGENT.md、导入或维护独立 Skills | [指令与技能](workflows/profiles.md) | `profiles` |

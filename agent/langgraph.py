@@ -1,8 +1,11 @@
 """Optional graph boundary adapter; graph nodes and state remain private."""
 
 import asyncio
+from dataclasses import dataclass
+import json
 
 from ma_runtime.errors import RuntimeFault, require
+from ma_runtime.context import RunContext
 from ma_runtime.models import (
     AdapterEvent,
     AgentDescriptor,
@@ -11,7 +14,41 @@ from ma_runtime.models import (
     ProbeResult,
     TaskResult,
     WaitCondition,
+    GraphAdapterConfig,
 )
+
+
+@dataclass(frozen=True)
+class GraphContext:
+    """Per-invocation capabilities; never store this object in graph state."""
+    oea: RunContext
+
+
+def graph_wait(condition):
+    """Use in a dedicated node after persisting dispatch/call identities."""
+    from langgraph.types import interrupt
+    wait = WaitCondition.model_validate(condition)
+    return interrupt({"oea_wait": wait.model_dump(mode="json")})
+
+
+async def managed_tool_node(state, runtime):
+    """Execute persisted OpenAI function calls sequentially through RunContext."""
+    from ma_runtime.workspace import tool_messages
+    context = runtime.context.oea
+    results, messages, images = [], [], []
+    for call in state.get("pending_calls", []):
+        require(call.get("id"), "INVALID_REQUEST", "Persist a stable tool call ID before execution")
+        function = call["function"]
+        arguments = function["arguments"]
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        value = await context.invoke_tool(function["name"], arguments,
+            f"{context.request.task_id}:graph:{call['id']}")
+        results.append({"call_id": call["id"], "result": value})
+        response = tool_messages(call["id"], value)
+        messages.append(response[0])
+        images.extend(response[1:])
+    return {"tool_results": results, "messages": messages + images}
 
 
 class LangGraphAgent:
@@ -24,6 +61,9 @@ class LangGraphAgent:
         output_builder=None,
         max_concurrency=1,
         message_receipts=False,
+        managed_context=False,
+        recursion_limit=24,
+        graph_version="1.0",
     ):
         self.agent_id, self.graph, self.input_builder = agent_id, graph, input_builder
         self.output_builder = output_builder or (lambda values: values)
@@ -32,24 +72,31 @@ class LangGraphAgent:
         self.checkpointed = getattr(graph, "checkpointer", None) is not None
         self.running = {}
         self.boundaries = {}
+        options = GraphAdapterConfig(managed_context=managed_context, recursion_limit=recursion_limit, graph_version=graph_version)
+        self.managed_context = options.managed_context
+        self.recursion_limit = options.recursion_limit
+        self.graph_version = options.graph_version
+        self.invocations = {}
 
     def describe(self):
         return AgentDescriptor(
             agent_id=self.agent_id,
+            adapter_version=self.graph_version,
             max_concurrency=self.max_concurrency,
             checkpoint_mode="native_ref" if self.checkpointed else "none",
             checkpoint_format_version="langgraph-config-v1",
             supports_suspend=self.checkpointed,
             supports_fork=False,
             message_receipts="next_turn_ack" if self.receipts else "unsupported",
-            tool_mediation="none",
-            nested_execution="none",
+            tool_mediation="partial" if self.managed_context else "none",
+            nested_execution="runtime_mediated" if self.managed_context else "none",
         )
 
     def boundary(self, values, config, task_id):
         control = values.get("_runtime", {}) if isinstance(values, dict) else {}
         checkpoint = (
             CheckpointProposal(
+                adapter_version=self.graph_version,
                 mode="native_ref",
                 format_version="langgraph-config-v1",
                 ref={"config": config, "task_id": task_id},
@@ -63,10 +110,14 @@ class LangGraphAgent:
                 "UNSUPPORTED_CAPABILITY",
                 "Interrupted graph requires a checkpointer",
             )
+            interrupts = values["__interrupt__"]
+            require(len(interrupts) == 1, "ADAPTER_PROTOCOL_ERROR", "Use one managed wait boundary at a time")
+            value = interrupts[0].value
+            wait = WaitCondition.model_validate(value["oea_wait"]) if self.managed_context and isinstance(value, dict) and "oea_wait" in value else WaitCondition(kind="input")
             return AdapterEvent(
                 type="suspended",
                 checkpoint=checkpoint,
-                wait=WaitCondition(kind="input"),
+                wait=wait,
                 applied_message_ids=tuple(control.get("applied_message_ids", ())),
             )
         output = self.output_builder(values)
@@ -88,10 +139,12 @@ class LangGraphAgent:
         try:
             previous = request.resume_ref or {}
             config = {
+                "recursion_limit": self.recursion_limit,
                 "configurable": {"thread_id": request.thread_id},
                 "metadata": {
                     "runtime_run_id": request.run_id,
                     "runtime_task_id": request.task_id,
+                    "runtime_graph_version": self.graph_version,
                 },
             }
             if previous.get("config"):
@@ -116,7 +169,24 @@ class LangGraphAgent:
             else:
                 value = self.input_builder(request)
             yield AdapterEvent(type="log", payload={"state": "graph_started"})
-            values = await self.graph.ainvoke(value, config=config)
+            invocation = asyncio.create_task(self.graph.ainvoke(value, config=config,
+                **({"context": GraphContext(oea=context)} if self.managed_context else {})))
+            self.invocations[request.run_id] = invocation
+            cancellation = asyncio.create_task(context.cancelled.wait())
+            try:
+                done, _ = await asyncio.wait({invocation, cancellation}, return_when=asyncio.FIRST_COMPLETED)
+                if cancellation in done:
+                    invocation.cancel()
+                    await asyncio.gather(invocation, return_exceptions=True)
+                    raise asyncio.CancelledError
+                values = await invocation
+            finally:
+                cancellation.cancel()
+                if not invocation.done():
+                    invocation.cancel()
+                    await asyncio.gather(invocation, return_exceptions=True)
+                await asyncio.gather(cancellation, return_exceptions=True)
+                self.invocations.pop(request.run_id, None)
             saved_config = config
             if self.checkpointed:
                 snapshot = await self.graph.aget_state(config)
@@ -170,3 +240,5 @@ class LangGraphAgent:
     async def aclose(self):
         for event in self.running.values():
             event.set()
+        if self.invocations:
+            await asyncio.gather(*self.invocations.values(), return_exceptions=True)

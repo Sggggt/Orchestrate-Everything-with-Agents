@@ -41,6 +41,7 @@ class ToolGateway:
         self.runtime = runtime
         self.providers = {}
         self.allowed = {}
+        self.validators = {}
         self.inflight = set()
 
     def register(self, provider, *, allowed_agent_ids):
@@ -56,6 +57,8 @@ class ToolGateway:
         jsonschema.Draft202012Validator.check_schema(spec.output_schema)
         self.providers[spec.name] = provider
         self.allowed[spec.name] = frozenset(allowed_agent_ids)
+        self.validators[spec.name] = tuple(jsonschema.validators.validator_for(schema)(schema)
+            for schema in (spec.input_schema, spec.output_schema))
 
     async def invoke(self, name, arguments, idempotency_key, *, caller_run_id):
         provider = self.providers.get(name)
@@ -65,7 +68,7 @@ class ToolGateway:
         import jsonschema
 
         try:
-            jsonschema.validate(arguments, spec.input_schema)
+            self.validators[name][0].validate(arguments)
         except jsonschema.ValidationError:
             raise RuntimeFault(
                 "INVALID_REQUEST", "Tool input does not match its schema"
@@ -77,11 +80,13 @@ class ToolGateway:
         from .execution_policy import mcp_name, record
         identifier = mcp_name(provider.server_id, provider.tool["name"]) if hasattr(provider, "server_id") else name
         require(task_spec.tool_policy.permits(identifier), "PERMISSION_DENIED", "Tool is disabled by this task's policy")
-        require(
-            task_spec.agent_id in self.allowed[name],
-            "PERMISSION_DENIED",
-            "Agent is not allowed to invoke this tool",
-        )
+        from .models import WORKBENCH_TOOLS
+        if name in WORKBENCH_TOOLS:
+            active = self.runtime.active.get(caller_run_id)
+            require(active is not None, "STALE_RUN", "Run is no longer active")
+            self.runtime.workbench.authorize(active.request, name)
+        else:
+            require(task_spec.agent_id in self.allowed[name], "PERMISSION_DENIED", "Agent is not allowed to invoke this tool")
         digest = content_hash(arguments)
         prior = await self.runtime.store.call(
             lambda db: one(
@@ -91,6 +96,8 @@ class ToolGateway:
             )
         )
         if prior:
+            previous_run = await self.runtime.store.call(lambda db: one(db, "SELECT task_id FROM runs WHERE id=?", (prior.run_id,)))
+            require(previous_run.task_id == task.id, "PERMISSION_DENIED", "Tool receipt belongs to another task")
             require(
                 prior.request_hash == digest,
                 "IDEMPOTENCY_CONFLICT",
@@ -191,7 +198,7 @@ class ToolGateway:
                     provider.invoke(request), spec.timeout_seconds
                 )
                 result = self.runtime.clean_json(result)
-                jsonschema.validate(result, spec.output_schema)
+                self.validators[name][1].validate(result)
 
                 def complete(db):
                     self.runtime.check_run(db, caller_run_id)
@@ -255,7 +262,7 @@ class ToolGateway:
                 self.runtime.resources.release(owner)
             self.runtime.notify()
 
-    async def reconcile(self, tool_call_id):
+    async def reconcile(self, tool_call_id, resolution=None):
         from .services import need
 
         call = await self.runtime.store.call(
@@ -270,17 +277,27 @@ class ToolGateway:
         require(
             call.state == "UNCERTAIN", "INVALID_STATE", "Tool call is not uncertain"
         )
-        probe = await provider.reconcile(
-            {
-                "tool_call_id": call.id,
-                "idempotency_key": call.idempotency_key,
-                "operation_ref": (
-                    json.loads(call.external_operation_ref_json)
-                    if call.external_operation_ref_json
-                    else None
-                ),
-            }
-        )
+        if resolution is not None:
+            from .models import Reconciliation
+            resolution = Reconciliation.model_validate(resolution)
+            require(resolution.confirmed_stopped and resolution.external_actions_confirmed
+                    and resolution.resolution != "QUEUED" and call.run_id not in self.inflight,
+                    "OUTCOME_UNCERTAIN", "Verify execution stop and effects before resolving a tool; reconciliation never replays it")
+            probe = {"confirmed": True, "evidence": resolution.evidence,
+                     "succeeded": resolution.resolution == "SUCCEEDED",
+                     "result": resolution.result.output if resolution.result else {}}
+        else:
+            probe = await provider.reconcile(
+                {
+                    "tool_call_id": call.id,
+                    "idempotency_key": call.idempotency_key,
+                    "operation_ref": (
+                        json.loads(call.external_operation_ref_json)
+                        if call.external_operation_ref_json
+                        else None
+                    ),
+                }
+            )
         require(
             probe.get("confirmed") and probe.get("evidence"),
             "OUTCOME_UNCERTAIN",

@@ -26,6 +26,7 @@ def validate_policies(runtime, spec):
            for policy in (spec.tool_policy, spec.skill_policy)):
         return
     config = runtime.agent_configs.get(spec.agent_id)
+    from .models import WORKBENCH_TOOLS
     skills = {s.id for s in runtime.skills.for_agent(config) if s.enabled}
     selected = set(spec.skill_policy.required) | set(spec.skill_policy.allowed or ())
     require(selected <= skills, "PERMISSION_DENIED", "Skill policy selects an unlinked or disabled Skill")
@@ -46,6 +47,10 @@ def validate_policies(runtime, spec):
             require(not catalog.get("discovered_at") or any(tool["name"] == parts[2] for tool in catalog.get("tools", [])),
                     "INVALID_REQUEST", "Tool policy selects an unknown MCP tool")
         else:
+            if name in WORKBENCH_TOOLS:
+                require(config and config.workbench and name in config.workbench.tools,
+                        "PERMISSION_DENIED", "Tool policy selects an ungranted workbench tool")
+                continue
             require(name in PLATFORM_TOOLS, "INVALID_REQUEST", "Unknown platform tool identifier")
             require(name not in {"list_threads", "send_message", "submit_task", "spawn_instances"}
                     or config is None or config.collaboration, "PERMISSION_DENIED", "Collaboration is disabled")

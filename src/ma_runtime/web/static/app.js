@@ -722,6 +722,11 @@ function agentGeneral(d) {
     ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API Base URL", "base_url", d.base_url, { full: true, placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { full: true, placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
     ${d.kind === "process" ? `<section class="form-section"><h3>执行程序</h3><label class="field">命令与参数 · JSON 数组<textarea class="code-editor" data-setting="command_text" data-focus="setting-command_text" spellcheck="false">${escape(d.command_text ?? JSON.stringify(d.command || [], null, 2))}</textarea><small>第一个元素为程序路径，随后为独立参数。执行端须实现平台 JSONL 协议。</small></label></section>` : ""}<section class="form-section"><h3>行为与协作</h3><label class="field">系统指令<textarea data-setting="system_prompt" data-focus="setting-system_prompt" placeholder="定义执行端的工作方式与输出要求。">${escape(d.system_prompt)}</textarea></label><label class="toggle-row"><span>启用协作工具<small>允许同空间消息、子任务提交和 checkpoint 等待。</small></span><input type="checkbox" data-setting="collaboration" ${d.collaboration ? "checked" : ""}></label><label class="toggle-row"><span>启用 Agent<small>关闭后停止新派发，保留历史记录。</small></span><input type="checkbox" data-setting="enabled" ${d.enabled ? "checked" : ""}></label></section>`;
 }
+function workbenchSettings(d) {
+  const workbench = d.workbench || {};
+  const labels = { read_file: "读取文本", search_files: "搜索文件", write_file: "写入文件", edit_file: "修改文本", exec_command: "执行命令", read_image: "读取图片", publish_artifact: "交付产物" };
+  return `<section class="form-section"><h3>工作能力</h3><div class="form-grid"><label class="field">执行环境<select id="workbench-environment"><option value="">未分配</option>${(state.environments || []).filter(environment => environment.enabled).map(environment => `<option value="${escape(environment.id)}" ${workbench.environment_id === environment.id ? "selected" : ""}>${escape(environment.id)} · v${environment.revision}</option>`).join("")}</select></label><label class="field">目录权限<select id="workbench-permission"><option value="read-only" ${!workbench.permission_profile || workbench.permission_profile === "read-only" ? "selected" : ""}>只读</option><option value="workspace-write" ${workbench.permission_profile === "workspace-write" ? "selected" : ""}>任务目录可写</option><option value="trusted-local" ${workbench.permission_profile === "trusted-local" ? "selected" : ""} ${state.runtime?.trusted_local_execution ? "" : "disabled"}>可信本机执行${state.runtime?.trusted_local_execution ? "" : "（宿主未启用）"}</option></select></label></div>${Object.entries(labels).map(([name, label]) => `<label class="toggle-row"><span>${label}</span><input type="checkbox" data-workbench-tool="${name}" ${(workbench.tools || []).includes(name) ? "checked" : ""}></label>`).join("")}<small>环境由管理员准备。项目目录默认只读；可信本机命令使用宿主用户权限，需宿主明确允许。</small></section>`;
+}
 function settings() {
   ensureSettings();
   const d = state.settingsDraft;
@@ -734,7 +739,7 @@ function settings() {
     .join(
       "",
     )}<button class="settings-agent" data-action="add-agent">${icon("plus")}添加 Agent</button><div class="runtime-settings"><h3>执行预算</h3><label class="field">全局执行槽<input id="global-slots" type="number" min="1" max="256" value="${state.config.max_concurrency || 16}" aria-label="全局执行槽"></label><label class="field">外部预留执行槽<select id="reserved-slots" aria-label="外部预留执行槽">${Array.from({ length: state.config.max_concurrency || 16 }, (_, n) => n).map((n) => `<option value="${n}" ${state.config.reserved_external_slots === n ? "selected" : ""}>${n} 个 · 受管最多 ${(state.config.max_concurrency || 16) - n} 个</option>`).join("")}</select></label><button class="btn small" data-action="save-budget">保存预算</button><p class="form-hint">Codex 同时执行时预留 1 个槽。独立 mock 压测可设为 0。</p></div></aside>
-    <form id="agent-form" class="settings-form"><p class="eyebrow">AGENT SETTINGS</p><h1>${escape(state.settingsId ? d.name : "接入一个新 Agent")}</h1><p>为这个 Agent 设定工作方式。保存后，新的执行将使用最新配置。</p>${integrationUI.profileTabs()}${state.settingsTab === "general" ? agentGeneral(d) : integrationUI.profilePanel()}<footer class="settings-footer"><div>${d.has_api_key ? '<span class="secret-status">密钥已设置</span> <button type="button" class="text-link" data-action="delete-secret">删除密钥</button>' : '<span class="secret-status">本机配置 · 仓库之外</span>'}</div><button class="btn primary" type="submit" ${state.savingSettings ? "disabled" : ""}>${icon("check")}${state.savingSettings ? "正在保存…" : "保存配置"}</button></footer><div class="storage-note">${icon("shield")}<div>运行数据库、配置、凭据与产物都保存在源码仓库之外。Codex 的模型配置继续由 Codex 管理。</div></div></form></div>`;
+    <form id="agent-form" class="settings-form"><p class="eyebrow">AGENT SETTINGS</p><h1>${escape(state.settingsId ? d.name : "接入一个新 Agent")}</h1><p>为这个 Agent 设定工作方式。保存后，新的执行将使用最新配置。</p>${integrationUI.profileTabs()}${state.settingsTab === "general" ? agentGeneral(d) + workbenchSettings(d) : integrationUI.profilePanel()}<footer class="settings-footer"><div>${d.has_api_key ? '<span class="secret-status">密钥已设置</span> <button type="button" class="text-link" data-action="delete-secret">删除密钥</button>' : '<span class="secret-status">本机配置 · 仓库之外</span>'}</div><button class="btn primary" type="submit" ${state.savingSettings ? "disabled" : ""}>${icon("check")}${state.savingSettings ? "正在保存…" : "保存配置"}</button></footer><div class="storage-note">${icon("shield")}<div>运行数据库、配置、凭据与产物都保存在源码仓库之外。Codex 的模型配置继续由 Codex 管理。</div></div></form></div>`;
 }
 function commandResults() {
   const query = (state.modal?.query || "").trim().toLocaleLowerCase();
@@ -1052,6 +1057,7 @@ async function loadBootstrap(projectId = state.project?.id || localStorage.getIt
     projects: value.projects || [],
     project: value.project,
     agents: value.agents,
+    environments: value.environments || [],
     mcpServers: value.mcp_servers || [],
     skillRegistry: value.skill_registry || { items: [] },
     sessions: value.sessions,
@@ -1962,6 +1968,14 @@ document.addEventListener("input", (event) => {
 });
 document.addEventListener("change", (event) => {
   const e = event.target;
+  if (e.id?.startsWith("workbench-") || e.dataset.workbenchTool) {
+    const environment = $("#workbench-environment").value;
+    state.settingsDraft.workbench = environment ? {
+      environment_id: environment,
+      permission_profile: $("#workbench-permission").value,
+      tools: [...document.querySelectorAll("[data-workbench-tool]:checked")].map(element => element.dataset.workbenchTool),
+    } : null;
+  }
   integrationUI.change(e).catch((error) => toast(error.message, true));
   workflowUI.change(e).catch((error) => toast(error.message, true));
   if (e.id === "workspace-select")
@@ -2007,6 +2021,7 @@ document.addEventListener("submit", async (event) => {
         "skills",
         "skill_bindings",
         "mcp_bindings",
+        "workbench",
         "temperature",
         "max_output_tokens",
         "token_parameter",

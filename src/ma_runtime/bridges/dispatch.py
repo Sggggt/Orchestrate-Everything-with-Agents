@@ -25,6 +25,8 @@ def methods(rt):
         "agents.list": rt.agents.list,
         "agents.describe": rt.agents.describe,
         "agents.capabilities": rt.agents.capabilities,
+        **{"environments." + name: getattr(rt.environments, name) for name in ("list", "get", "configure", "prepare", "check")},
+        **{"workbench." + name: getattr(rt.workbench, name) for name in ("inspect", "calls", "reconcile")},
         "agents.configure": rt.agents.configure,
         "agents.test_model": rt.agents.test_model,
         "agents.documents": rt.agents.documents,

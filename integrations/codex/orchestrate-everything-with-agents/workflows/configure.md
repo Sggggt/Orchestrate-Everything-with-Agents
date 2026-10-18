@@ -1,5 +1,7 @@
 # Agent 配置
 
+分配文件、图片和执行环境时加载[工作能力](workbench.md)，不在此重复工具 schema。
+
 先确定项目和具体 Agent ID；必要时 `agents.list {project_id}`，再 `agents.describe {"agent_id":"..."}`。Agent ID `codex` 保留给外部协调者。新配置填写 project_id，已有历史归属整体移动用 projects.adopt。
 
 已有 Agent 使用 `agents.patch {"agent_id":"...","changes":{...}}`，例如仅修改 `model`、`timeout_seconds`、`max_concurrency`、`enabled` 或 `mcp_bindings`。同一 Agent 的配置修改顺序执行；patch 是读取后合并，不是跨客户端的事务式 compare-and-swap。

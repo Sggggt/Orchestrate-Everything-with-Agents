@@ -2,6 +2,8 @@
 
 Orchestrate Everything with Agents runs on your computer. Python 3.12 or newer is required. The browser frontend has no Node.js build step.
 
+Local command work is optional: start with `--allow-trusted-local-execution` to authorize configured programs, then assign an environment and workbench tools. No container engine is required. See [workbench setup](workbench.md) for readiness and the explicit local execution boundary.
+
 ## Install from source
 
 Create the Python environment outside the checkout. From the repository root:

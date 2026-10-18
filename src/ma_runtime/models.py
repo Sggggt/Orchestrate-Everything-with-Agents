@@ -356,11 +356,40 @@ class MCPServerConfig(Model):
         return self
 
 
+WORKBENCH_TOOLS = ("read_file", "search_files", "write_file", "edit_file", "exec_command", "read_image", "publish_artifact")
+
+
+class WorkbenchConfig(Model):
+    environment_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    permission_profile: Literal["read-only", "workspace-write", "trusted-local"] = "read-only"
+    tools: tuple[Literal["read_file", "search_files", "write_file", "edit_file", "exec_command", "read_image", "publish_artifact"], ...] = ()
+
+
+class GraphAdapterConfig(Model):
+    managed_context: bool = False
+    recursion_limit: int = Field(default=24, ge=1, le=256)
+    graph_version: str = Field(default="1.0", min_length=1, max_length=128)
+
+
+class EnvironmentConfig(Model):
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    project_id: str
+    runner: Literal["local", "isolated"] = "local"
+    enabled: bool = True
+    project_write: bool = False
+    network: Literal["inherit", "none"] = "inherit"
+    timeout_seconds: float = Field(default=60, gt=0, le=300)
+    output_bytes: int = Field(default=16384, ge=1024, le=65536)
+    programs: dict[str, str] = Field(default_factory=dict)
+    variables: dict[str, str] = Field(default_factory=dict)
+    resources: dict[str, str] = Field(default_factory=dict)
+
+
 class AgentConfig(Model):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=80)
     project_id: str | None = None
-    kind: Literal["llm", "mock", "process", "external"] = "llm"
+    kind: Literal["llm", "mock", "process", "external", "environment"] = "llm"
     enabled: bool = True
     llm_required: bool = False
     base_url: str = ""
@@ -380,6 +409,7 @@ class AgentConfig(Model):
     skills: tuple["AgentSkill", ...] = ()
     skill_bindings: tuple[SkillBinding, ...] = ()
     mcp_bindings: tuple["MCPBinding", ...] = ()
+    workbench: WorkbenchConfig | None = None
 
     @field_validator("agent_md")
     @classmethod
@@ -494,6 +524,7 @@ class ExecutionRequest(Model):
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
     operations_consumer_id: str = ""
+    workbench: dict | None = None
 
 
 class ProbeResult(Model):

@@ -25,6 +25,8 @@ def parser():
             child.add_argument("--reserved-external-slots", type=int, default=None)
         if name == "serve":
             child.add_argument("--port", type=int, default=8765)
+            child.add_argument("--allow-trusted-local-execution", action="store_true",
+                               help="Allow explicitly configured local command execution (not a system sandbox)")
         elif name == "request":
             child.add_argument("method")
             child.add_argument("--params-file")
@@ -115,6 +117,7 @@ def main():
                     load_config(args),
                     mock=args.mock,
                     client_url=f"http://127.0.0.1:{args.port}",
+                    allow_trusted_local=args.allow_trusted_local_execution,
                 ),
                 host="127.0.0.1",
                 port=args.port,

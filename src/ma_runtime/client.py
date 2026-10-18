@@ -403,6 +403,34 @@ class WorkflowClient(_Namespace):
         return await self.call("reconcile_node", run_id=run_id, node_id=node_id, resolution=resolution, instance_index=instance_index)
 
 
+class EnvironmentClient(_Namespace):
+    async def list(self, project_id=None):
+        return await self.call("list", project_id=project_id)
+
+    async def get(self, environment_id):
+        return await self.call("get", environment_id=environment_id)
+
+    async def configure(self, config):
+        return await self.call("configure", config=config)
+
+    async def prepare(self, environment_id, idempotency_key):
+        return await self.call("prepare", environment_id=environment_id, idempotency_key=idempotency_key)
+
+    async def check(self, environment_id, idempotency_key):
+        return await self.call("check", environment_id=environment_id, idempotency_key=idempotency_key)
+
+
+class WorkbenchClient(_Namespace):
+    async def inspect(self, *, agent_id=None, task_id=None):
+        return await self.call("inspect", agent_id=agent_id, task_id=task_id)
+
+    async def calls(self, task_id, *, cursor="", limit=25, tool_call_id=None):
+        return await self.call("calls", task_id=task_id, cursor=cursor, limit=limit, tool_call_id=tool_call_id)
+
+    async def reconcile(self, tool_call_id, resolution=None):
+        return await self.call("reconcile", tool_call_id=tool_call_id, resolution=resolution)
+
+
 class PlatformClient:
     def __init__(self, base_url, token, *, timeout=180, transport=None):
         target = urlsplit(base_url)
@@ -430,6 +458,8 @@ class PlatformClient:
         self.projects = ProjectClient(self, "projects")
         self.workflows = WorkflowClient(self, "workflows")
         self.instances = InstanceClient(self, "instances")
+        self.environments = EnvironmentClient(self, "environments")
+        self.workbench = WorkbenchClient(self, "workbench")
         self.sessions, self.threads = (
             SessionClient(self, "sessions"),
             ThreadClient(self, "threads"),

@@ -534,6 +534,8 @@ class Agents:
             entry = self.rt.skills.entry(binding.skill_id)
             catalog.extend({**item, "enabled": entry["enabled"]} for item in skill_catalog((entry["skill"],)))
         return {"agent_id": agent_id, "project_id": profile.project_id,
+                "workbench": profile.workbench.model_dump(mode="json") if profile.workbench else None,
+                "workbench_tools": list(profile.workbench.tools) if profile.workbench else [],
                 "skills": catalog,
                 "mcp_bindings": [b.model_dump(mode="json") for b in profile.mcp_bindings],
                 "platform_tools": sorted(platform_tools),
@@ -606,6 +608,7 @@ class Agents:
         self.rt.mcp.validate_bindings(config.mcp_bindings)
         self.rt.skills.validate_bindings(config.skill_bindings)
         self.rt.skills.validate_agent(config)
+        self.rt.environments.validate(config)
         require(
             config.id != "codex", "INVALID_REQUEST", "Codex is an external coordinator"
         )
@@ -942,6 +945,7 @@ class Tasks:
         if caller_run_id is not None:
             caller, run = self.rt.check_run(db, caller_run_id)
             self.rt.check_collaboration(run)
+            self.rt.environments.check_delegation(db, caller_run_id, spec.agent_id)
             require(
                 caller.session_id == spec.session_id,
                 "PERMISSION_DENIED",

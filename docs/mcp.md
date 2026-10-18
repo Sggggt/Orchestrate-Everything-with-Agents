@@ -1,5 +1,9 @@
 # MCP and Codex skills
 
+The `environments` and `workbench` areas expose [local work capabilities](workbench.md). Preparation and checks return task receipts; file/command tools remain run-bound capabilities rather than new top-level MCP tools. Detailed types are available individually through development.workbench, development.environment and development.graph_adapter.
+
+Generated Codex configuration keeps the existing 180-second tool timeout for compatible synchronous upstream MCP calls. New environment operations are task-based; bounded task and inbox waits do not hold a tool request for the full job. Lowering the client timeout requires those remaining synchronous upstream paths to fit it too.
+
 The MCP bridge connects ChatGPT, Codex or another MCP client to the same host used by the browser. A client must support the chosen MCP transport and local process execution. Product-specific client availability may vary.
 
 ## Connect a running host

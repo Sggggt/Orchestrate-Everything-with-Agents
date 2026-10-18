@@ -14,6 +14,8 @@ Responses contain `result` or a structured `error` with a safe message and code.
 
 Python `PlatformClient.call()` and CLI `oea request METHOD --params-file PATH` call this same gateway. Parameter files and saved outputs belong outside source repositories. `oea schema --output PATH` exports model schemas without requiring a running host.
 
+The `environments` and `workbench` namespaces use this same RPC route. Environment preparation/checks immediately return task receipts; Agent workbench grants are part of Agent configuration. See [workbench](workbench.md) for local execution authorization and receipt inspection.
+
 ## Browser REST surface
 
 | Route group | Purpose |

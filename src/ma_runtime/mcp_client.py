@@ -10,6 +10,7 @@ import httpx
 from contextlib import AsyncExitStack
 from datetime import timedelta
 
+from .brand import VERSION
 from .errors import RuntimeFault, require
 from .models import MCPServerConfig
 
@@ -120,7 +121,7 @@ class MCPConnection:
                                 )
                             ),
                             client_info=Implementation(
-                                name="oea", version="0.4.0"
+                                name="oea", version=VERSION
                             ),
                         )
                     )

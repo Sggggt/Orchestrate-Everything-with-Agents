@@ -6,6 +6,7 @@ Start with [getting started](getting-started.md), then build an [Agent](sdk.md) 
 | --- | --- |
 | [Getting started](getting-started.md) | Installation, local storage, first project and model configuration |
 | [Python SDK](sdk.md) | Remote clients, embedded runtimes and isolated Agent processes |
+| [Workbench](workbench.md) | File/image tools, local programs, environment readiness and command receipts |
 | [Workflows](workflows.md) | Canvas, nodes, variables, versioning and run lifecycle |
 | [MCP and Codex skills](mcp.md) | Connect a client, discover operations and use the supplied skill |
 | [Skills and execution policies](skills.md) | Shared Skill packages, Agent associations and task-scoped constraints |

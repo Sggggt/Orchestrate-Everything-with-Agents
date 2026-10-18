@@ -1,5 +1,7 @@
 # Python SDK
 
+File, image, command and delivery capabilities use the shared [workbench and environments](workbench.md). `client.environments` prepares existing external programs; `client.workbench` inspects grants and receipts.
+
 Shared Skill registration, Agent associations and task policies are described in [Skills and execution policies](skills.md).
 
 For active diagnostics, passive receiving and run-bound Agent reports, see [Operations and guidance](operations.md). `client.operations` uses the same service as MCP and HTTP RPC; process Agents use `context.report_issue` and the scoped coordinator router. The browser reflects execution and pending reports through Agent status colors.
