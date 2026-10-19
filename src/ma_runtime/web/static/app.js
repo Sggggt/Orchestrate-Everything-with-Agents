@@ -6,6 +6,7 @@ import { artifactDownload, artifactSource, groupArtifacts, readArtifactPreview }
 import { createWorkflowUI } from "/assets/workflows.js";
 import { createAgentStatusIndex } from "/assets/agent-status.mjs";
 import { messageItems, matchesMessageFilter } from "/assets/message-feed.mjs";
+import { api } from "/assets/api.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -244,25 +245,6 @@ const workflowUI = createWorkflowUI({ state, escape, icon, badge, markdown, api,
 const agentStatusDot = (status) => `<span class="dot status-${status.tone}" title="${escape(status.label)}" role="img" aria-label="${escape(status.label)}"></span>`;
 const agentStatusBadge = (status) => `<span class="badge agent-state status-${status.tone}" title="当前会话 · ${escape(status.label)}">${escape(status.label)}</span>`;
 
-async function api(path, options = {}) {
-  const headers = { ...options.headers };
-  if (
-    options.body &&
-    typeof options.body !== "string" &&
-    !(options.body instanceof Blob)
-  ) {
-    headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(options.body);
-  }
-  const response = await fetch("/api" + path, { ...options, headers });
-  const value = await response.json();
-  if (!response.ok || value.error) {
-    const error = new Error(value.error?.safe_message || "本地服务请求失败");
-    error.code = value.error?.code;
-    throw error;
-  }
-  return value;
-}
 function toast(message, error = false) {
   const target = $("#toast");
   target.textContent = message;

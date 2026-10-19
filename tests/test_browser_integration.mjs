@@ -1,10 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { api } from "../src/ma_runtime/web/static/api.mjs";
 import { createIntegrationUI } from "../src/ma_runtime/web/static/integrations.js";
 import { createSkillIntegration } from "../src/ma_runtime/web/static/skills.js";
 import { content, compactTitle, schemaView, schemaDefaults, valueEditor, toolResult } from "../src/ma_runtime/web/static/presentation.mjs";
 import { argumentOptions, describeLaunch, buildLaunch, createLaunchEditor } from "../src/ma_runtime/web/static/launch.mjs";
 import { artifactDownload, artifactSource, groupArtifacts, decodeArtifactText, readArtifactPreview } from "../src/ma_runtime/web/static/artifacts.mjs";
+
+test("successful task detail requests retain execution errors for display", async t => {
+  for (const state of ["FAILED", "UNCERTAIN", "CANCELLED", "SUCCEEDED"]) {
+    const task = { id: "task", state, error: state === "SUCCEEDED" ? null : {
+      code: "ADAPTER_FAILURE", safe_message: "Execution stopped", details: { reason: "Unavailable" },
+    } };
+    const fetcher = t.mock.method(globalThis, "fetch", async url => {
+      assert.equal(url, "/api/tasks/task");
+      return Response.json(task);
+    });
+    try {
+      assert.deepEqual(await api("/tasks/task"), task);
+    } finally {
+      fetcher.mock.restore();
+    }
+  }
+});
+
+test("HTTP failures still reject with the gateway error message and code", async t => {
+  for (const status of [400, 401, 403, 404, 409, 422, 503]) {
+    const fetcher = t.mock.method(globalThis, "fetch", async () => Response.json({
+      error: { code: "REQUEST_FAILED", safe_message: "Request could not be completed" },
+    }, { status }));
+    try {
+      await assert.rejects(api("/tasks/task"), {
+        message: "Request could not be completed", code: "REQUEST_FAILED",
+      });
+    } finally {
+      fetcher.mock.restore();
+    }
+  }
+});
 
 test("work artifacts group by Agent identity and keep uploads and unknown history separate", () => {
   const from = (id, agent_id, agent_name) => ({ id, metadata: { provenance: { kind: "agent", agent_id, agent_name } } });
