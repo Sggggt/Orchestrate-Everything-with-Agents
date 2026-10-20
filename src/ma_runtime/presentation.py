@@ -32,10 +32,6 @@ def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="任务已处理，
             lines.append(f"已整理 {len(cards)} 项结果。")
             lines.extend("- " + str(c.get("conclusion", ""))[:180]
                          for c in cards[:3] if isinstance(c, dict) and c.get("conclusion"))
-        if value.get("status"):
-            statuses = {"candidate": "候选方案", "draft": "草稿", "review_required": "待审核",
-                        "ready_for_acceptance": "等待验收"}
-            lines.append("**结论**：" + statuses.get(value["status"], str(value["status"])))
         if value.get("issues"):
             lines.append(f"有 {len(value['issues'])} 项待处理事项，已保留在完整协作结果中。")
         return markdown_summary("\n\n".join(lines), limit=limit, fallback=fallback) if lines else fallback

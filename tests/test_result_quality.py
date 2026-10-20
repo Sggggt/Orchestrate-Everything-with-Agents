@@ -98,11 +98,22 @@ class ResultQualityTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(code=code, response=response):
                 task = await self.native(response)
                 self.assertEqual(task.state, "FAILED")
+                self.assertEqual(task.execution_state, "SUCCEEDED")
+                self.assertEqual(task.runs[0].execution_state, "SUCCEEDED")
                 self.assertEqual(task.error["code"], code)
                 self.assertEqual(task.result.output["text"], response.get("text", ""))
                 self.assertEqual(task.result.metadata["acceptance"]["state"], "FAILED")
                 self.assertEqual(task.runs[0].boundary_receipt["state"], "FAILED")
                 self.assertIsNone((await self.rt.threads.get(task.thread_id)).owner_task_id)
+                view = await self.rt.sessions.snapshot(self.session.id, presentation=True)
+                self.assertNotIn(task.thread_id, view["failed_thread_ids"])
+                self.assertEqual(next(item for item in view["tasks"] if item["id"] == task.id)["execution_state"], "SUCCEEDED")
+                trace = await self.rt.tasks.trace(task.id)
+                self.assertEqual(trace["runs"][-1]["execution_state"], "SUCCEEDED")
+                conversation = await self.rt.threads.conversation(task.thread_id)
+                replies = [item for item in conversation.items if item.role == "assistant"]
+                self.assertTrue(replies)
+                self.assertEqual(replies[-1].execution_state, "SUCCEEDED")
                 if "usage" in response:
                     self.assertEqual(task.result.metadata["model_completion"]["usage"], response["usage"])
 
@@ -110,6 +121,9 @@ class ResultQualityTests(unittest.IsolatedAsyncioTestCase):
         task = await self.native({"text": "Checked the requested paragraph."})
         self.assertEqual(task.state, "SUCCEEDED")
         self.assertEqual(task.result.metadata["acceptance"]["semantic_review"], "UNVERIFIED")
+        task = await self.submit({"result": {"output": {"text": "Further work is needed.", "status": "failed"}}})
+        self.assertEqual(task.state, "SUCCEEDED")
+        self.assertEqual(task.execution_state, "SUCCEEDED")
         task = await self.native({"text": json.dumps({"answer": 4, "covered_items": ["item"]})},
             {"kind": "structured", "required_items": ["item"], "output_schema": {
                 "type": "object", "properties": {"answer": {"type": "integer"}}, "required": ["answer"]}})

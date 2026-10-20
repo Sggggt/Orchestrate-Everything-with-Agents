@@ -34,7 +34,7 @@ pointer 是 JSON Pointer；对象键里的 `/` 编码成 `~1`，`~` 编码成 `~
 
 一个逻辑动作一个幂等键；网络重试原动作时参数与键保持一致。修改语义才生成新键。threads.fork 和 tasks.continue_result 支持稳定键。sessions.create / threads.create / 文件上传没有调用方幂等键，未知结果先核对现有对象。
 
-主要状态：QUEUED、RUNNING、WAITING、SUCCEEDED、FAILED、CANCELLED、SKIPPED、UNCERTAIN。WAITING 释放执行槽；UNCERTAIN 保留需要核对的边界。WAIT_TIMEOUT 是客户端等待结束，不表示任务失败。
+执行状态由 Runtime 回执提供，模型直接输出任务内容。WAITING 释放执行槽；UNCERTAIN 保留需要核对的边界。WAIT_TIMEOUT 是客户端等待结束，不表示任务失败。
 
 平台宿主和 MCP 桥必须使用同一数据目录，认证由桥内部读取 client-token；模型不用知道该值。不得在用户可见的命令或日志里展开 token。紧凑模式只减少接口与输出规模，不把管理员调用自动变成某个 Agent 的权限上下文。
 

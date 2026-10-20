@@ -1,6 +1,16 @@
 """Safe, transport-independent runtime errors."""
 
 
+def execution_state(state, error=None):
+    """Project host execution independently of delivery acceptance."""
+    if state == "FAILED" and error and (
+        error.get("category") == "result"
+        or error.get("code") in {"EMPTY_OUTPUT", "OUTPUT_TRUNCATED", "MODEL_REFUSED"}
+    ):
+        return "SUCCEEDED"
+    return state
+
+
 class RuntimeFault(Exception):
     def __init__(
         self,

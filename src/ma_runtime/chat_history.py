@@ -18,7 +18,7 @@ def conversation_rows(db, thread_id, *, after=0, before=9223372036854775807, lim
         "SELECT ?,9223372036854775807,9223372036854775807 UNION ALL "
         "SELECT b.parent_thread_id,MIN(l.message_seq,b.message_seq),MIN(l.user_seq,b.user_seq) "
         "FROM thread_branches b JOIN lineage l ON b.thread_id=l.thread_id) "
-        "SELECT c.* FROM conversation c JOIN lineage l ON c.thread_id=l.thread_id "
+        "SELECT c.*,r.state AS observed_state,r.error_json AS observed_error_json FROM conversation c JOIN lineage l ON c.thread_id=l.thread_id LEFT JOIN runs r ON r.id=c.run_id "
         "WHERE c.seq>? AND c.seq<? AND c.seq<=l.message_seq AND (c.role!='user' OR c.seq<=MIN(l.user_seq,?)) "
         "ORDER BY c.seq " + direction + " LIMIT ?", (thread_id, after, before, user_limit, limit))
 

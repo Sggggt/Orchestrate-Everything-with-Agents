@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .errors import execution_state
+
 PROTOCOL_VERSION = "1.0"
 TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED"})
 
@@ -650,6 +652,13 @@ class RunSnapshot(SnapshotModel):
     ended_at: int | None = None
     error: dict | None = None
 
+    execution_state: str = ""
+
+    @model_validator(mode="after")
+    def observe_execution(self):
+        object.__setattr__(self, "execution_state", execution_state(self.state, self.error))
+        return self
+
 
 class TaskSnapshot(SnapshotModel):
     id: str
@@ -678,6 +687,13 @@ class TaskSnapshot(SnapshotModel):
     current_run: RunSnapshot | None = None
     execution_evidence: list[dict] = Field(default_factory=list)
     position: int | None = None
+
+    execution_state: str = ""
+
+    @model_validator(mode="after")
+    def observe_execution(self):
+        object.__setattr__(self, "execution_state", execution_state(self.state, self.error))
+        return self
 
 
 class MessageEnvelope(MessageSpec):
@@ -725,6 +741,7 @@ class ConversationEntry(SnapshotModel):
     role: str
     content: str
     summary_markdown: str = ""
+    execution_state: str | None = None
     metadata: dict
     created_at: int
 

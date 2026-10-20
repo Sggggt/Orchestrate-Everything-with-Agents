@@ -2,11 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { api } from "../src/ma_runtime/web/static/api.mjs";
 import { canContinue, duration, executionTrace } from "../src/ma_runtime/web/static/execution-view.mjs";
+import { executionState, statusLabel } from "../src/ma_runtime/web/static/execution-status.mjs";
 import { createIntegrationUI } from "../src/ma_runtime/web/static/integrations.js";
 import { createSkillIntegration } from "../src/ma_runtime/web/static/skills.js";
 import { content, compactTitle, schemaView, schemaDefaults, valueEditor, toolResult } from "../src/ma_runtime/web/static/presentation.mjs";
 import { argumentOptions, describeLaunch, buildLaunch, createLaunchEditor } from "../src/ma_runtime/web/static/launch.mjs";
 import { artifactDownload, artifactSource, groupArtifacts, decodeArtifactText, readArtifactPreview } from "../src/ma_runtime/web/static/artifacts.mjs";
+
+test("all execution views use host observations instead of model status values", () => {
+  for (const [state, label] of Object.entries({ SUCCEEDED: "已完成", RUNNING: "执行中", SKIPPED: "已跳过", FAILED: "失败", CANCELLED: "已取消", WAITING: "等待中" })) {
+    assert.equal(statusLabel({ state, result: { output: { status: "failed" } } }), label);
+  }
+  const delivery = { state: "FAILED", execution_state: "SUCCEEDED" };
+  assert.equal(executionState(delivery), "SUCCEEDED");
+  assert.equal(statusLabel(delivery), "已完成");
+  const html = executionTrace({ runs: [{ ...delivery, id: "run", attempt: 1 }] });
+  assert.match(html, /已完成/);
+  assert.doesNotMatch(html, /失败/);
+});
 
 test("successful task detail requests retain execution errors for display", async t => {
   for (const state of ["FAILED", "UNCERTAIN", "CANCELLED", "SUCCEEDED"]) {

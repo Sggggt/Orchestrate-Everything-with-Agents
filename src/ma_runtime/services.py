@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from .errors import RuntimeFault, require
+from .errors import RuntimeFault, execution_state, require
 from .models import (
     TERMINAL,
     AgentConfig,
@@ -398,8 +398,8 @@ class Sessions:
                 "SELECT DISTINCT t.thread_id FROM operations_reports r JOIN tasks t ON t.id=r.task_id WHERE r.session_id=? AND r.reply_message_id IS NULL",
                 (session_id,))] if presentation else []
             failed = [r.id for r in rows(db,
-                "SELECT h.id FROM threads h WHERE h.session_id=? AND (SELECT state FROM tasks WHERE thread_id=h.id ORDER BY created_at DESC,rowid DESC LIMIT 1)='FAILED'",
-                (session_id,))] if presentation else []
+                "SELECT h.id,t.error_json FROM threads h JOIN tasks t ON t.id=(SELECT id FROM tasks WHERE thread_id=h.id ORDER BY created_at DESC,rowid DESC LIMIT 1) WHERE h.session_id=? AND t.state='FAILED'",
+                (session_id,)) if execution_state("FAILED", json.loads(r.error_json) if r.error_json else None) == "FAILED"] if presentation else []
             reports = [dict(r) for r in rows(db,
                 "SELECT r.id,t.thread_id,r.task_id,r.summary AS summary_markdown,r.wait_for_guidance,r.reply_message_id IS NOT NULL AS replied,r.created_at FROM operations_reports r JOIN tasks t ON t.id=r.task_id WHERE r.session_id=? ORDER BY r.created_at DESC,r.rowid DESC LIMIT 10",
                 (session_id,))] if presentation else []
@@ -882,6 +882,8 @@ class Threads:
     ):
         def entry(row):
             value = public(row)
+            observed = value.pop("observed_state")
+            value["execution_state"] = execution_state(observed, value.pop("observed_error"))
             if presentation and value["role"] == "assistant":
                 from .presentation import markdown_summary
                 value["content"] = markdown_summary(value.get("summary_markdown") or value["content"])
@@ -946,6 +948,7 @@ class Tasks:
                     "cursor": str(stages[min(limit, len(stages)) - 1].seq) if stages else cursor,
                     "has_more": len(stages) > limit,
                     "runs": [{"id": run.id, "attempt": run.attempt_no, "state": run.state,
+                              "execution_state": execution_state(run.state, json.loads(run.error_json) if run.error_json else None),
                               "started_at": run.started_at, "ended_at": run.ended_at,
                               "duration_ms": run.ended_at - run.started_at if run.ended_at else None,
                               "error": json.loads(run.error_json) if run.error_json else None,

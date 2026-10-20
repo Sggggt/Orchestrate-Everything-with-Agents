@@ -8,6 +8,7 @@ import { createAgentStatusIndex } from "/assets/agent-status.mjs";
 import { messageItems, matchesMessageFilter } from "/assets/message-feed.mjs";
 import { api } from "/assets/api.mjs";
 import { canContinue, executionTrace } from "/assets/execution-view.mjs";
+import { executionState, statusLabel } from "/assets/execution-status.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -58,33 +59,10 @@ const paths = {
 };
 const icon = (name) =>
   `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name] || paths.agents}"/></svg>`;
-const statuses = {
-  CONNECTED: "已连接",
-  CONNECTING: "连接中",
-  DISCONNECTED: "未连接",
-  DISABLED: "已停用",
-  ERROR: "连接异常",
-  DISPATCHED: "调用中",
-  QUEUED: "排队中",
-  RUNNING: "执行中",
-  WAITING: "等待输入",
-  SUCCEEDED: "已完成",
-  FAILED: "失败",
-  CANCELLED: "已取消",
-  SKIPPED: "已跳过",
-  UNCERTAIN: "待核对",
-  CANCELLING: "正在取消",
-  FAILING: "正在停止",
-  PENDING: "待应用",
-  OFFERED: "已交付",
-  APPLIED: "已应用",
-  REJECTED: "已拒绝",
-  REPORTED: "问题报告",
-  GUIDANCE: "请求指导",
-  REPLIED: "已回复",
+const badge = value => {
+  const observed = executionState(value);
+  return `<span class="badge ${escape(observed)}">${escape(statusLabel(value))}</span>`;
 };
-const badge = (value) =>
-  `<span class="badge ${escape(value)}">${escape(statuses[value] || value)}</span>`;
 const state = {
   route: ["mcp", "skills", "agents", "settings", "workflows"].includes(location.hash.slice(1))
     ? location.hash.slice(1)
@@ -379,7 +357,7 @@ function workGuide() {
 }
 function nextStep() {
   const ready = readyAgents(), existing = state.agents.find(a => a.kind !== "external");
-  const attention = state.snapshot.tasks.find(t => t.state === "WAITING" && t.wait?.kind === "input") || state.snapshot.tasks.find(t => ["FAILED", "UNCERTAIN"].includes(t.state));
+  const attention = state.snapshot.tasks.find(t => t.state === "WAITING" && t.wait?.kind === "input") || state.snapshot.tasks.find(t => matchesTaskFilter(t, "attention"));
   const title = attention ? attention.state === "WAITING" ? "补充信息，让工作继续" : "先核对需要关注的任务" : !existing ? "先添加你的第一个 Agent" : !ready.length ? "完成 Agent 配置" : !state.session ? "为目标创建一个会话" : "团队已就绪";
   const description = attention ? escape(taskTitle(attention)) : !existing ? "连接模型或本机执行端，建立你的工作伙伴。" : !ready.length ? "启用 Agent，并填写模型地址与名称。保存后可测试连接。" : !state.session ? "会话用于集中保存同一目标的对话、任务与成果。" : "选择 Agent 开始对话，或运行已保存的工作流。";
   const action = attention ? "task-detail" : !existing ? "add-agent" : !ready.length ? "configure-agent" : !state.session ? "new-session" : "open-agent";
@@ -398,8 +376,8 @@ function agentCards() {
 }
 function overview() {
   const tasks = state.snapshot.tasks;
-  const attention = tasks.filter(t => ["FAILED", "UNCERTAIN", "WAITING"].includes(t.state));
-  return `<section class="overview"><div class="page-heading"><div><h1>今天，推进什么？</h1><p>先明确目标，再选择 Agent。执行进度和成果会保存在此会话。</p></div><button class="btn" data-action="workflow">${icon("flow")}安排依赖任务</button></div><div class="workspace-brief">${nextStep()}<div class="workspace-summary"><span><strong>${readyAgents().length}</strong> 个可用 Agent</span><span class="summary-running"><strong>${tasks.filter(t => t.state === "RUNNING").length}</strong> 项执行中</span><span class="summary-attention"><strong>${attention.length}</strong> 项需要关注</span><span class="summary-done"><strong>${tasks.filter(t => t.state === "SUCCEEDED").length}</strong> 项已完成</span></div></div><div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div><div class="workspace-history"><section class="recent-tasks"><div class="section-heading"><h2>最近任务</h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${tasks.length ? `<div class="activity-list">${tasks.slice(0, 5).map(t => `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || "Agent")}</small></span>${badge(t.state)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`).join("")}</div>` : empty("发起第一项工作", "打开 Agent 对话，写下目标和期望的交付内容。", "open-agent", "开始对话")}</section><section class="session-updates">${attention.length ? `<div class="section-heading"><h2>需要你处理</h2><button class="text-link" data-action="task-filter-link" data-filter="attention">查看全部 ${icon("arrow")}</button></div><div class="attention-list">${attention.slice(0, 4).map(t => `<button class="attention-item ${t.state}" data-action="task-detail" data-id="${escape(t.id)}"><div><strong>${escape(taskTitle(t))}</strong><small>${t.state === "WAITING" ? t.wait?.kind === "input" ? "提供输入，继续执行" : "等待协作，可查看进度" : "查看状态说明并核对结果"}</small></div>${badge(t.state)}${icon("arrow")}</button>`).join("")}</div>` : ""}${recentArtifacts()}</section></div></section>`;
+  const attention = tasks.filter(t => matchesTaskFilter(t, "attention"));
+  return `<section class="overview"><div class="page-heading"><div><h1>今天，推进什么？</h1><p>先明确目标，再选择 Agent。执行进度和成果会保存在此会话。</p></div><button class="btn" data-action="workflow">${icon("flow")}安排依赖任务</button></div><div class="workspace-brief">${nextStep()}<div class="workspace-summary"><span><strong>${readyAgents().length}</strong> 个可用 Agent</span><span class="summary-running"><strong>${tasks.filter(t => t.state === "RUNNING").length}</strong> 项执行中</span><span class="summary-attention"><strong>${attention.length}</strong> 项需要关注</span><span class="summary-done"><strong>${tasks.filter(t => executionState(t) === "SUCCEEDED").length}</strong> 项已完成</span></div></div><div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div><div class="workspace-history"><section class="recent-tasks"><div class="section-heading"><h2>最近任务</h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${tasks.length ? `<div class="activity-list">${tasks.slice(0, 5).map(t => `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || "Agent")}</small></span>${badge(t)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`).join("")}</div>` : empty("发起第一项工作", "打开 Agent 对话，写下目标和期望的交付内容。", "open-agent", "开始对话")}</section><section class="session-updates">${attention.length ? `<div class="section-heading"><h2>需要你处理</h2><button class="text-link" data-action="task-filter-link" data-filter="attention">查看全部 ${icon("arrow")}</button></div><div class="attention-list">${attention.slice(0, 4).map(t => `<button class="attention-item ${executionState(t)}" data-action="task-detail" data-id="${escape(t.id)}"><div><strong>${escape(taskTitle(t))}</strong><small>${t.state === "WAITING" ? t.wait?.kind === "input" ? "提供输入，继续执行" : "等待协作，可查看进度" : "查看状态说明并核对结果"}</small></div>${badge(t)}${icon("arrow")}</button>`).join("")}</div>` : ""}${recentArtifacts()}</section></div></section>`;
 }
 function chat() {
   const t = thread(state.selectedThread);
@@ -424,7 +402,7 @@ function chat() {
           .slice(0, 8)
           .map(
             (task) =>
-              `<button class="task-mini" data-action="task-detail" data-id="${escape(task.id)}"><span class="title">${escape(taskTitle(task))}</span>${badge(task.state)}</button>`,
+              `<button class="task-mini" data-action="task-detail" data-id="${escape(task.id)}"><span class="title">${escape(taskTitle(task))}</span>${badge(task)}</button>`,
           )
           .join("") || '<p class="form-hint">指令会在这里形成独立任务。</p>'
       }</div>
@@ -444,34 +422,34 @@ function chat() {
 }
 function message(entry, t) {
   const user = entry.role === "user";
-  return `<article class="message ${user ? "user" : ""}">${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong><time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}${!user && entry.task_id ? `<button class="text-link message-execution" data-action="task-detail" data-id="${escape(entry.task_id)}">${entry.metadata?.acceptance?.state === "FAILED" ? "结果未完整交付 · 查看原因" : "执行详情"}</button>` : ""}${!user && entry.metadata?.checkpoint_id && t.adapter_snapshot?.supports_fork ? `<button class="text-link message-execution" data-action="fork" data-id="${escape(entry.thread_id)}" data-checkpoint="${escape(entry.metadata.checkpoint_id)}">从此处分支</button>` : ""}</div></article>`;
+  return `<article class="message ${user ? "user" : ""}">${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong>${!user && entry.execution_state ? badge(entry.execution_state) : ""}<time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}${!user && entry.task_id ? `<button class="text-link message-execution" data-action="task-detail" data-id="${escape(entry.task_id)}">${entry.metadata?.acceptance?.state === "FAILED" ? "结果未完整交付 · 查看原因" : "执行详情"}</button>` : ""}${!user && entry.metadata?.checkpoint_id && t.adapter_snapshot?.supports_fork ? `<button class="text-link message-execution" data-action="fork" data-id="${escape(entry.thread_id)}" data-checkpoint="${escape(entry.metadata.checkpoint_id)}">从此处分支</button>` : ""}</div></article>`;
 }
 function streamMessage(stream, t) {
-  return `<article class="message streaming">${avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${escape(agent(t.agent_id)?.name || t.title)}</strong><span>正在执行</span></div><div class="message-text">${markdown(stream.text)}</div><div class="stream-label"><span class="typing-dots"><i></i><i></i><i></i></span>${escape(stream.tool || "正在输出")}</div></div></article>`;
+  return `<article class="message streaming">${avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${escape(agent(t.agent_id)?.name || t.title)}</strong><span>${escape(statusLabel("RUNNING"))}</span></div><div class="message-text">${markdown(stream.text)}</div><div class="stream-label"><span class="typing-dots"><i></i><i></i><i></i></span>${escape(stream.tool || "正在输出")}</div></div></article>`;
 }
 function eventLabel(event) {
+  if (["task.completed", "task.failed", "task.cancelled", "task.skipped", "task.suspended", "task.uncertain"].includes(event.type)) {
+    const task = state.snapshot.tasks.find(item => item.id === event.task_id);
+    return task ? statusLabel(task) : "执行状态已更新";
+  }
   return (
     {
       "task.accepted": "指令已接收",
       "run.started": "开始执行",
-      "task.completed": "结果已持久保存",
-      "task.suspended": "到达等待边界",
       "task.resumed": "恢复执行",
       "message.accepted": "协作消息已接收",
       "message.offered": "消息已交付执行端",
       "message.applied": "消息消费回执已保存",
-      "task.failed": "执行失败",
-      "task.uncertain": "结果需要核对",
-      "task.cancelled": "执行已取消",
       "task.reconciled": "已保存核对处理",
     }[event.type] || event.type
   );
 }
 function matchesTaskFilter(task, filter) {
-  if (filter === "active") return ["RUNNING", "QUEUED"].includes(task.state);
+  const observed = executionState(task);
+  if (filter === "active") return ["RUNNING", "QUEUED"].includes(observed);
   if (filter === "attention")
-    return ["FAILED", "UNCERTAIN", "WAITING"].includes(task.state);
-  if (filter === "done") return task.state === "SUCCEEDED";
+    return ["FAILED", "UNCERTAIN", "WAITING"].includes(observed) || task.result?.metadata?.acceptance?.state === "FAILED";
+  if (filter === "done") return observed === "SUCCEEDED";
   return true;
 }
 function taskResults() {
@@ -502,12 +480,12 @@ function taskResults() {
       ["其他状态", ["FAILED", "UNCERTAIN", "CANCELLED", "SKIPPED"], "other"],
     ]
       .map(([title, states, tone]) => {
-        const items = tasks.filter((t) => states.includes(t.state));
-        return `<section class="board-column ${tone}"><h2><span class="dot"></span>${title}<span>${items.length}</span></h2>${items.map((t) => `<button class="board-task" data-action="task-detail" data-id="${escape(t.id)}">${badge(t.state)}<h3>${escape(taskTitle(t))}</h3><span class="board-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span><span class="board-task-foot"><span>${t.spec?.depends_on?.length ? t.spec.depends_on.length + " 项依赖" : "独立任务"}</span><time>${time(t.created_at)}</time></span></button>`).join("") || '<div class="board-empty">暂无任务</div>'}</section>`;
+        const items = tasks.filter((t) => states.includes(executionState(t)));
+        return `<section class="board-column ${tone}"><h2><span class="dot"></span>${title}<span>${items.length}</span></h2>${items.map((t) => `<button class="board-task" data-action="task-detail" data-id="${escape(t.id)}">${badge(t)}<h3>${escape(taskTitle(t))}</h3><span class="board-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span><span class="board-task-foot"><span>${t.spec?.depends_on?.length ? t.spec.depends_on.length + " 项依赖" : "独立任务"}</span><time>${time(t.created_at)}</time></span></button>`).join("") || '<div class="board-empty">暂无任务</div>'}</section>`;
       })
       .join("")}</div>`;
   }
-  return `<div class="table-wrap"><table class="table"><thead><tr><th>任务名称</th><th>执行 Agent</th><th>状态</th><th>依赖</th><th>创建时间</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>${tasks.map((t) => `<tr><td class="input-preview"><button class="task-title-button" data-action="task-detail" data-id="${escape(t.id)}" title="${escape(taskTitle(t))}">${escape(taskTitle(t))}</button></td><td><span class="table-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span></td><td>${badge(t.state)}</td><td>${t.spec?.depends_on?.length ? `<span class="dependency-count">${icon("branch")}${t.spec.depends_on.length}</span>` : '<span class="muted">—</span>'}</td><td><time>${time(t.created_at)}</time></td><td><button class="icon-btn" data-action="task-detail" data-id="${escape(t.id)}" aria-label="查看任务：${escape(taskTitle(t))}">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table class="table"><thead><tr><th>任务名称</th><th>执行 Agent</th><th>状态</th><th>依赖</th><th>创建时间</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>${tasks.map((t) => `<tr><td class="input-preview"><button class="task-title-button" data-action="task-detail" data-id="${escape(t.id)}" title="${escape(taskTitle(t))}">${escape(taskTitle(t))}</button></td><td><span class="table-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span></td><td>${badge(t)}</td><td>${t.spec?.depends_on?.length ? `<span class="dependency-count">${icon("branch")}${t.spec.depends_on.length}</span>` : '<span class="muted">—</span>'}</td><td><time>${time(t.created_at)}</time></td><td><button class="icon-btn" data-action="task-detail" data-id="${escape(t.id)}" aria-label="查看任务：${escape(taskTitle(t))}">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div>`;
 }
 function tasksPage() {
   return `<section class="panel-page"><div class="page-heading"><div><p class="eyebrow">WORK, IN MOTION</p><h1>任务与依赖<span class="heading-dot">.</span></h1><p>从一个指令到一套流程，清楚看见每一步进展。</p></div><button class="btn primary" data-action="workflow">${icon("plus")}安排任务</button></div><div class="filter-toolbar"><div class="filter-tabs" aria-label="任务状态筛选">${[
@@ -734,7 +712,7 @@ function commandResults() {
       action: "task-detail",
       id: t.id,
       icon: "flow",
-      hint: statuses[t.state],
+      hint: statusLabel(t),
     })),
   ]
     .filter(
@@ -959,9 +937,9 @@ function taskDetail(task) {
   if (!task) return '<div class="loading-inline">正在读取任务…</div>';
   const partial = task.result?.metadata?.acceptance?.state === "FAILED";
   const modal = state.modal;
-  return `<div class="task-detail"><div class="split">${badge(task.state)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3>${content(task.spec?.payload?.input || task.title || "协作任务")}${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>状态说明</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>${partial ? "部分结果" : "交付结果"}</h3><div class="message-text">${markdown(task.result.summary_markdown || (partial ? "未取得有效正文，可查看执行过程与已保存产物。" : "结果已保存，完整内容可供协作读取。"))}</div>` : ""}
+  return `<div class="task-detail"><div class="split">${badge(task)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3>${content(task.spec?.payload?.input || task.title || "协作任务")}${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>${executionState(task) === "SUCCEEDED" ? "结果反馈" : "状态说明"}</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>${partial ? "部分结果" : "交付结果"}</h3><div class="message-text">${markdown(task.result.summary_markdown || (partial ? "未取得有效正文，可查看执行过程与已保存产物。" : "结果已保存，完整内容可供协作读取。"))}</div>` : ""}
     ${modal?.trace ? executionTrace(modal.trace, modal.receipts, modal.receiptLoading) : ""}${modal?.traceError ? `<p class="execution-error" role="alert">${escape(modal.traceError)}</p>` : ""}${!modal?.trace || modal.trace.has_more ? `<button class="text-link" data-action="task-trace" ${modal?.traceLoading ? "disabled" : ""}>${modal?.traceLoading ? "正在读取…" : modal?.trace ? "加载更多执行记录" : "查看执行过程"}</button>` : ""}
-    <h3>执行尝试</h3>${(task.runs || []).map((r) => `<div class="kv"><span>Run ${r.attempt_no} · ${time(r.started_at)}</span><strong>${escape(statuses[r.state] || r.state)}</strong></div>`).join("") || "<p>尚未派发。</p>"}
+    <h3>执行尝试</h3>${(task.runs || []).map((r) => `<div class="kv"><span>Run ${r.attempt_no} · ${time(r.started_at)}</span><strong>${escape(statusLabel(r))}</strong></div>`).join("") || "<p>尚未派发。</p>"}
     ${task.spec?.depends_on?.length ? `<h3>依赖任务</h3>${task.spec.depends_on.map((id) => `<button class="text-link" data-action="task-detail" data-id="${escape(id)}">${escape(id)}</button>`).join("<br>")}` : ""}
     <div class="inline-actions">${canContinue(task, thread(task.thread_id)) ? `<button class="btn primary" data-action="continue-task" data-id="${escape(task.id)}">继续完善</button>` : ""}${["RUNNING", "QUEUED", "WAITING"].includes(task.state) ? `<button class="btn danger" data-action="cancel-task" data-id="${escape(task.id)}">提交取消申请</button>` : ""}${terminal.has(task.state) ? `<button class="btn" data-action="retry-task" data-id="${escape(task.id)}">创建重试任务</button>` : ""}</div>
     ${task.state === "WAITING" && task.wait?.kind === "input" ? `<h3>提供等待输入</h3><label class="field"><textarea id="resume-content" data-focus="resume-content" aria-label="恢复任务的补充信息" placeholder="为当前任务提供输入">${escape(state.modal?.resume || "")}</textarea></label><div class="toolbar"><button class="btn primary" data-action="resume-task" data-id="${escape(task.id)}">恢复任务</button></div>` : ""}

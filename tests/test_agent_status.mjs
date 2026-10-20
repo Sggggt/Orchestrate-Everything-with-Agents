@@ -5,8 +5,8 @@ import { createAgentStatusIndex } from "../src/ma_runtime/web/static/agent-statu
 const worker = { id: "worker", kind: "mock", enabled: true };
 const first = { id: "first", agent_id: worker.id }, second = { id: "second", agent_id: worker.id };
 const task = (thread, state, created_at) => ({ thread_id: thread.id, state, created_at });
-const project = (tasks, attention_thread_ids = [], agents = [worker], connection = "online") =>
-  createAgentStatusIndex(agents, { threads: [first, second], tasks, attention_thread_ids }, connection);
+const project = (tasks, attention_thread_ids = [], agents = [worker], connection = "online", failed_thread_ids = []) =>
+  createAgentStatusIndex(agents, { threads: [first, second], tasks, attention_thread_ids, failed_thread_ids }, connection);
 
 test("a recovered thread stops showing its historical failure regardless of snapshot order", () => {
   const status = project([task(first, "FAILED", 1), task(first, "SUCCEEDED", 3), task(first, "FAILED", 2)]);
@@ -15,11 +15,19 @@ test("a recovered thread stops showing its historical failure regardless of snap
 });
 
 test("concurrent work cannot conceal an uncertain execution or another thread's failure", () => {
-  let status = project([task(first, "RUNNING", 2), task(second, "FAILED", 1)]);
+  let status = project([task(first, "RUNNING", 2), task(second, "FAILED", 1)], [], [worker], "online", [second.id]);
   assert.equal(status.forAgent(worker.id).tone, "error");
   assert.equal(status.forThread(first).tone, "running");
   status = project([task(first, "UNCERTAIN", 1), task(first, "SUCCEEDED", 2)], [second.id]);
   assert.equal(status.forAgent(worker.id).label, "待核对");
+});
+
+test("delivery feedback and model self-reports do not become Agent failures", () => {
+  const incomplete = { ...task(first, "FAILED", 1), execution_state: "SUCCEEDED",
+    result: { output: { status: "failed" } } };
+  const status = project([incomplete]);
+  assert.equal(status.forThread(first).tone, "ready");
+  assert.equal(status.forAgent(worker.id).tone, "ready");
 });
 
 test("a latest failure remains visible after it leaves the bounded task history", () => {

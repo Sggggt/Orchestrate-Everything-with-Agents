@@ -2,6 +2,8 @@
 
 The external coordinator remains responsible for planning and semantic review. Runtime checks declared delivery requirements before committing a task as successful. A completed adapter boundary can therefore produce a failed task with a retained partial result.
 
+The browser uses the host's `execution_state` for message status and Agent indicators. A result that misses delivery requirements retains its feedback without marking the Agent as broken. Connection and timeout errors remain execution failures.
+
 Built-in model Agents reject empty text, output-limit endings and refusals as successful text delivery. Their result metadata preserves the model's finish reason and reported usage. Plain Markdown remains valid; headings and presentation markers are not completion criteria. Artifact-only delivery can succeed without prose.
 
 ## Declaring delivery requirements

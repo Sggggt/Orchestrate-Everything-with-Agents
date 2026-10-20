@@ -1,4 +1,6 @@
 // Project current session state without another subscription or maintenance request.
+import { executionState } from "./execution-status.mjs";
+
 const statuses = {
   UNCERTAIN: { tone: "error", label: "待核对", priority: 6 },
   FAILED: { tone: "error", label: "执行失败", priority: 5 },
@@ -17,16 +19,12 @@ const choose = (a, b) => !a || b.priority > a.priority ? b : a;
 
 export function createAgentStatusIndex(agents, snapshot, connection = "online") {
   const configs = new Map(agents.map(a => [a.id, a]));
-  const latest = new Map(), threads = new Map(), byAgent = new Map();
+  const threads = new Map(), byAgent = new Map();
   const tasks = snapshot.tasks || [];
   const assign = (threadId, status) => threads.set(threadId, choose(threads.get(threadId), status));
   for (const task of tasks) {
-    const previous = latest.get(task.thread_id);
-    if (!previous || task.created_at > previous.created_at) latest.set(task.thread_id, task);
-    if (active.has(task.state)) assign(task.thread_id, statuses[task.state]);
-  }
-  for (const task of latest.values()) {
-    if (task.state === "FAILED") assign(task.thread_id, statuses.FAILED);
+    const observed = executionState(task);
+    if (active.has(observed)) assign(task.thread_id, statuses[observed]);
   }
   for (const threadId of snapshot.failed_thread_ids || []) assign(threadId, statuses.FAILED);
   for (const threadId of snapshot.attention_thread_ids || []) assign(threadId, statuses.GUIDANCE);

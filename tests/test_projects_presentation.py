@@ -31,6 +31,7 @@ class SummaryTests(unittest.TestCase):
         self.assertNotIn('"analysis"', rendered)
         self.assertNotIn("{", rendered)
         self.assertNotIn("PEER_ONLY", markdown_summary("摘要\n\n" + DETAILS_MARKER + "PEER_ONLY"))
+        self.assertNotIn("待审核", markdown_summary({"status": "review_required"}))
 
     def test_stream_is_bounded_and_structured_text_is_not_displayed(self):
         stream = SummaryStream(limit=30)
