@@ -43,7 +43,7 @@ async def managed_tool_node(state, runtime):
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
         value = await context.invoke_tool(function["name"], arguments,
-            f"{context.request.task_id}:graph:{call['id']}")
+            f"{context.request.task_id}:graph:{call['id']}", model_call_id=state.get("model_call_id"), tool_call_id=call["id"])
         results.append({"call_id": call["id"], "result": value})
         response = tool_messages(call["id"], value)
         messages.append(response[0])
@@ -59,6 +59,7 @@ class LangGraphAgent:
         *,
         input_builder,
         output_builder=None,
+        fork_builder=None,
         max_concurrency=1,
         message_receipts=False,
         managed_context=False,
@@ -67,6 +68,7 @@ class LangGraphAgent:
     ):
         self.agent_id, self.graph, self.input_builder = agent_id, graph, input_builder
         self.output_builder = output_builder or (lambda values: values)
+        self.fork_builder = fork_builder
         self.max_concurrency = max_concurrency
         self.receipts = message_receipts
         self.checkpointed = getattr(graph, "checkpointer", None) is not None
@@ -86,11 +88,33 @@ class LangGraphAgent:
             checkpoint_mode="native_ref" if self.checkpointed else "none",
             checkpoint_format_version="langgraph-config-v1",
             supports_suspend=self.checkpointed,
-            supports_fork=False,
+            supports_fork=bool(self.checkpointed and self.managed_context and self.fork_builder and "__start__" in self.graph.nodes),
             message_receipts="next_turn_ack" if self.receipts else "unsupported",
             tool_mediation="partial" if self.managed_context else "none",
             nested_execution="runtime_mediated" if self.managed_context else "none",
         )
+
+    async def fork_checkpoint(self, reference, thread_id):
+        """Seed a fresh graph thread without executing any node or pending action."""
+        from langgraph.graph import START, END
+        require(self.describe().supports_fork, "UNSUPPORTED_CAPABILITY", "This graph has no safe state fork builder")
+        snapshot = await self.graph.aget_state(reference["config"])
+        require(snapshot.config.get("configurable", {}).get("checkpoint_id") and not snapshot.next
+                and not any(task.interrupts for task in snapshot.tasks),
+                "UNSUPPORTED_CAPABILITY", "Fork only a completed graph checkpoint; resume pending work in its original task")
+        target = {"configurable": {"thread_id": thread_id}}
+        existing = await self.graph.aget_state(target)
+        if existing.config.get("configurable", {}).get("checkpoint_id"):
+            if not existing.next:
+                return {"config": existing.config, "task_id": reference.get("task_id")}
+            seeded = existing.config
+        else:
+            state = self.fork_builder(snapshot.values)
+            require(isinstance(state, dict), "ADAPTER_PROTOCOL_ERROR", "Graph fork builder must return a business-state object")
+            state = {key: value for key, value in state.items() if key not in {"_runtime", "pending_calls", "tool_results", "model_call_id", "__interrupt__"}}
+            seeded = await self.graph.aupdate_state(target, state, as_node=START)
+        cleared = await self.graph.aupdate_state(seeded, None, as_node=END)
+        return {"config": cleared, "task_id": reference.get("task_id")}
 
     def boundary(self, values, config, task_id):
         control = values.get("_runtime", {}) if isinstance(values, dict) else {}
@@ -157,6 +181,7 @@ class LangGraphAgent:
             if (
                 request.resume_input is not None
                 and previous.get("task_id") == request.task_id
+                and not request.continuation
             ):
                 from langgraph.types import Command
 

@@ -34,6 +34,8 @@ class RunContext:
 
     def check_tool(self, name):
         require(self.request.tool_policy.permits(name), "PERMISSION_DENIED", "Tool is disabled by this task's policy")
+        require(not self.request.continuation or name not in {"send_message", "submit_task", "spawn_instances"},
+                "CONTINUATION_ACTION_RESTRICTED", "Delivery continuation does not start new collaboration actions")
 
     async def record_use(self, kind, name):
         from .execution_policy import record
@@ -53,7 +55,45 @@ class RunContext:
             self._mcp_tools = await self._runtime.mcp.schemas_for_run(
                 self.request.run_id
             )
-        return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request)]}
+        from .context_projection import READ_CONTEXT_TOOL
+        return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request), READ_CONTEXT_TOOL]}
+
+    async def read_context(self, reference, offset=0, limit=8192, *, _parent_stage=None):
+        from .tracing import RunStage
+        stage = RunStage(self, "context_read", reference=reference, offset=offset, parent_stage_id=_parent_stage)
+        try:
+            result = await self._runtime.contexts.read_for_run(self, reference, offset, limit)
+        except RuntimeFault as exc:
+            await stage.record("FAILED", exc)
+            raise
+        stage.attributes["bytes_read"] = len(result["text"].encode("utf-8"))
+        await stage.record("SUCCEEDED")
+        return result
+
+    async def tool_parent(self, name, idempotency_key, model_call_id=None, tool_call_id=None):
+        causes = getattr(self, "model_tool_causes", {})
+        if model_call_id:
+            require(isinstance(model_call_id, str) and isinstance(tool_call_id, str), "INVALID_REQUEST", "Model tool provenance requires both call IDs")
+            if causes.get((model_call_id, tool_call_id)) == name:
+                return model_call_id
+            from .store import one
+            def verify(db):
+                self._runtime.check_run(db, self.request.run_id)
+                record = one(db, "SELECT payload_json FROM events WHERE task_id=? AND type='run.stage' "
+                    "AND json_extract(payload_json,'$.id')=? AND json_extract(payload_json,'$.state')='SUCCEEDED' ORDER BY seq DESC LIMIT 1",
+                    (self.request.task_id, model_call_id))
+                import json
+                return record and any(call["id"] == tool_call_id and call["name"] == name
+                    for call in json.loads(record.payload_json).get("attributes", {}).get("tool_calls", []))
+            require(await self._runtime.store.call(verify), "ADAPTER_PROTOCOL_ERROR", "Tool provenance does not match this task's recorded model request")
+            return model_call_id
+        matches = {stage_id for (stage_id, call_id), function in causes.items() if function == name
+                   and idempotency_key in {self.request.task_id + ":" + call_id, self.request.task_id + ":graph:" + call_id}}
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    async def project_context(self, value):
+        await self.check_current()
+        return await self._runtime.contexts.project_data(self, value)
 
     async def list_skills(self):
         from .profiles import skill_catalog
@@ -235,6 +275,7 @@ class RunContext:
                 **native_ref,
                 "run_id": self.request.run_id,
                 "host_pid": os.getpid(),
+                "conversation_cutoff": self.request.conversation_cutoff,
                 "scopes": previous.get("scopes", {}),
             }
             db.execute(
@@ -244,7 +285,10 @@ class RunContext:
 
         await self._runtime.store.call(save, transaction=True)
 
-    async def invoke_tool(self, name, arguments, idempotency_key):
+    async def invoke_tool(self, name, arguments, idempotency_key, *, model_call_id=None, tool_call_id=None):
+        parent = await self.tool_parent(name, idempotency_key, model_call_id, tool_call_id)
+        if name == "read_context":
+            return await self.read_context(**arguments, _parent_stage=parent)
         from .execution_policy import mcp_name
         provider = self._runtime.tools.providers.get(name)
         identifier = mcp_name(provider.server_id, provider.tool["name"]) if hasattr(provider, "server_id") else name
@@ -257,7 +301,7 @@ class RunContext:
                 "MCP tool is not granted to this execution",
             )
         result = await self._runtime.tools.invoke(
-            name, arguments, idempotency_key, caller_run_id=self.request.run_id
+            name, arguments, idempotency_key, caller_run_id=self.request.run_id, parent_stage_id=parent
         )
         if not result.get("isError"):
             self.used_tools.add(identifier)

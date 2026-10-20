@@ -7,6 +7,7 @@ import json
 import os
 import random
 import shutil
+import time
 from dataclasses import dataclass
 from collections import Counter
 
@@ -98,6 +99,7 @@ class Runtime:
         )
         self.config = self.config.model_copy(deep=True)
         self.adapters = dict(adapters or {})
+        self.custom_adapter_ids = set(self.adapters)
         self.agent_configs = {}
         self.retired_adapters = []
         self.configuration_lock = asyncio.Lock()
@@ -120,6 +122,14 @@ class Runtime:
 
         self.workflows = Workflows(self)
         self.events = EventHub(self)
+        from .model_transport import ModelTransport
+        self.model_transport = ModelTransport()
+        from .context_projection import ContextStore
+        self.contexts = ContextStore(self)
+        from .chat_history import ChatHistory
+        self.chat_history = ChatHistory()
+        from .continuations import Continuations
+        self.continuations = Continuations(self)
         from .operations import Operations
 
         self.operations = Operations(self)
@@ -165,7 +175,8 @@ class Runtime:
             for row in configs:
                 config = AgentConfig.model_validate_json(row.config_json)
                 self.agent_configs[config.id] = config
-                self.adapters.setdefault(config.id, self.make_adapter(config))
+                if config.id not in self.adapters:
+                    self.adapters[config.id] = self.make_adapter(config)
             for adapter in self.adapters.values():
                 self.validate_adapter(adapter)
             await self.mcp.open()
@@ -250,6 +261,9 @@ class Runtime:
             "UNSUPPORTED_CAPABILITY",
             "Agent protocol major version does not match",
         )
+        if descriptor.supports_fork and descriptor.checkpoint_mode == "native_ref":
+            require(callable(getattr(adapter, "fork_checkpoint", None)), "UNSUPPORTED_CAPABILITY",
+                    "Native checkpoint forks require an adapter fork_checkpoint implementation")
         if self.config.strict_concurrency:
             require(
                 descriptor.nested_execution != "unmanaged",
@@ -286,13 +300,16 @@ class Runtime:
         return task, run
 
     def check_artifacts(self, db, session_id, artifact_ids):
-        for identity in artifact_ids:
+        artifacts = []
+        for identity in dict.fromkeys(artifact_ids):
             artifact = need(db, "artifacts", identity)
             require(
                 artifact.session_id == session_id and artifact.state == "READY",
                 "ARTIFACT_INVALID",
                 "Artifact belongs to another workspace or is unavailable",
             )
+            artifacts.append(artifact)
+        return artifacts
 
     def check_collaboration(self, run):
         reference = (
@@ -304,7 +321,7 @@ class Runtime:
             "This run is not allowed to submit tasks or send messages",
         )
 
-    def append_reply(self, db, task, run_id, result):
+    def append_reply(self, db, task, run_id, result, checkpoint_id=None):
         from .presentation import result_summary
         text = result.output.get("text")
         if not isinstance(text, str):
@@ -319,7 +336,8 @@ class Runtime:
                 task.id,
                 run_id,
                 text,
-                json_dump({"artifact_ids": result.artifact_ids}),
+                json_dump({"artifact_ids": result.artifact_ids, "acceptance": result.metadata.get("acceptance"),
+                           **({"checkpoint_id": checkpoint_id} if checkpoint_id else {})}),
                 now_ms(),
                 self.vault.redact(result_summary(result)),
             ),
@@ -440,6 +458,7 @@ class Runtime:
         digest = content_hash(event)
 
         def commit(db):
+            commit_started = time.perf_counter()
             prior = need(db, "runs", run_id)
             if prior.boundary_receipt_json:
                 require(
@@ -450,9 +469,14 @@ class Runtime:
                 return json.loads(prior.boundary_receipt_json)
             task, run = self.check_run(db, run_id)
             result = event.result
+            active = self.active.get(run_id)
             if event.type == "completed":
+                incomplete = getattr(active.context, "incomplete_model_completion", None) if active else None
+                if incomplete:
+                    partial = getattr(active.context, "partial_model_result", None)
+                    result = result.model_copy(update={"metadata": {**result.metadata, "model_completion": incomplete,
+                        **({"partial_model_output": partial.output} if partial and partial.output != result.output else {})}})
                 from .execution_policy import check_completion
-                active = self.active.get(run_id)
                 check_completion(db, task, active.spec if active else None)
                 if active is None or active.request.workbench:
                     published = [json.loads(call.result_json).get("artifact_id") for call in rows(db,
@@ -500,8 +524,7 @@ class Runtime:
                 "UNSUPPORTED_CAPABILITY",
                 "Execution endpoint does not support message receipts",
             )
-            if result:
-                self.check_artifacts(db, task.session_id, result.artifact_ids)
+            artifacts = self.check_artifacts(db, task.session_id, result.artifact_ids) if result else []
             unresolved = one(
                 db,
                 "SELECT id FROM tool_calls WHERE run_id=? AND state IN ('DISPATCHED','UNCERTAIN') LIMIT 1",
@@ -512,11 +535,22 @@ class Runtime:
                 "OUTCOME_UNCERTAIN",
                 "A tool outcome must be reconciled before committing",
             )
+            result_error = None
+            validation_ms = 0
+            if result:
+                from .result_validation import validate_result
+                from .models import ResultPolicy
+                policy = active.spec.result_policy if active else TaskSpec.model_validate_json(task.spec_json).result_policy
+                if policy != ResultPolicy() or result.metadata.get("model_completion"):
+                    validation_started = time.perf_counter()
+                    result, result_error = validate_result(result, policy, artifacts)
+                    validation_ms = round((time.perf_counter() - validation_started) * 1000, 3)
             checkpoint_id = thread.latest_checkpoint_id
             revision = thread.revision + 1
             if event.checkpoint:
                 checkpoint_id = new_id("chk")
                 cp = event.checkpoint
+                checkpoint_ref = self.chat_history.append(db, cp.ref, thread) if cp.format_version == "chat-messages-v2" else cp.ref
                 db.execute(
                     "INSERT INTO checkpoints VALUES(?,?,?,?,?,?,?,?,?)",
                     (
@@ -526,11 +560,13 @@ class Runtime:
                         cp.adapter_version,
                         cp.format_version,
                         cp.mode,
-                        json_dump(cp.ref),
+                        json_dump(checkpoint_ref),
                         run_id,
                         now_ms(),
                     ),
                 )
+                if cp.format_version == "chat-messages-v2":
+                    db.execute("INSERT INTO chat_checkpoint_heads VALUES(?,?)", (checkpoint_id, checkpoint_ref.get("message_head")))
             for identity in event.applied_message_ids:
                 db.execute(
                     "UPDATE messages SET state='APPLIED',applied_checkpoint_id=?,updated_at=? WHERE id=?",
@@ -563,7 +599,7 @@ class Runtime:
                 )
                 self.messages.insert(db, outgoing, caller_run_id=run_id)
             # Unacknowledged offers stay OFFERED until the stopped run is reconciled.
-            state = "WAITING" if event.type == "suspended" else "SUCCEEDED"
+            state = "WAITING" if event.type == "suspended" else "FAILED" if result_error else "SUCCEEDED"
             receipt = {
                 "run_id": run_id,
                 "task_id": task.id,
@@ -571,17 +607,21 @@ class Runtime:
                 "checkpoint_id": checkpoint_id,
                 "state": state,
                 "local_seq": local_seq,
+                "timings": {"preparation_ms": getattr(active.context, "preparation_ms", None) if active else None,
+                            "validation_ms": validation_ms,
+                            "commit_work_ms": round((time.perf_counter() - commit_started) * 1000, 3)},
             }
             db.execute(
-                "UPDATE runs SET state=?,boundary_seq=?,boundary_hash=?,boundary_receipt_json=?,ended_at=? WHERE id=?",
-                (state, local_seq, digest, json_dump(receipt), now_ms(), run_id),
+                "UPDATE runs SET state=?,boundary_seq=?,boundary_hash=?,boundary_receipt_json=?,ended_at=?,error_json=? WHERE id=?",
+                (state, local_seq, digest, json_dump(receipt), now_ms(), json_dump(result_error) if result_error else None, run_id),
             )
             db.execute(
-                "UPDATE tasks SET state=?,result_json=?,wait_json=?,resume_input_json=NULL,error_json=NULL,queue_reason=NULL,updated_at=? WHERE id=?",
+                "UPDATE tasks SET state=?,result_json=?,wait_json=?,resume_input_json=NULL,error_json=?,queue_reason=NULL,updated_at=? WHERE id=?",
                 (
                     state,
                     json_dump(result) if result else None,
                     json_dump(event.wait) if event.wait else None,
+                    json_dump(result_error) if result_error else None,
                     now_ms(),
                     task.id,
                 ),
@@ -596,10 +636,14 @@ class Runtime:
                 ),
             )
             if result:
-                self.append_reply(db, task, run_id, result)
+                self.append_reply(db, task, run_id, result, checkpoint_id if event.checkpoint else None)
+            if event.checkpoint:
+                cutoff = active.request.conversation_cutoff if active else json.loads(run.adapter_run_ref_json or "{}").get("conversation_cutoff", 0)
+                ceiling = one(db, "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation WHERE thread_id=?", (thread.id,)).seq
+                db.execute("INSERT INTO checkpoint_windows VALUES(?,?,?)", (checkpoint_id, cutoff, ceiling))
             seq = emit(
                 db,
-                "task.suspended" if state == "WAITING" else "task.completed",
+                "task.suspended" if state == "WAITING" else "task.failed" if result_error else "task.completed",
                 session_id=task.session_id,
                 thread_id=thread.id,
                 task_id=task.id,
@@ -608,9 +652,10 @@ class Runtime:
                     "state": state,
                     "thread_revision": revision,
                     "wait": event.wait.model_dump() if event.wait else None,
+                    **({"error": result_error, "confirmed_stopped": True} if result_error else {}),
                 },
             )
-            if state == "SUCCEEDED" and (active is None or active.spec.metadata.get("purpose") == "operations_test"):
+            if result_error or (state == "SUCCEEDED" and (active is None or active.spec.metadata.get("purpose") == "operations_test")):
                 self.operations.task_event(db, task, state, seq, active.spec if active else None)
             return receipt
 
@@ -932,12 +977,15 @@ class Runtime:
             cp = need(db, "checkpoints", thread.latest_checkpoint_id)
             require(
                 cp.adapter_version == descriptor.adapter_version
-                and cp.format_version == descriptor.checkpoint_format_version
+                and (cp.format_version == descriptor.checkpoint_format_version or
+                     (cp.format_version == "chat-messages-v1" and descriptor.checkpoint_format_version == "chat-messages-v2"))
                 and cp.mode == descriptor.checkpoint_mode,
                 "UNSUPPORTED_CAPABILITY",
                 "Saved checkpoint is not compatible with this adapter",
             )
-            checkpoint = json.loads(cp.ref_json)
+            checkpoint = self.chat_history.load(db, cp, thread) if descriptor.checkpoint_format_version == "chat-messages-v2" else json.loads(cp.ref_json)
+        from .chat_history import user_cutoff
+        cutoff = user_cutoff(db, thread, task)
         attempt = task.attempt_count + 1
         db.execute(
             "INSERT INTO runs(id,task_id,attempt_no,host_instance_id,expected_revision,state,adapter_snapshot_json,adapter_run_ref_json,held_resources_json,started_at) VALUES(?,?,?,?,?,'RUNNING',?,?,?,?)",
@@ -952,6 +1000,7 @@ class Runtime:
                     {
                         "run_id": run_id,
                         "host_pid": os.getpid(),
+                        "conversation_cutoff": cutoff,
                         "scopes": {
                             "collaboration": (
                                 self.agent_configs[spec.agent_id].collaboration
@@ -997,22 +1046,9 @@ class Runtime:
                 run_id=run_id,
                 payload={"message_id": message.id, "state": "OFFERED"},
             )
-        cutoff = one(
-            db,
-            "SELECT MAX(seq) AS seq FROM conversation WHERE task_id=? AND role='user'",
-            (task_id,),
-        ).seq
-        if cutoff is None:
-            cutoff = one(
-                db,
-                "SELECT COALESCE(MAX(c.seq),0) AS seq FROM conversation c LEFT JOIN tasks t ON t.id=c.task_id WHERE c.thread_id=? AND (c.task_id IS NULL OR t.created_at<=?)",
-                (thread.id, task.created_at),
-            ).seq
-        history = rows(
-            db,
-            "SELECT * FROM (SELECT * FROM conversation WHERE thread_id=? AND (role!='user' OR seq<=?) ORDER BY seq DESC LIMIT 200) ORDER BY seq",
-            (thread.id, cutoff),
-        )
+        from .chat_history import conversation_rows
+        history = [] if checkpoint and descriptor.checkpoint_format_version == "chat-messages-v2" else list(reversed(
+            conversation_rows(db, thread.id, limit=200, descending=True, user_limit=cutoff)))
         dependencies = rows(
             db,
             "SELECT d.id,d.result_json FROM tasks d JOIN task_dependencies e ON e.depends_on_task_id=d.id WHERE e.task_id=?",
@@ -1037,6 +1073,8 @@ class Runtime:
             project_id=project.id,
             project_folder=project.local_folder,
             expected_thread_revision=thread.revision,
+            conversation_cutoff=cutoff,
+            continuation=self.continuations.snapshot(db, task.id) if task.continuation_runs else None,
             payload=spec.payload,
             messages=[json.loads(m.envelope_json) for m in pending],
             conversation=[public(h) for h in history],
@@ -1055,6 +1093,9 @@ class Runtime:
             mcp_bindings=profile.mcp_bindings if profile else (),
             tool_policy=spec.tool_policy,
             skill_policy=spec.skill_policy,
+            result_policy=spec.result_policy,
+            context_budget_tokens=spec.context_budget_tokens,
+            context_refs=spec.context_refs,
             operations_consumer_id=self.operations.for_thread(task.session_id, thread.id),
             workbench=self.environments.snapshot(db, task_id, profile, project),
         )
@@ -1064,7 +1105,9 @@ class Runtime:
         summary_stream = SummaryStream()
         if active.context.cancelled.is_set():
             raise asyncio.CancelledError
+        preparation_started = time.perf_counter()
         await active.context.initialize()
+        active.context.preparation_ms = round((time.perf_counter() - preparation_started) * 1000, 3)
         active.started = True
         boundary = None
         last_seq = 0
@@ -1142,6 +1185,8 @@ class Runtime:
             timeout = max(
                 0, min(timeout, (active.spec.deadline_at_ms - now_ms()) / 1000)
             )
+        if active.request.continuation:
+            timeout = max(0, min(timeout, (active.request.continuation["deadline_at"] - now_ms()) / 1000))
         stopped = False
         try:
             done, _ = await asyncio.wait(
@@ -1254,6 +1299,15 @@ class Runtime:
     ):
         if self.store.closed or self.store.failed:
             return
+        partial = getattr(active.context, "partial_model_result", None)
+        if partial is not None:
+            text = self.vault.redact(partial.output.get("text", ""))
+            if len(text.encode("utf-8")) > self.config.max_message_bytes // 2:
+                artifact = await self.artifacts.put_bytes(active.request.session_id, "partial-response.txt", text.encode("utf-8"),
+                                                         caller_run_id=active.request.run_id, metadata={"kind": "partial_response"})
+                partial = partial.model_copy(update={"output": {"text": text[:1600], "full_text_artifact_id": artifact.id},
+                                                     "artifact_ids": (artifact.id,)})
+            partial = type(partial).model_validate(self.clean_json(partial.model_dump(mode="json"), limit=524288))
 
         def fail(db):
             prior = need(db, "runs", active.request.run_id)
@@ -1319,7 +1373,7 @@ class Runtime:
                 ),
             )
             db.execute(
-                "UPDATE tasks SET state=?,queue_reason=?,error_json=?,not_before=?,updated_at=? WHERE id=?",
+                "UPDATE tasks SET state=?,queue_reason=?,error_json=?,not_before=?,updated_at=?,result_json=COALESCE(?,result_json) WHERE id=?",
                 (
                     state,
                     "RETRY_BACKOFF" if retry else None,
@@ -1331,6 +1385,7 @@ class Runtime:
                         else 0
                     ),
                     now_ms(),
+                    json_dump(partial) if partial else None,
                     task.id,
                 ),
             )
@@ -1353,6 +1408,8 @@ class Runtime:
                     "UPDATE tool_calls SET state='UNCERTAIN',updated_at=? WHERE id=?",
                     (now_ms(), tool.id),
                 )
+            if partial:
+                self.append_reply(db, task, run.id, partial)
             seq = emit(
                 db,
                 "task." + state.lower(),
@@ -1640,6 +1697,7 @@ class Runtime:
             except Exception:
                 pass
         await self.mcp.aclose()
+        await self.model_transport.aclose()
         self.closed = True
         self.events.notify()
         try:

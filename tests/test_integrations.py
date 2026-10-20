@@ -616,12 +616,15 @@ class MigrationAndModelTests(unittest.IsolatedAsyncioTestCase):
                         )
                     ]
                 )
-                self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+                self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
                 self.assertTrue((root / "backups/before-schema-2.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-3.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-4.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-5.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-6.sqlite").is_file())
+                self.assertTrue((root / "backups/before-schema-11.sqlite").is_file())
+                self.assertTrue(await rt.store.call(lambda db: list(db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name='events_task_type_seq'"))))
                 self.assertEqual((await rt.sessions.get("old")).project_id, "default")
             async with Runtime.open(root) as rt:
                 self.assertEqual(await rt.mcp.list(), [])

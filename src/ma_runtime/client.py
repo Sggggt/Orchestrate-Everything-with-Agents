@@ -299,6 +299,12 @@ class ThreadClient(_Namespace):
             **options,
         )
 
+    async def get(self, thread_id):
+        return await self.call("get", thread_id=thread_id)
+
+    async def fork(self, thread_id, title=None, **options):
+        return await self.call("fork", thread_id=thread_id, title=title, **options)
+
     async def conversation(self, thread_id, **options):
         return await self.call("conversation", thread_id=thread_id, **options)
 
@@ -312,6 +318,12 @@ class TaskClient(_Namespace):
 
     async def progress(self, task_id):
         return await self.call("progress", task_id=task_id)
+
+    async def trace(self, task_id, **options):
+        return await self.call("trace", task_id=task_id, **options)
+
+    async def continue_result(self, task_id, idempotency_key, content=""):
+        return await self.call("continue_result", task_id=task_id, idempotency_key=idempotency_key, content=content)
 
     async def result(self, task_id, *, timeout=0):
         return await self.call("result", task_id=task_id, timeout=timeout)
@@ -431,6 +443,11 @@ class WorkbenchClient(_Namespace):
         return await self.call("reconcile", tool_call_id=tool_call_id, resolution=resolution)
 
 
+class ContextClient(_Namespace):
+    async def read(self, reference, project_id, *, offset=0, limit=8192):
+        return await self.call("read", reference=reference, project_id=project_id, offset=offset, limit=limit)
+
+
 class PlatformClient:
     def __init__(self, base_url, token, *, timeout=180, transport=None):
         target = urlsplit(base_url)
@@ -460,6 +477,7 @@ class PlatformClient:
         self.instances = InstanceClient(self, "instances")
         self.environments = EnvironmentClient(self, "environments")
         self.workbench = WorkbenchClient(self, "workbench")
+        self.contexts = ContextClient(self, "contexts")
         self.sessions, self.threads = (
             SessionClient(self, "sessions"),
             ThreadClient(self, "threads"),

@@ -10,6 +10,7 @@ Start with [getting started](getting-started.md), then build an [Agent](sdk.md) 
 | [Workflows](workflows.md) | Canvas, nodes, variables, versioning and run lifecycle |
 | [MCP and Codex skills](mcp.md) | Connect a client, discover operations and use the supplied skill |
 | [Skills and execution policies](skills.md) | Shared Skill packages, Agent associations and task-scoped constraints |
+| [Result requirements and execution evidence](execution-quality.md) | Delivery checks, retained partial results, stage timings and classified model errors |
 | [Operations and guidance](operations.md) | Active diagnostics, passive receiving, Agent reports and checked guidance |
 | [API](api.md) | HTTP, RPC, events and transport contracts |
 | [Architecture](architecture.md) | Runtime, persistence, execution and trust boundaries |

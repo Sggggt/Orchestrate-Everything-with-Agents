@@ -60,7 +60,7 @@ class ToolGateway:
         self.validators[spec.name] = tuple(jsonschema.validators.validator_for(schema)(schema)
             for schema in (spec.input_schema, spec.output_schema))
 
-    async def invoke(self, name, arguments, idempotency_key, *, caller_run_id):
+    async def invoke(self, name, arguments, idempotency_key, *, caller_run_id, parent_stage_id=None):
         provider = self.providers.get(name)
         require(provider is not None, "NOT_FOUND", "Tool is not registered")
         arguments = self.runtime.clean_json(arguments)
@@ -119,6 +119,8 @@ class ToolGateway:
                 ),
                 "Existing tool invocation must be queried or reconciled",
             )
+        active = self.runtime.active.get(caller_run_id)
+        self.runtime.continuations.check_action(active.context if active else None, name, arguments, spec.side_effects)
         held = {r.key: r.mode for r in task_spec.resources}
         if held:
             require(
@@ -149,7 +151,7 @@ class ToolGateway:
             def intent(db):
                 self.runtime.check_run(db, caller_run_id)
                 db.execute(
-                    "INSERT INTO tool_calls(id,session_id,run_id,tool_name,idempotency_key,request_hash,state,request_json,resources_json,created_at,updated_at) VALUES(?,?,?,?,?,?,'INTENT',?,?,?,?)",
+                    "INSERT INTO tool_calls(id,session_id,run_id,tool_name,idempotency_key,request_hash,state,request_json,resources_json,created_at,updated_at,parent_stage_id) VALUES(?,?,?,?,?,?,'INTENT',?,?,?,?,?)",
                     (
                         identity,
                         task.session_id,
@@ -161,6 +163,7 @@ class ToolGateway:
                         json_dump(spec.resources),
                         now_ms(),
                         now_ms(),
+                        parent_stage_id,
                     ),
                 )
                 emit(

@@ -388,7 +388,7 @@ class Sessions:
                     public(r)
                     for r in rows(
                         db,
-                        "SELECT * FROM artifacts WHERE session_id=? ORDER BY created_at DESC LIMIT 100",
+                        "SELECT * FROM artifacts WHERE session_id=? AND COALESCE(json_extract(metadata_json,'$.internal'),0)=0 ORDER BY created_at DESC LIMIT 100",
                         (session_id,),
                     )
                 ],
@@ -616,7 +616,8 @@ class Agents:
         if api_key is not None:
             require(len(api_key) <= 16384, "INVALID_REQUEST", "Credential is too large")
             await asyncio.to_thread(self.rt.vault.set, config.id, api_key)
-        new = self.rt.make_adapter(config)
+        preserve = config.id in self.rt.custom_adapter_ids and (previous is None or previous.kind == config.kind)
+        new = old if preserve else self.rt.make_adapter(config)
         self.rt.validate_adapter(new)
         await self.rt.store.call(
             lambda db: db.execute(
@@ -627,8 +628,10 @@ class Agents:
         )
         self.rt.agent_configs[config.id] = config
         self.rt.adapters[config.id] = new
+        if not preserve:
+            self.rt.custom_adapter_ids.discard(config.id)
         self.rt.mcp.refresh_providers()
-        if old is not None:
+        if old is not None and old is not new:
             self.rt.retired_adapters.append(old)
         self.rt.notify()
         return await self.describe(config.id)
@@ -707,6 +710,7 @@ class Agents:
 class Threads:
     def __init__(self, rt):
         self.rt = rt
+        self.fork_locks = {}
 
     async def create(self, session_id, agent_id, title=None):
         self.rt.admit()
@@ -754,38 +758,63 @@ class Threads:
             )
         )
 
-    async def fork(self, thread_id, title=None):
+    async def fork(self, thread_id, title=None, *, checkpoint_id=None, message_id=None, idempotency_key=None):
         self.rt.admit()
         source = await self.get(thread_id)
         adapter = self.rt.adapter(source.agent_id)
         descriptor = adapter.describe()
-        require(
-            descriptor.supports_fork,
-            "UNSUPPORTED_CAPABILITY",
-            "Execution endpoint cannot fork checkpoints",
-        )
-        identity = new_id("thr")
+        require(descriptor.supports_fork, "UNSUPPORTED_CAPABILITY", "Execution endpoint cannot fork checkpoints")
+        require(not (checkpoint_id and message_id), "INVALID_REQUEST", "Choose a checkpoint or a result message")
+        key = idempotency_key or new_id("fork")
+        require(isinstance(key, str) and 0 < len(key) <= 256, "INVALID_REQUEST", "Use a stable fork request key")
+        digest = content_hash({"title": title, "checkpoint_id": checkpoint_id, "message_id": message_id})
 
+        def reserve(db):
+            origin = need(db, "threads", thread_id)
+            require(need(db, "sessions", origin.session_id).state == "OPEN", "SESSION_CLOSED", "Workspace is closing")
+            prior = one(db, "SELECT * FROM thread_fork_receipts WHERE source_thread_id=? AND idempotency_key=?", (thread_id, key))
+            if prior:
+                require(prior.request_hash == digest, "IDEMPOTENCY_CONFLICT", "Fork key has different input")
+                cp_id, identity = prior.checkpoint_id, prior.thread_id
+                if prior.completed:
+                    return {"existing": identity}
+            else:
+                cp_id = checkpoint_id or origin.latest_checkpoint_id
+                if message_id:
+                    message = one(db, "SELECT run_id,role FROM conversation WHERE id=? AND thread_id=?", (message_id, thread_id))
+                    point = one(db, "SELECT id FROM checkpoints WHERE created_by_run_id=? AND thread_id=?", (message.run_id, thread_id)) if message and message.role == "assistant" else None
+                    require(point, "UNSUPPORTED_CAPABILITY", "Select a result with a committed checkpoint")
+                    cp_id = point.id
+                require(cp_id, "UNSUPPORTED_CAPABILITY", "No committed checkpoint is available")
+                identity = new_id("thr")
+            cp = need(db, "checkpoints", cp_id)
+            native = descriptor.checkpoint_format_version == "chat-messages-v2" and cp.format_version in {"chat-messages-v1", "chat-messages-v2"}
+            require(cp.thread_id == thread_id and cp.adapter_version == descriptor.adapter_version
+                    and (cp.format_version == descriptor.checkpoint_format_version or native)
+                    and cp.mode == descriptor.checkpoint_mode,
+                    "UNSUPPORTED_CAPABILITY", "This checkpoint is not available to the source thread")
+            from .chat_history import checkpoint_window
+            window = checkpoint_window(db, cp, origin)
+            reference = json.loads(cp.ref_json)
+            if native:
+                head = self.rt.chat_history.head(db, cp, origin)
+                count = one(db, "SELECT message_count FROM chat_segments WHERE id=?", (head,)).message_count if head else 0
+                reference = {"task_id": reference.get("task_id"), "message_head": head, "message_count": count}
+            if not prior:
+                db.execute("INSERT INTO thread_fork_receipts VALUES(?,?,?,?,?,0)", (thread_id, key, digest, identity, cp_id))
+            return {"identity": identity, "checkpoint": cp, "reference": reference, "window": window, "native": native}
+
+        prepared = await self.rt.store.call(reserve, transaction=True)
+        if prepared.get("existing"):
+            return await self.get(prepared["existing"])
+        identity, cp = prepared["identity"], prepared["checkpoint"]
+        reference = prepared["reference"]
         def branch(db):
             origin = need(db, "threads", thread_id)
-            require(
-                origin.latest_checkpoint_id is not None,
-                "UNSUPPORTED_CAPABILITY",
-                "No committed checkpoint is available",
-            )
-            require(
-                need(db, "sessions", origin.session_id).state == "OPEN",
-                "SESSION_CLOSED",
-                "Workspace is closing",
-            )
-            cp = need(db, "checkpoints", origin.latest_checkpoint_id)
-            require(
-                cp.mode == "opaque_json"
-                and cp.adapter_version == descriptor.adapter_version
-                and cp.format_version == descriptor.checkpoint_format_version,
-                "UNSUPPORTED_CAPABILITY",
-                "This checkpoint cannot be copied safely",
-            )
+            require(need(db, "sessions", origin.session_id).state == "OPEN", "SESSION_CLOSED", "Workspace is closing")
+            prior = one(db, "SELECT completed FROM thread_fork_receipts WHERE source_thread_id=? AND idempotency_key=?", (thread_id, key))
+            if prior.completed:
+                return ThreadSnapshot.model_validate(public(need(db, "threads", identity)))
             new_cp = new_id("chk")
             db.execute(
                 "INSERT INTO threads(id,session_id,agent_id,title,adapter_snapshot_json,revision,latest_checkpoint_id,fork_of_thread_id,created_at) VALUES(?,?,?,?,?,1,?,?,?)",
@@ -794,7 +823,7 @@ class Threads:
                     origin.session_id,
                     origin.agent_id,
                     (title or origin.title + " branch")[:120],
-                    origin.adapter_snapshot_json,
+                    json_dump(descriptor),
                     new_cp,
                     origin.id,
                     now_ms(),
@@ -806,30 +835,18 @@ class Threads:
                     new_cp,
                     identity,
                     cp.adapter_version,
-                    cp.format_version,
+                    descriptor.checkpoint_format_version,
                     cp.mode,
-                    cp.ref_json,
+                    json_dump(reference),
                     now_ms(),
                 ),
             )
-            for entry in rows(
-                db,
-                "SELECT * FROM conversation WHERE thread_id=? ORDER BY seq",
-                (origin.id,),
-            ):
-                db.execute(
-                    "INSERT INTO conversation(id,session_id,thread_id,role,content,metadata_json,created_at,summary_markdown) VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        new_id("chat"),
-                        origin.session_id,
-                        identity,
-                        entry.role,
-                        entry.content,
-                        entry.metadata_json,
-                        entry.created_at,
-                        entry.summary_markdown,
-                    ),
-                )
+            window = prepared["window"]
+            db.execute("INSERT INTO thread_branches VALUES(?,?,?,?,?)", (identity, thread_id, cp.id, window.message_seq, window.user_seq))
+            db.execute("INSERT INTO checkpoint_windows VALUES(?,?,?)", (new_cp, window.user_seq, window.message_seq))
+            if prepared["native"]:
+                db.execute("INSERT INTO chat_checkpoint_heads VALUES(?,?)", (new_cp, reference.get("message_head")))
+            db.execute("UPDATE thread_fork_receipts SET completed=1 WHERE source_thread_id=? AND idempotency_key=?", (thread_id, key))
             emit(
                 db,
                 "thread.forked",
@@ -839,7 +856,24 @@ class Threads:
             )
             return ThreadSnapshot.model_validate(public(need(db, "threads", identity)))
 
-        result = await self.rt.store.call(branch, transaction=True)
+        if cp.mode == "native_ref":
+            require(hasattr(adapter, "fork_checkpoint"), "UNSUPPORTED_CAPABILITY", "Adapter has no native checkpoint fork implementation")
+            lock_key = (thread_id, key)
+            guard = self.fork_locks.setdefault(lock_key, [asyncio.Lock(), 0])
+            guard[1] += 1
+            try:
+                async with guard[0]:
+                    completed = await self.rt.store.call(lambda db: one(db, "SELECT completed FROM thread_fork_receipts WHERE source_thread_id=? AND idempotency_key=?", (thread_id, key)).completed)
+                    if completed:
+                        return await self.get(identity)
+                    reference = await adapter.fork_checkpoint(reference, identity)
+                    result = await self.rt.store.call(branch, transaction=True)
+            finally:
+                guard[1] -= 1
+                if not guard[1]:
+                    self.fork_locks.pop(lock_key, None)
+        else:
+            result = await self.rt.store.call(branch, transaction=True)
         self.rt.notify()
         return result
 
@@ -854,21 +888,11 @@ class Threads:
             return ConversationEntry.model_validate(value)
         await self.get(thread_id)
         limit = min(200, max(1, int(limit)))
+        from .chat_history import conversation_rows
         if latest:
             found = await self.rt.store.call(
-                lambda db: rows(
-                    db,
-                    "SELECT * FROM conversation WHERE thread_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
-                    (
-                        thread_id,
-                        (
-                            int(before_seq)
-                            if before_seq is not None
-                            else 9223372036854775807
-                        ),
-                        limit + 1,
-                    ),
-                )
+                lambda db: conversation_rows(db, thread_id, before=int(before_seq) if before_seq is not None else 9223372036854775807,
+                                             descending=True, limit=limit + 1)
             )
             selected = list(reversed(found[:limit]))
             return PageEnvelope(
@@ -877,11 +901,7 @@ class Threads:
                 has_more=len(found) > limit,
             )
         found = await self.rt.store.call(
-            lambda db: rows(
-                db,
-                "SELECT * FROM conversation WHERE thread_id=? AND seq>? ORDER BY seq LIMIT ?",
-                (thread_id, int(cursor or 0), limit + 1),
-            )
+            lambda db: conversation_rows(db, thread_id, after=int(cursor or 0), limit=limit + 1)
         )
         return PageEnvelope(
             items=[entry(r) for r in found[:limit]],
@@ -907,6 +927,35 @@ class Threads:
 class Tasks:
     def __init__(self, rt):
         self.rt = rt
+
+    async def continue_result(self, task_id, idempotency_key, content=""):
+        return await self.rt.continuations.begin(task_id, idempotency_key, content)
+
+    async def trace(self, task_id, cursor=None, limit=50):
+        """Bounded execution evidence without loading prompts or complete results."""
+        limit = min(100, max(1, int(limit)))
+        def read(db):
+            task = need(db, "tasks", task_id)
+            stages = rows(db, "SELECT seq,run_id,payload_json FROM events WHERE task_id=? AND type='run.stage' AND seq>? ORDER BY seq LIMIT ?",
+                          (task_id, int(cursor or 0), limit + 1))
+            attempts = rows(db, "SELECT id,attempt_no,state,started_at,ended_at,error_json,boundary_receipt_json FROM runs WHERE task_id=? ORDER BY attempt_no", (task_id,))
+            tools = rows(db, "SELECT c.id,c.run_id,c.tool_name,c.state,c.created_at,c.updated_at,c.error_json,c.parent_stage_id FROM tool_calls c JOIN runs r ON r.id=c.run_id WHERE r.task_id=? ORDER BY c.created_at,c.id LIMIT ?", (task_id, limit + 1)) if cursor is None else []
+            return {"task_id": task_id, "state": task.state, "queue_reason": task.queue_reason,
+                    "queued_ms": max(0, (attempts[0].started_at if attempts else task.updated_at if task.state in TERMINAL else now_ms()) - task.created_at),
+                    "items": [{"seq": row.seq, "run_id": row.run_id, **json.loads(row.payload_json)} for row in stages[:limit]],
+                    "cursor": str(stages[min(limit, len(stages)) - 1].seq) if stages else cursor,
+                    "has_more": len(stages) > limit,
+                    "runs": [{"id": run.id, "attempt": run.attempt_no, "state": run.state,
+                              "started_at": run.started_at, "ended_at": run.ended_at,
+                              "duration_ms": run.ended_at - run.started_at if run.ended_at else None,
+                              "error": json.loads(run.error_json) if run.error_json else None,
+                              "timings": json.loads(run.boundary_receipt_json).get("timings", {}) if run.boundary_receipt_json else {}}
+                             for run in attempts],
+                    "tools_has_more": len(tools) > limit,
+                    "tools": [{"id": call.id, "run_id": call.run_id, "tool": call.tool_name, "state": call.state, "parent_stage_id": call.parent_stage_id,
+                               "duration_ms": call.updated_at - call.created_at if call.state not in {"PENDING", "DISPATCHED", "UNCERTAIN"} else None,
+                               "error": json.loads(call.error_json) if call.error_json else None} for call in tools[:limit]]}
+        return await self.rt.store.call(read)
 
     async def progress(self, task_id):
         from .presentation import result_summary
@@ -956,6 +1005,7 @@ class Tasks:
             )
         require(allowed, "SESSION_CLOSED", "Workspace is closing")
         thread = need(db, "threads", spec.thread_id)
+        self.rt.contexts.validate_refs(db, spec, session.project_id, caller_run_id)
         require(
             thread.session_id == spec.session_id and thread.agent_id == spec.agent_id,
             "INVALID_REQUEST",
@@ -1001,6 +1051,8 @@ class Tasks:
                 stamp,
             ),
         )
+        if spec.context_refs:
+            db.executemany("INSERT OR IGNORE INTO context_access(task_id,reference) VALUES(?,?)", ((identity, reference) for reference in spec.context_refs))
         for dependency in set(spec.depends_on):
             db.execute(
                 "INSERT INTO task_dependencies VALUES(?,?)", (identity, dependency)
@@ -1106,6 +1158,8 @@ class Tasks:
                 if r["state"] in {"RUNNING", "UNCERTAIN"} and r["ended_at"] is None
             ]
             task["current_run"] = current[-1] if current else None
+            if task.continuation_runs:
+                task["continuation"] = self.rt.continuations.snapshot(db, task_id)
             policy = task["spec"]
             if any(policy.get(key, {}).get("required") or policy.get(key, {}).get("mode") == "required"
                    for key in ("tool_policy", "skill_policy")):

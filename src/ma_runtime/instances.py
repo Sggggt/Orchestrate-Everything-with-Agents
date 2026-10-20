@@ -79,7 +79,8 @@ class Instances:
                 attempt_timeout_s=spec.attempt_timeout_s, max_attempts=spec.max_attempts,
                 retry_policy=spec.retry_policy, metadata={"batch_id": identity, "instance_index": ordinal,
                                                          "parent_task_id": parent_id, **(task_metadata or {})},
-                tool_policy=spec.tool_policy, skill_policy=spec.skill_policy)
+                tool_policy=spec.tool_policy, skill_policy=spec.skill_policy, result_policy=spec.result_policy,
+                context_budget_tokens=spec.context_budget_tokens, context_refs=spec.context_refs, continuation_policy=spec.continuation_policy)
             handle = self.rt.tasks.insert(db, task, caller_run_id=caller_run_id)
             db.execute("INSERT INTO instance_members VALUES(?,?,?)", (identity, ordinal, handle.id))
         emit(db, "instances.spawned", session_id=spec.session_id,

@@ -33,6 +33,7 @@ class JsonlAgent:
         )
         self.running = {}
         self.finished = {}
+        self.controls = {}
         self.max_frame = 1024 * 1024
 
     def describe(self):
@@ -161,6 +162,11 @@ class JsonlAgent:
                 ):
                     continue
                 if frame.get("id") == "host:execute" and "method" not in frame:
+                    error = frame.get("error")
+                    failure = error.get("data") if isinstance(error, dict) else None
+                    if isinstance(failure, dict) and isinstance(failure.get("code"), str) and isinstance(failure.get("safe_message"), str):
+                        raise RuntimeFault(failure["code"], failure["safe_message"],
+                            retryable=failure.get("retryable", False), details=failure.get("details", {}))
                     require(
                         "result" in frame and frame["result"].get("started"),
                         "ADAPTER_PROTOCOL_ERROR",
@@ -241,6 +247,7 @@ class JsonlAgent:
                             model_request.messages,
                             tools=model_request.tools,
                             include_instructions=model_request.include_instructions,
+                            allow_incomplete=model_request.allow_incomplete,
                             emit_progress=model_request.emit_progress,
                             tool_choice=model_request.tool_choice,
                         )
@@ -251,6 +258,10 @@ class JsonlAgent:
                         value = await context.operations(params["action"], params.get("params"))
                     elif method == "runtime.tools.list":
                         value = await context.list_tools()
+                    elif method == "runtime.context.read":
+                        value = await context.read_context(params["reference"], params.get("offset", 0), params.get("limit", 8192))
+                    elif method == "runtime.context.project":
+                        value = await context.project_context(params["value"])
                     elif method == "runtime.skills.list":
                         value = await context.list_skills()
                     elif method == "runtime.skills.read":
@@ -279,6 +290,7 @@ class JsonlAgent:
                             params["name"],
                             params["arguments"],
                             params["idempotency_key"],
+                            model_call_id=params.get("model_call_id"), tool_call_id=params.get("tool_call_id"),
                         )
                     else:
                         raise RuntimeFault(
@@ -356,6 +368,51 @@ class JsonlAgent:
             evidence="No child is owned by this adapter",
         )
 
+    async def fork_checkpoint(self, reference, thread_id):
+        require(self.descriptor.supports_fork and self.descriptor.checkpoint_mode == "native_ref",
+                "UNSUPPORTED_CAPABILITY", "This process Agent cannot fork native checkpoints")
+        kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+        process = await asyncio.create_subprocess_exec(*self.command, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=self.root, limit=self.max_frame + 1, **kwargs)
+        try:
+            tree = OwnedProcessTree(process)
+        except BaseException:
+            process.terminate()
+            await process.wait()
+            raise
+        self.controls[process.pid] = tree
+        stderr = asyncio.create_task(self._drain_stderr(process.stderr))
+        try:
+            async with asyncio.timeout(10):
+                await self._send(process, {"jsonrpc": "2.0", "id": "host:describe", "method": "agent.describe", "params": {}})
+                description = await self._read(process)
+                declared = AgentDescriptor.model_validate(description.get("result", {}))
+                require(declared.agent_id == self.agent_id and declared.supports_fork and declared.checkpoint_mode == "native_ref"
+                        and declared.checkpoint_format_version == self.descriptor.checkpoint_format_version,
+                        "UNSUPPORTED_CAPABILITY", "Child does not implement the configured checkpoint fork")
+                await self._send(process, {"jsonrpc": "2.0", "id": "host:fork", "method": "agent.fork_checkpoint",
+                    "params": {"reference": reference, "thread_id": thread_id}})
+                reply = await self._read(process)
+                require(reply.get("id") == "host:fork", "ADAPTER_PROTOCOL_ERROR", "Invalid fork reply")
+                if "error" in reply:
+                    error = reply["error"].get("data", {})
+                    raise RuntimeFault(error.get("code", "FORK_FAILED"), error.get("safe_message", "Child checkpoint fork failed"))
+                require(isinstance(reply.get("result"), dict), "ADAPTER_PROTOCOL_ERROR", "Fork reply must contain a checkpoint reference")
+                return reply["result"]
+        except TimeoutError:
+            raise RuntimeFault("FORK_UNCERTAIN", "Checkpoint fork did not return; retry only with the same fork key") from None
+        finally:
+            process.stdin.close()
+            try:
+                await asyncio.wait_for(process.wait(), 2)
+            except TimeoutError:
+                await tree.stop()
+            tree.close()
+            self.controls.pop(process.pid, None)
+            await stderr
+
     async def aclose(self):
         for _, tree in tuple(self.running.values()):
+            await tree.stop()
+        for tree in tuple(self.controls.values()):
             await tree.stop()

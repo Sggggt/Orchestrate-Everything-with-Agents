@@ -21,8 +21,10 @@ from ..skill_registry import SkillRegistry
 from ..operations import Operations, OPERATIONS_ACTIONS
 from ..execution import Environments
 from ..workspace import Workbench
+from ..context_projection import ContextStore
 
 AREAS = {
+    "contexts": ("按引用读取项目内上下文证据；保留原文与版本", {"read": "contexts.read"}),
     "environments": ("外部受限执行环境与受管准备任务", {name: "environments." + name for name in ("list", "get", "configure", "prepare", "check")}),
     "workbench": ("Agent 工作能力、目录映射与原生工具回执", {name: "workbench." + name for name in ("inspect", "calls", "reconcile")}),
     "projects": (
@@ -96,6 +98,8 @@ AREAS = {
                 "workflow",
                 "get",
                 "progress",
+                "trace",
+                "continue_result",
                 "list",
                 "result",
                 "cancel",
@@ -158,6 +162,7 @@ AREAS = {
 }
 
 OWNERS = {
+    "contexts": ContextStore,
     "environments": Environments,
     "workbench": Workbench,
     "projects": services.Projects,
@@ -224,6 +229,10 @@ EXTRA_PARAMS = {
     "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": 4000},
 }
 NOTES = {
+    "threads.fork": "Fork a committed checkpoint or result message with a stable idempotency_key. Omit selectors for latest; the receipt freezes that resolved checkpoint. Replays return the same branch. Shared prefixes exclude later inputs and evidence. Native graph adapters must explicitly implement safe completed-state forks.",
+    "tasks.continue_result": "Explicitly repair a failed standalone delivery in its unchanged thread, preserving task identity and tool keys. Requires a committed checkpoint and no unresolved effects. Reuse the same key after disconnects. Frozen run/call/token/time limits include summary requests. New external actions are blocked; inspect the retained partial result and trace before choosing recovery.",
+    "contexts.read": "Read one source reference in an explicit project, using bounded UTF-8 byte offsets. Follow next_offset for continuation. References identify immutable evidence snapshots, not current file contents or permission grants. Do not load every source or replace full results with UI summaries.",
+    "tasks.trace": "Read one task's bounded stage records, initial queue time, run timings and tool overview. Prompts and credentials are excluded. Follow cursor for further stage records; absent end records have no measured completion time. Delivery failures retain partial results in tasks.get; trace status does not prove semantic quality.",
     "operations.bind": "Bind one stable consumer and optional same-session managed coordinator thread. Rebinding changes the receiver; it grants no business tools. Internal coordinators receive coalesced control notifications. External clients use inbox or SDK events; a server cannot start an idle external chat turn.",
     "operations.inbox": "Compact durable summaries only. Keep consumer_id stable. Omit cursor to resume from the acknowledged position; limit defaults to 20, timeout=0..25 waits for a meaningful update without polling. Read selected event IDs, then ack the delivered cursor. Timeouts do not cancel work or start another Runtime.",
     "operations.read": "Read one channel event and report body after selecting its summary. Scope and references are checked; reports and replies never authorize extra tools.",

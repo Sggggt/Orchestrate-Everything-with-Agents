@@ -129,6 +129,39 @@ class UsePolicy(Model):
         return self.mode != "none" and (self.allowed is None or name in self.allowed)
 
 
+class ResultPolicy(Model):
+    """Deterministic delivery requirements; semantic review belongs to the caller."""
+
+    kind: Literal["auto", "text", "structured", "artifacts"] = "auto"
+    output_schema: dict | None = None
+    required_artifacts: tuple[str, ...] = Field(default=(), max_length=16)
+    min_artifacts: int = Field(default=0, ge=0, le=64)
+    required_items: tuple[str, ...] = Field(default=(), max_length=128)
+
+    @field_validator("required_artifacts", "required_items")
+    @classmethod
+    def unique_names(cls, value):
+        if len(set(value)) != len(value) or any(not name.strip() or len(name) > 256 for name in value):
+            raise ValueError("Result requirement names must be unique and contain 1..256 characters")
+        return value
+
+    @field_validator("output_schema")
+    @classmethod
+    def valid_schema(cls, value):
+        if value is not None:
+            from .result_validation import output_validator
+            output_validator(json_dump(value))
+        return value
+
+
+class ContinuationPolicy(Model):
+    """Additional work is explicitly requested and bounded across the task."""
+    max_runs: int = Field(default=2, ge=0, le=3)
+    max_model_calls: int = Field(default=4, ge=1, le=12)
+    max_output_tokens: int = Field(default=8192, ge=128, le=131072)
+    timeout_seconds: float = Field(default=120, gt=0, le=900)
+
+
 class TaskSpec(Model):
     schema_version: str = PROTOCOL_VERSION
     session_id: str
@@ -146,6 +179,10 @@ class TaskSpec(Model):
     metadata: dict = Field(default_factory=dict)
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
+    context_budget_tokens: int | None = Field(default=None, ge=512, le=1048576)
+    context_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    continuation_policy: ContinuationPolicy | None = None
 
     @field_validator("resources")
     @classmethod
@@ -168,6 +205,10 @@ class InstanceBatchSpec(Model):
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
+    context_budget_tokens: int | None = Field(default=None, ge=512, le=1048576)
+    context_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    continuation_policy: ContinuationPolicy | None = None
 
     @field_validator("agent_ids")
     @classmethod
@@ -397,6 +438,8 @@ class AgentConfig(Model):
     system_prompt: str = Field(default="", max_length=16384)
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=4096, ge=1, le=131072)
+    context_window_tokens: int | None = Field(default=None, ge=1024, le=2097152)
+    context_budget_tokens: int = Field(default=48000, ge=512, le=1048576)
     token_parameter: Literal["max_completion_tokens", "max_tokens"] = (
         "max_completion_tokens"
     )
@@ -420,6 +463,8 @@ class AgentConfig(Model):
 
     @model_validator(mode="after")
     def unique_profile_entries(self):
+        if self.context_window_tokens is not None and self.context_window_tokens <= (self.max_output_tokens or 4096) + 1024:
+            raise ValueError("Context window must exceed the output reserve and safety margin")
         if self.process_descriptor and (
             self.kind != "process"
             or self.process_descriptor.agent_id != self.id
@@ -469,6 +514,7 @@ class LLMRequest(Model):
     include_instructions: bool = True
     emit_progress: bool = False
     tool_choice: str | dict | None = None
+    allow_incomplete: bool = False
 
     @model_validator(mode="after")
     def bounded_model_input(self):
@@ -492,6 +538,7 @@ class LLMRequest(Model):
 
 
 class LLMResponse(Model):
+    call_id: str = ""
     model: str
     text: str = ""
     tool_calls: list[dict] = Field(default_factory=list)
@@ -510,6 +557,8 @@ class ExecutionRequest(Model):
     project_id: str = "default"
     project_folder: str = ""
     expected_thread_revision: int
+    conversation_cutoff: int = 0
+    continuation: dict | None = None
     payload: dict
     messages: list[dict] = Field(default_factory=list)
     conversation: list[dict] = Field(default_factory=list)
@@ -523,6 +572,9 @@ class ExecutionRequest(Model):
     mcp_bindings: tuple["MCPBinding", ...] = ()
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
+    context_budget_tokens: int | None = Field(default=None, ge=512, le=1048576)
+    context_refs: tuple[str, ...] = Field(default=(), max_length=64)
     operations_consumer_id: str = ""
     workbench: dict | None = None
 
@@ -616,6 +668,8 @@ class TaskSnapshot(SnapshotModel):
     resume_key: str | None = None
     resume_hash: str | None = None
     attempt_count: int
+    continuation_runs: int = 0
+    continuation: dict | None = None
     not_before: int
     error: dict | None = None
     created_at: int
@@ -736,6 +790,10 @@ class WorkflowAgentConfig(BaseModel):
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
+    context_budget_tokens: int | None = Field(default=None, ge=512, le=1048576)
+    context_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    continuation_policy: ContinuationPolicy | None = None
 
 
 class WorkflowMapConfig(BaseModel):
@@ -750,6 +808,10 @@ class WorkflowMapConfig(BaseModel):
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
+    result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
+    context_budget_tokens: int | None = Field(default=None, ge=512, le=1048576)
+    context_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    continuation_policy: ContinuationPolicy | None = None
 
 
 class WorkflowConditionConfig(BaseModel):

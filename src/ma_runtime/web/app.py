@@ -474,6 +474,10 @@ def create_app(
     async def task_result(task_id: str):
         return await rt().tasks.result(task_id, timeout=0)
 
+    @app.get("/api/tasks/{task_id}/trace")
+    async def task_trace(task_id: str, cursor: str | None = None, limit: int = 50):
+        return await rt().tasks.trace(task_id, cursor, limit)
+
     @app.post("/api/tasks/{task_id}/{action}")
     async def task_action(task_id: str, action: str, request: Request):
         data = await body(request)
@@ -481,6 +485,8 @@ def create_app(
             return await rt().tasks.cancel(task_id)
         if action == "retry":
             return await invoke(rt().tasks.retry, task_id, **data)
+        if action == "continue":
+            return await invoke(rt().tasks.continue_result, task_id, **data)
         if action == "resume":
             return await invoke(rt().tasks.resume, task_id, **data)
         if action == "reconcile":

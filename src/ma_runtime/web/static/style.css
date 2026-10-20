@@ -2750,3 +2750,13 @@ body { min-width: 1100px; }
 .artifact-source-group .section-heading h2 > .icon { width: 18px; height: 18px; color: var(--muted); }
 .artifact-group-count { color: var(--muted); font-size: 13px; }
 .artifact-preview-meta { flex-wrap: wrap; }
+.message-execution { display: block; margin-top: 10px; font-size: 12px; }
+.execution-trace { margin: 18px 0; font-size: 13px; }
+.execution-request { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+.execution-error { color: #b04455; overflow-wrap: anywhere; }
+.execution-run + .execution-run { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+.execution-request > summary { cursor: pointer; padding: 6px 0; }
+.execution-request > summary > span { float: right; color: var(--muted); font-size: 12px; }
+.execution-request > .execution-request, .execution-tool { margin: 10px 0 10px 12px; padding-left: 12px; border-left: 2px solid var(--line); }
+.execution-tool > .text-link { font-size: 12px; }
+.execution-receipt { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--soft); border-radius: 6px; font: 12px/1.7 Consolas, monospace; }

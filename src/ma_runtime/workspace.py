@@ -288,9 +288,11 @@ class Workbench:
                     "error": json.loads(entry.error_json) if entry.error_json else None}
         require(1 <= limit <= 100, "INVALID_REQUEST", "limit must be 1..100")
         entries = await self.rt.store.call(lambda db: rows(db,
-            "SELECT c.id,c.tool_name,c.state,c.error_json FROM tool_calls c JOIN runs r ON r.id=c.run_id "
+            "SELECT c.id,c.run_id,c.tool_name,c.state,c.error_json,c.parent_stage_id,c.created_at,c.updated_at FROM tool_calls c JOIN runs r ON r.id=c.run_id "
             "WHERE r.task_id=? AND c.id>? ORDER BY c.id LIMIT ?", (task_id, cursor, limit + 1)))
         return {"items": [{"id": entry.id, "tool_name": entry.tool_name, "state": entry.state,
+                           "run_id": entry.run_id, "parent_stage_id": entry.parent_stage_id,
+                           "duration_ms": entry.updated_at - entry.created_at if entry.state not in {"PENDING", "DISPATCHED", "UNCERTAIN"} else None,
                            "error": json.loads(entry.error_json) if entry.error_json else None} for entry in entries[:limit]],
                 "next_cursor": entries[limit - 1].id if len(entries) > limit else None}
 

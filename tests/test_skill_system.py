@@ -243,7 +243,7 @@ class SkillSystemTests(unittest.IsolatedAsyncioTestCase):
         await self.rt.tasks.result(task.id, timeout=10)
         state = await self.rt.tasks.get(task.id)
         from ma_runtime.models import content_hash
-        legacy = state.spec.model_dump(mode="json", exclude={"tool_policy", "skill_policy"})
+        legacy = state.spec.model_dump(mode="json", exclude={"tool_policy", "skill_policy", "result_policy", "context_budget_tokens", "context_refs", "continuation_policy"})
         self.assertEqual(state.request_hash, content_hash(legacy))
         repeated = await self.rt.threads.turn(thread.id, "Answer", "legacy-key")
         self.assertTrue(repeated.reused)
@@ -275,6 +275,10 @@ class SkillSystemTests(unittest.IsolatedAsyncioTestCase):
         for node in legacy["nodes"]:
             node["config"].pop("tool_policy", None)
             node["config"].pop("skill_policy", None)
+            node["config"].pop("result_policy", None)
+            node["config"].pop("context_budget_tokens", None)
+            node["config"].pop("context_refs", None)
+            node["config"].pop("continuation_policy", None)
         expected = content_hash({"name": "Legacy definition", "description": "", "graph": legacy})
         row = await self.rt.store.call(lambda db: one(db, "SELECT request_hash FROM workflows WHERE id=?", (saved.id,)))
         self.assertEqual(row.request_hash, expected)

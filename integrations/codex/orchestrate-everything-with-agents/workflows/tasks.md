@@ -25,9 +25,10 @@
 
 ## 观察与处置
 
-平台内模型主 Agent 的 wait_for_tasks 默认 ALL_SETTLED，带回成功、失败、取消及 UNCERTAIN 的状态/错误，交由主 Agent 判断。原 ALL_SUCCEEDED/ALL_TERMINAL 可显式选择。子 Agent 请求指导和双向异常反馈使用 [运维通道](operations.md)，不要靠等待失败把主决策者直接结束。
+外部主 Agent 收集每项任务的结果或失败状态，再决定下一步。执行端的 wait_for_tasks 默认 ALL_SETTLED，带回成功、失败、取消及 UNCERTAIN 的状态/错误；原 ALL_SUCCEEDED/ALL_TERMINAL 可显式选择。子 Agent 请求指导和双向异常反馈使用 [运维通道](operations.md)。
 
 - `tasks.get {task_id}` 查看单个任务；`tasks.list {session_id, cursor, limit:25}` 取一页。
+- 派发时用 `result_policy` 声明需要的正文、结构化字段、覆盖项或产物。按当前动作查询字段，不复制整套 schema。平台检查交付条件，内容是否正确仍由外部主 Agent 核验。
 - `tasks.progress {task_id}` 查看实时或最终 Markdown 摘要；`control.live {session_id}` 查看当前执行摘要。需要完整交接内容时取 result，不把前端摘要当成 Agent 的完整消息。
 - `tasks.result {task_id, timeout:0}` 非阻塞检查结果；需要等候时设不超过 30 秒。WAIT_TIMEOUT 表示任务继续，不是失败，也不应自动取消。
 - queue_reason 为 MODEL_CONFIGURATION 时停止轮询，保留 task ID 并提醒用户去前端配置模型；保存后任务自动继续，不重试或重建同一个任务。
@@ -39,3 +40,13 @@
 轮询按任务耗时退避；没有状态变化时不重新获取全量历史。跨阶段保留 task ID 和最后状态。没有观察到成功结果时不能把 QUEUED、RUNNING、WAITING 或“已接收”报告为完成。
 
 UNCERTAIN 不是一般失败。没有充分证据时说明缺失项，保留隔离状态；不得随手把 confirmed_stopped、external_actions_confirmed、safe_to_retry 全设为 true。
+
+## 交付失败与上下文交接
+
+空正文、截断、缺少产物或覆盖项会保留部分结果，并标为 FAILED。先读 `tasks.get` 的 result/error/metadata.acceptance；定位耗时或故障阶段才读 `tasks.trace`，按 cursor 翻页，工具原始回执只读所需调用。不要根据“连接失败”猜测服务责任，也不要把通过交付检查当成审查正确。
+
+若原线程未前进且有已提交检查点，可显式 `tasks.continue_result {task_id,idempotency_key,content}` 修补独立任务。沿用同键核对回执；后端限制次数、所有追加模型调用（含摘要）、输出和时间，并阻止新的外部动作。默认无需额外配置；确有需要时在原任务 `continuation_policy` 中收窄。预算耗尽或不满足条件时停止续写，说明剩余缺口。已定稿工作流用独立修补任务，不改旧结果。
+
+大资料和依赖保留原文，模型只接收当前工作集。独立任务交接用必要的 `context_refs`，需要原文再 `contexts.read {reference,project_id,offset,limit}`；沿 next_offset 读取需要的片段，沿 previous_reference 回溯历史。引用是版本快照且不授予额外工具权限。长审查按具体段落/问题派发，要求证据位置与明确交付项，避免多个 Agent 各自重读全量材料。
+
+执行端的 `read_context` 是固有读取口，不填入业务工具的 allowed/required；仍须保留引用来源工具的授权，例如文件证据所需的 read_file。offset/limit 按 UTF-8 字节计。

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { api } from "../src/ma_runtime/web/static/api.mjs";
+import { canContinue, duration, executionTrace } from "../src/ma_runtime/web/static/execution-view.mjs";
 import { createIntegrationUI } from "../src/ma_runtime/web/static/integrations.js";
 import { createSkillIntegration } from "../src/ma_runtime/web/static/skills.js";
 import { content, compactTitle, schemaView, schemaDefaults, valueEditor, toolResult } from "../src/ma_runtime/web/static/presentation.mjs";
@@ -37,6 +38,44 @@ test("HTTP failures still reject with the gateway error message and code", async
       fetcher.mock.restore();
     }
   }
+});
+
+test("execution details merge stage boundaries and keep provider text non-executable", () => {
+  const html = executionTrace({ queued_ms: 5, runs: [], tools: [], items: [
+    { id: "request", state: "RUNNING" },
+    { id: "request", state: "FAILED", duration_ms: 1500, error: { safe_message: '<img src=x onerror="alert(1)">' },
+      attributes: { response_headers_ms: 20, first_content_ms: 45 } },
+  ] });
+  assert.equal((html.match(/模型请求 1/g) || []).length, 1);
+  assert.ok(!html.includes("模型请求 2"));
+  assert.ok(html.includes("1.50 s"));
+  assert.ok(html.includes("&lt;img"));
+  assert.ok(!html.includes("<img"));
+  assert.equal(duration(null), "—");
+});
+
+test("execution tree uses recorded parents and reads receipts only through explicit actions", () => {
+  const html = executionTrace({ runs: [{ id: "run", attempt: 1, state: "SUCCEEDED" }], items: [
+    { id: "model", run_id: "run", stage: "model", state: "SUCCEEDED" },
+    { id: "source", run_id: "run", stage: "context_read", state: "SUCCEEDED", attributes: { parent_stage_id: "model", bytes_read: 42 } },
+  ], tools: [{ id: "call", run_id: "run", parent_stage_id: "model", tool: "read_file", state: "SUCCEEDED" }] },
+    { call: { result: '<script>alert("unsafe")</script>' } });
+  assert.ok(html.indexOf('data-trace-node="model"') < html.indexOf('data-id="call"'));
+  assert.ok(html.indexOf('data-id="call"') < html.indexOf('data-trace-node="source"'));
+  assert.ok(html.includes("读取证据"));
+  assert.ok(html.includes("&lt;script&gt;"));
+  assert.ok(!html.includes("<script>"));
+  assert.ok(!html.includes("data-action=\"task-trace\""));
+});
+
+test("delivery continuation is offered only while its checkpoint and bounded budget remain usable", () => {
+  const task = { state: "FAILED", result: {}, error: { code: "OUTPUT_TRUNCATED" }, runs: [{ boundary_receipt: { checkpoint_id: "point" } }] };
+  const thread = { latest_checkpoint_id: "point", adapter_snapshot: { supports_suspend: true } };
+  assert.equal(canContinue(task, thread), true);
+  assert.equal(canContinue(task, { ...thread, latest_checkpoint_id: "later" }), false);
+  assert.equal(canContinue({ ...task, state: "UNCERTAIN" }, thread), false);
+  assert.equal(canContinue({ ...task, spec: { metadata: { workflow_run_id: "run" } } }, thread), false);
+  assert.equal(canContinue({ ...task, continuation: { runs_used: 2, max_runs: 2 } }, thread), false);
 });
 
 test("work artifacts group by Agent identity and keep uploads and unknown history separate", () => {

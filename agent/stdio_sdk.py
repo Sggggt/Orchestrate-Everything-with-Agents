@@ -32,7 +32,8 @@ class RemoteLLM:
         return await self.context._call("runtime.llm.info")
 
     async def complete(
-        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None
+        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None,
+        allow_incomplete=False
     ):
         request = LLMRequest(
             messages=messages,
@@ -40,6 +41,7 @@ class RemoteLLM:
             include_instructions=include_instructions,
             emit_progress=emit_progress,
             tool_choice=tool_choice,
+            allow_incomplete=allow_incomplete,
         )
         result = await self.context._call(
             "runtime.llm.complete", request=request.model_dump(mode="json")
@@ -70,18 +72,25 @@ class RemoteRunContext:
     async def list_tools(self):
         return await self._call("runtime.tools.list")
 
+    async def read_context(self, reference, offset=0, limit=8192):
+        return await self._call("runtime.context.read", reference=reference, offset=offset, limit=limit)
+
+    async def project_context(self, value):
+        return await self._call("runtime.context.project", value=value)
+
     async def list_skills(self):
         return await self._call("runtime.skills.list")
 
     async def read_skill(self, skill_id, path="SKILL.md"):
         return await self._call("runtime.skills.read", skill_id=skill_id, path=path)
 
-    async def invoke_tool(self, name, arguments, idempotency_key):
+    async def invoke_tool(self, name, arguments, idempotency_key, *, model_call_id=None, tool_call_id=None):
         return await self._call(
             "runtime.tools.invoke",
             name=name,
             arguments=arguments,
             idempotency_key=idempotency_key,
+            model_call_id=model_call_id, tool_call_id=tool_call_id,
         )
 
     async def submit_task(self, spec):
@@ -194,6 +203,7 @@ class _Endpoint:
                     "error": {
                         "code": -32000,
                         "message": "Agent execution ended without a boundary",
+                        **({"data": exc.as_dict()} if isinstance(exc, RuntimeFault) else {}),
                     },
                 }
             )
@@ -225,6 +235,8 @@ class _Endpoint:
                                     error.get(
                                         "safe_message", "Platform callback failed"
                                     ),
+                                    retryable=error.get("retryable", False),
+                                    details=error.get("details", {}),
                                 )
                             )
                         else:
@@ -251,6 +263,15 @@ class _Endpoint:
                     value = await self.adapter.cancel(params)
                 elif method == "agent.probe":
                     value = await self.adapter.probe(params)
+                elif method == "agent.fork_checkpoint":
+                    try:
+                        require(self.worker is None and hasattr(self.adapter, "fork_checkpoint"),
+                                "UNSUPPORTED_CAPABILITY", "This child cannot fork checkpoints")
+                        value = await self.adapter.fork_checkpoint(params["reference"], params["thread_id"])
+                    except RuntimeFault as exc:
+                        await self.write({"jsonrpc": "2.0", "id": identity,
+                            "error": {"code": -32000, "message": exc.safe_message, "data": exc.as_dict()}})
+                        continue
                 else:
                     await self.write(
                         {
@@ -271,6 +292,11 @@ class _Endpoint:
             await self.adapter.aclose()
 
 
+async def run_agent_async(adapter):
+    """Serve within an existing event loop, including an owned async checkpointer."""
+    await _Endpoint(adapter).run()
+
+
 def run_agent(adapter):
     """Serve one managed execution. Logs belong on stderr, never stdout."""
-    asyncio.run(_Endpoint(adapter).run())
+    asyncio.run(run_agent_async(adapter))

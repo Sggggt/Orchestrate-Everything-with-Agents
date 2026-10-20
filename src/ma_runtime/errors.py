@@ -31,9 +31,10 @@ class RuntimeFault(Exception):
 
 class AdapterFailure(RuntimeFault):
     def __init__(
-        self, message: str, *, retryable: bool = False, safe_to_retry: bool = False
+        self, message: str, *, retryable: bool = False, safe_to_retry: bool = False,
+        code: str = "ADAPTER_FAILED", details: dict | None = None
     ):
-        super().__init__("ADAPTER_FAILED", message, retryable=retryable)
+        super().__init__(code, message, retryable=retryable, details=details)
         self.safe_to_retry = safe_to_retry
 
 

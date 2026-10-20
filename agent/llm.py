@@ -104,7 +104,7 @@ class LLMApiAgent:
             agent_id=self.config.id,
             max_concurrency=self.config.max_concurrency,
             checkpoint_mode="opaque_json",
-            checkpoint_format_version="chat-messages-v1",
+            checkpoint_format_version="chat-messages-v2",
             supports_suspend=True,
             supports_fork=True,
             nested_execution="runtime_mediated",
@@ -115,6 +115,13 @@ class LLMApiAgent:
             messages, context, tools=tools
         ):
             yield event
+
+    def checkpoint(self, request, messages):
+        previous = request.resume_ref or {}
+        base = previous.get("message_head")
+        count = previous.get("message_count", 0) if base else 0
+        return CheckpointProposal(format_version="chat-messages-v2", ref={"task_id": request.task_id,
+            "base_head": base, "messages": messages[1 + count:]})
 
     async def execute(self, request, context):
         self.running[request.run_id] = context.cancelled
@@ -152,7 +159,14 @@ class LLMApiAgent:
                 tools.append(function("operations", "Session-scoped coordinator channel. Use guide for one action's parameters; inbox summaries first, read only needed details, reply/ack, inspect or test. To wait, suspend with wait_for_message.",
                     {"action": {"type": "string", "enum": ["guide", "inspect", "inbox", "read", "reply", "ack", "test"]}, "params": {"type": "object"}}, ["action"]))
             granted_names = {tool["function"]["name"] for tool in tools}
-            prompt = self.config.system_prompt + "\n\n" + OUTPUT_GUIDANCE
+            output_guidance = OUTPUT_GUIDANCE
+            if request.result_policy.kind == "structured" or request.result_policy.output_schema is not None:
+                output_guidance = "After any necessary tools, return exactly one JSON object as the final response. Do not add Markdown fences, a summary, or text outside that object."
+                if request.result_policy.output_schema is not None:
+                    output_guidance += "\nThe final object must satisfy this JSON Schema:\n" + json_dump(request.result_policy.output_schema)
+                if request.result_policy.required_items:
+                    output_guidance += "\nInclude covered_items with these required identifiers:\n" + json_dump(request.result_policy.required_items)
+            prompt = self.config.system_prompt + "\n\n" + output_guidance
             prompt += "\n\n" + OPERATIONS_GUIDANCE
             if request.operations_consumer_id:
                 prompt += "\n" + COORDINATOR_GUIDANCE
@@ -206,7 +220,7 @@ class LLMApiAgent:
                     {
                         "role": "user",
                         "content": "Collaboration messages:\n"
-                        + json_dump(request.messages),
+                        + json_dump(await context.project_context(request.messages)),
                     }
                 )
             if request.dependency_results:
@@ -214,14 +228,14 @@ class LLMApiAgent:
                     {
                         "role": "user",
                         "content": "Dependency results:\n"
-                        + json_dump(request.dependency_results),
+                        + json_dump(await context.project_context(request.dependency_results)),
                     }
                 )
             if request.resume_input:
                 messages.append(
                     {
                         "role": "user",
-                        "content": "Resume input:\n" + json_dump(request.resume_input),
+                        "content": request.resume_input.get("content", "Complete the retained result.") if request.continuation else "Resume input:\n" + json_dump(await context.project_context(request.resume_input)),
                     }
                 )
             if not any(m["role"] == "user" for m in messages):
@@ -241,12 +255,26 @@ class LLMApiAgent:
                 )
                 calls = result["calls"]
                 assistant = {"role": "assistant", "content": result["text"] or None}
-                if calls:
+                incomplete = result["finish_reason"] in {"length", "max_tokens", "content_filter", "refusal"}
+                if calls and not incomplete:
                     assistant["tool_calls"] = calls
-                messages.append(assistant)
-                if not calls:
+                if result["text"] or (calls and not incomplete):
+                    messages.append(assistant)
+                if not calls or incomplete:
                     text, artifact_ids = result["text"], ()
                     output = {"text": text, "finish_reason": result["finish_reason"]}
+                    completion = {"finish_reason": result["finish_reason"], "usage": result.get("usage", {})}
+                    if incomplete and calls:
+                        completion["discarded_tool_calls"] = len(calls)
+                    if request.result_policy.kind == "structured" or request.result_policy.output_schema is not None:
+                        try:
+                            structured = json.loads(text)
+                        except ValueError:
+                            structured = None
+                        if isinstance(structured, dict):
+                            output = structured
+                        else:
+                            completion["structured_error"] = True
                     if (
                         len(text.encode("utf-8"))
                         > context._runtime.config.max_message_bytes // 2
@@ -259,17 +287,16 @@ class LLMApiAgent:
                             metadata={"kind": "agent_response"},
                             caller_run_id=request.run_id,
                         )
-                        # Preserve the complete peer message; only the UI projection is short.
+                        # The complete response remains readable through its artifact.
                         output["full_text_artifact_id"] = artifact.id
+                        if isinstance(output.get("text"), str):
+                            output["text"] = text[:1600]
                         artifact_ids = (artifact.id,)
                     boundary = AdapterEvent(
                         type="completed",
                         result=TaskResult(output=output, summary_markdown=markdown_summary(result["text"]),
-                                          artifact_ids=artifact_ids),
-                        checkpoint=CheckpointProposal(
-                            format_version="chat-messages-v1",
-                            ref={"task_id": request.task_id, "messages": messages},
-                        ),
+                                          artifact_ids=artifact_ids, metadata={"model_completion": completion}),
+                        checkpoint=self.checkpoint(request, messages),
                         applied_message_ids=tuple(
                             m["message_id"] for m in request.messages
                         ),
@@ -309,8 +336,8 @@ class LLMApiAgent:
                             value = await context.read_skill(
                                 arguments["skill_id"], arguments.get("path", "SKILL.md")
                             )
-                        elif name.startswith("mcp_") or name in WORKBENCH_TOOLS:
-                            value = await context.invoke_tool(name, arguments, key)
+                        elif name == "read_context" or name.startswith("mcp_") or name in WORKBENCH_TOOLS:
+                            value = await context.invoke_tool(name, arguments, key, model_call_id=result.get("call_id"), tool_call_id=call["id"])
                         elif name == "list_threads":
                             value = await context.list_threads()
                         elif name == "send_message":
@@ -389,10 +416,7 @@ class LLMApiAgent:
                     boundary = AdapterEvent(
                         type="suspended",
                         wait=wait,
-                        checkpoint=CheckpointProposal(
-                            format_version="chat-messages-v1",
-                            ref={"task_id": request.task_id, "messages": messages},
-                        ),
+                        checkpoint=self.checkpoint(request, messages),
                         applied_message_ids=tuple(
                             m["message_id"] for m in request.messages
                         ),

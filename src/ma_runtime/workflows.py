@@ -321,7 +321,7 @@ class Workflows:
         parsed = WorkflowGraph.model_validate(graph if graph is not None else default_graph())
         parsed = WorkflowGraph.model_validate(self.rt.clean_json(parsed.model_dump(mode="json"), limit=1024 * 1024))
         # Optional auto policies must not invalidate pre-existing creation keys.
-        from .models import UsePolicy
+        from .models import ResultPolicy, UsePolicy
         canonical = parsed.model_dump(mode="json")
         default_policy = UsePolicy().model_dump(mode="json")
         for node in canonical["nodes"]:
@@ -329,6 +329,14 @@ class Workflows:
                 for key in ("tool_policy", "skill_policy"):
                     if node["config"].get(key) == default_policy:
                         node["config"].pop(key)
+                if node["config"].get("result_policy") == ResultPolicy().model_dump(mode="json"):
+                    node["config"].pop("result_policy")
+                if node["config"].get("context_budget_tokens") is None:
+                    node["config"].pop("context_budget_tokens", None)
+                if not node["config"].get("context_refs"):
+                    node["config"].pop("context_refs", None)
+                if node["config"].get("continuation_policy") is None:
+                    node["config"].pop("continuation_policy", None)
         digest = content_hash({"name": title, "description": description, "graph": canonical})
         def insert(db):
             resolve_project(db, project_id)
@@ -669,6 +677,9 @@ class Workflows:
                         idempotency_key=f"{run.id}:{spec.id}", attempt_timeout_s=spec.config["attempt_timeout_s"],
                         max_attempts=spec.config["max_attempts"], retry_policy=spec.config["retry_policy"],
                         tool_policy=spec.config.get("tool_policy", {}), skill_policy=spec.config.get("skill_policy", {}),
+                        result_policy=spec.config.get("result_policy", {}),
+                        context_budget_tokens=spec.config.get("context_budget_tokens"), context_refs=spec.config.get("context_refs", ()),
+                        continuation_policy=spec.config.get("continuation_policy"),
                         metadata={"workflow_id": run.workflow_id, "workflow_run_id": run.id, "workflow_node_id": spec.id})
         return self.rt.tasks.insert(db, task).id
 
@@ -763,7 +774,10 @@ class Workflows:
                         batch_spec = InstanceBatchSpec(session_id=run.session_id, agent_ids=spec.config["agent_ids"],
                             payloads=payloads, idempotency_key=f"{run.id}:{spec.id}",
                             **{key: spec.config[key] for key in ("max_concurrency", "routing", "attempt_timeout_s", "max_attempts", "retry_policy")},
-                            tool_policy=spec.config.get("tool_policy", {}), skill_policy=spec.config.get("skill_policy", {}))
+                            tool_policy=spec.config.get("tool_policy", {}), skill_policy=spec.config.get("skill_policy", {}),
+                            result_policy=spec.config.get("result_policy", {}),
+                            context_budget_tokens=spec.config.get("context_budget_tokens"), context_refs=spec.config.get("context_refs", ()),
+                            continuation_policy=spec.config.get("continuation_policy"))
                         batch = self.rt.instances.insert(db, batch_spec)
                         self._set_node(db, run, node, "RUNNING", inputs={"count": len(items)}, batch_id=batch["id"])
                         continue

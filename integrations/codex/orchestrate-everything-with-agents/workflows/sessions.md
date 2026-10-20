@@ -11,7 +11,7 @@
 - `threads.get {thread_id}`：读取归属和状态。
 - `threads.conversation {thread_id, latest:true, limit:20}`：只看近期上下文；向前翻页使用 before_seq，按返回 cursor 继续。需要增量顺序读取时使用 cursor。
 - `threads.turn {thread_id, content, idempotency_key}`：提交新一轮任务，平台从 thread 推导 session / agent。
-- `threads.fork {thread_id, title}`：从已有 checkpoint 分支，需执行端支持，不能强行跨框架复制上下文。
+- `threads.fork {thread_id, checkpoint_id, idempotency_key}`：从指定已提交结果分支；也可用 message_id，二者只选一个。省略选择器取最新保存点，同键重试固定原保存点；先记下返回线程 ID。需执行端支持，LangGraph 仅支持显式启用的已完成安全状态。分支共享历史前缀，只继承保存点当时的输入和证据。
 
 当前已知 session 中查全部 thread 可按需用 `sessions.snapshot`，只消费结果的 threads 字段；不要常规拉取所有任务、消息、产物和长对话。
 

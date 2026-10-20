@@ -36,12 +36,12 @@ class ArtifactStore:
         )
 
     async def put_bytes(
-        self, session_id: str, name: str, data: bytes, *, metadata=None, caller_run_id=None, source_kind="external"
+        self, session_id: str, name: str, data: bytes, *, metadata=None, caller_run_id=None, source_kind="external", internal=False
     ):
         return await self._put(session_id, name, data=data, metadata=metadata,
-                               caller_run_id=caller_run_id, source_kind=source_kind)
+                               caller_run_id=caller_run_id, source_kind=source_kind, internal=internal)
 
-    async def _put(self, session_id, name, *, source=None, data=None, metadata=None, caller_run_id=None, source_kind="external"):
+    async def _put(self, session_id, name, *, source=None, data=None, metadata=None, caller_run_id=None, source_kind="external", internal=False):
         session = await self.runtime.sessions.get(session_id)
         require(session.state != "DELETED", "SESSION_DELETED", "Restore the session before adding artifacts")
         name = (
@@ -110,6 +110,9 @@ class ArtifactStore:
         checksum, size, relative = await asyncio.to_thread(copy)
         artifact_id = new_id("art")
         meta = self.runtime.vault.redact(metadata or {})
+        meta.pop("internal", None)
+        if internal:
+            meta["internal"] = True
 
         def insert(db):
             session = one(db, "SELECT state FROM sessions WHERE id=?", (session_id,))
@@ -139,15 +142,12 @@ class ArtifactStore:
                     now_ms(),
                 ),
             )
-            emit(
-                db,
-                "artifact.created",
-                session_id=session_id,
-                payload={"artifact_id": artifact_id, "name": name},
-            )
+            if not internal:
+                emit(db, "artifact.created", session_id=session_id, payload={"artifact_id": artifact_id, "name": name})
 
         await self.runtime.store.call(insert, transaction=True)
-        self.runtime.notify()
+        if not internal:
+            self.runtime.notify()
         return await self.get(artifact_id)
 
     async def get(self, artifact_id):

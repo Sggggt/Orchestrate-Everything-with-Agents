@@ -13,7 +13,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 2. 需要在线操作且实例尚未核实时，调用 `platform_call(area="control", action="status", params={})` 一次。纯代码或文档工作可跳过。先固定项目及绑定的本地文件夹，再固定相关 Agent / session / thread / task ID；多项目时显式传 project_id，不从其他项目借用 Agent。
 3. 使用 `oea` MCP 的两个入口：`platform_guide` 查询一个功能或动作；`platform_call` 执行一个动作。方法参数不清楚时只查询 `platform_guide(area, action)`，不要请求全部 JSON Schema。
 4. 规划眼前可验证的一步，只携带它的参数。依赖上一步 ID 的操作顺序执行。可保存的项目工作流使用 `workflows`；一次性会话任务依赖使用 `tasks.workflow`。
-5. 检查 `ok` 与 `error`。成功注册、成功派发和成功完成是不同状态；按用户目标验证实际结果，再报告 ID、结果和仍存在的限制。
+5. 检查 `ok` 与 `error`。派发、交付检查和语义验收是不同状态；外部主 Agent 负责核验实际结果。交付失败先读保留结果，按[任务流程](workflows/tasks.md)选择处置。
 
 开发或注册需要模型的 Agent 后，交付必须提醒用户前往“Agent 集成 → 配置 → 模型 API”填写或确认 API 地址、模型和密钥，并测试已保存配置。缺少模型配置时可以完成代码、离线测试和注册，但要明确“待配置模型，尚未通过真实模型验收”；不索取聊天中的明文密钥，不把待配置状态当成运行成功。
 
@@ -46,6 +46,7 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 - MCP 资源 `oea://tool-index`、`oea://projects`、`oea://output-contract` 提供当前工具索引、项目和展示约定；无需读取完整协议来完成单个动作。
 
 - 列表默认取一小页；按需使用 cursor。不要为完成单个任务读取整个 session snapshot、全部对话、所有 Agent 文档或全部 MCP 参数。
+- 任务按具体检查项拆分，传必要证据引用 `context_refs`；原文用 `contexts.read` 分块按需读取。自动压缩不代替证据与验收，预算和恢复细节只在相应任务流程加载。
 - `mcp.tools` 默认只返回工具目录；确定工具后再加 `tool_name` 读取单个协议。
 - 大响应返回 `result_ref`，用 `control.read_result` 的 JSON Pointer 取需要的字段。不要把所有分片重新拼进上下文。缓存仅在当前 MCP 进程内保留，失效不能成为重新执行写操作的理由。
 - 跨阶段只保留当前实例、对象 ID、目标、已验证结果、幂等键和未决事项。参数或结果格式遇到疑问时才读[协议参考](references/protocol.md)。

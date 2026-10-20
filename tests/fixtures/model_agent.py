@@ -35,13 +35,19 @@ class Fixture:
             reply = await context.llm.complete(
                 [{"role": "user", "content": request.payload.get("input", "test")}],
                 emit_progress=True,
+                allow_incomplete=request.payload.get("allow_incomplete", False),
             )
             output = {
                 "text": reply.text,
                 "model": reply.model,
                 "usage": reply.usage,
+                "finish_reason": reply.finish_reason,
                 "info": info,
             }
+            artifact_ids = ()
+            if request.payload.get("publish_empty"):
+                artifact = await context.put_bytes("report.txt", b"Completed report")
+                artifact_ids = (artifact["id"],)
             if request.payload.get("twice"):
                 second = await context.llm.complete(
                     [{"role": "user", "content": "second node"}]
@@ -51,7 +57,8 @@ class Fixture:
             if not request.payload.get("capture_error"):
                 raise
             output = {"error_code": exc.code, "info": info}
-        yield AdapterEvent(type="completed", result=TaskResult(output=output))
+            artifact_ids = ()
+        yield AdapterEvent(type="completed", result=TaskResult(output=output, artifact_ids=artifact_ids))
 
     async def cancel(self, run_ref):
         return CancelReceipt(accepted=True)

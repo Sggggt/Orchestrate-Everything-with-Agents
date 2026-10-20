@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from urllib.parse import urlsplit
+import time
 
 import httpx
 
 from .errors import AdapterFailure, RuntimeFault, require
-from .models import AdapterEvent, LLMRequest, LLMResponse
+from .models import AdapterEvent, LLMRequest, LLMResponse, TaskResult
 
 
 def model_required(config):
@@ -84,24 +84,49 @@ async def sse_data(response, max_bytes=1024 * 1024):
             )
 
 
+async def drain_completion(stream):
+    """Return a settled SSE connection to the pool without waiting on an open tail."""
+    try:
+        async with asyncio.timeout(0.1):
+            characters = 0
+            async for data in stream:
+                characters += len(data)
+                if characters > 65536:
+                    return False
+            return True
+    except (TimeoutError, httpx.HTTPError, RuntimeFault):
+        # The terminal marker already settled the model result. A slow or bad
+        # transport tail closes this connection instead of invalidating it.
+        return False
+
+
 class ConfiguredLLM:
     def __init__(self, config, api_key=""):
         self.config = config.model_copy(deep=True)
         self.api_key = api_key
 
-    async def stream_completion(self, messages, context, tools=None, tool_choice=None):
+    async def stream_completion(self, messages, context, tools=None, tool_choice=None, *, purpose="model", project_context=True):
         require(
             self.config.base_url and self.config.model,
             "AGENT_NOT_CONFIGURED",
             "Configure an API endpoint and model first",
         )
+        from .context_projection import prepare_context
+        context_view = None
+        if project_context:
+            context_started = time.perf_counter()
+            messages, context_view = await prepare_context(messages, tools, context, self)
+            context_view["duration_ms"] = round((time.perf_counter() - context_started) * 1000, 3)
         from .workspace import model_images
         messages = await model_images(messages, context)
+        output_limit = self.config.max_output_tokens
+        if getattr(context, "request", None) is not None and context.request.continuation:
+            output_limit = await context._runtime.continuations.reserve_model(context, output_limit)
         body = {"model": self.config.model, "messages": messages, "stream": True}
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature
-        if self.config.max_output_tokens is not None:
-            body[self.config.token_parameter] = self.config.max_output_tokens
+        if output_limit is not None:
+            body[self.config.token_parameter] = output_limit
         if tools:
             body["tools"] = tools
             choice = tool_choice if tool_choice is not None else getattr(context, "model_tool_choice", None)
@@ -110,18 +135,26 @@ class ConfiguredLLM:
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = "Bearer " + self.api_key
-        calls, text, completed, finish_reason = {}, "", False, None
+        calls, text, completed, finish_reason, usage, refused = {}, "", False, None, {}, False
+        from .tracing import RunStage
+        stage = RunStage(context, purpose, model=self.config.model, max_output_tokens=output_limit)
+        if context_view:
+            stage.attributes["context"] = context_view
+        await stage.record("RUNNING")
+        if purpose == "model" and getattr(context, "request", None) is not None:
+            context.partial_model_result = None
+        failure, cancelled = None, False
         try:
-            async with httpx.AsyncClient(
-                timeout=self.config.timeout_seconds, follow_redirects=False,
-                trust_env=urlsplit(self.config.base_url).hostname not in {"localhost", "127.0.0.1", "::1"},
-            ) as client:
+            async with context._runtime.model_transport.borrow(self.config.base_url) as client:
                 async with client.stream(
                     "POST",
                     self.config.base_url + "/chat/completions",
                     json=body,
                     headers=headers,
+                    timeout=self.config.timeout_seconds,
                 ) as response:
+                    stage.attributes["response_headers_ms"] = stage.elapsed()
+                    stage.attributes["http_status"] = response.status_code
                     if response.status_code >= 400:
                         if response.status_code in {400, 415, 422} and any(
                             isinstance(message.get("content"), list) and any(block.get("type") == "image_url" for block in message["content"])
@@ -131,6 +164,8 @@ class ConfiguredLLM:
                             f"LLM API returned HTTP {response.status_code}",
                             retryable=response.status_code in {429, 502, 503, 504},
                             safe_to_retry=True,
+                            code="MODEL_HTTP_ERROR",
+                            details={"stage": "model", "origin": "provider_response", "http_status": response.status_code},
                         )
                     require(
                         "text/event-stream"
@@ -138,12 +173,16 @@ class ConfiguredLLM:
                         "ADAPTER_PROTOCOL_ERROR",
                         "LLM endpoint did not return an SSE stream",
                     )
-                    async for data in sse_data(response):
+                    stream = sse_data(response)
+                    async for data in stream:
+                        if "first_event_ms" not in stage.attributes:
+                            stage.attributes["first_event_ms"] = stage.elapsed()
                         if context.cancelled.is_set():
                             raise asyncio.CancelledError
                         data = data.strip()
                         if data == "[DONE]":
                             completed = True
+                            stage.attributes["stream_drained"] = await drain_completion(stream)
                             break
                         if not data:
                             continue
@@ -156,9 +195,11 @@ class ConfiguredLLM:
                             ) from None
                         if "error" in chunk:
                             raise AdapterFailure(
-                                "LLM provider reported a streaming error"
+                                "LLM provider reported a streaming error", code="MODEL_STREAM_ERROR",
+                                details={"stage": "model", "origin": "provider_response"},
                             )
                         if chunk.get("usage"):
+                            usage = chunk["usage"]
                             yield AdapterEvent(
                                 type="usage", payload={"usage": chunk["usage"]}
                             )
@@ -167,8 +208,11 @@ class ConfiguredLLM:
                             continue
                         choice = choices[0]
                         delta = choice.get("delta", {})
+                        refused = refused or bool(delta.get("refusal"))
                         content = delta.get("content")
                         if isinstance(content, str) and content:
+                            if "first_content_ms" not in stage.attributes:
+                                stage.attributes["first_content_ms"] = stage.elapsed()
                             text += content
                             require(
                                 len(text.encode()) <= 4 * 1024 * 1024,
@@ -221,21 +265,71 @@ class ConfiguredLLM:
                         "ADAPTER_PROTOCOL_ERROR",
                         "LLM stream ended without a final boundary",
                     )
-        except httpx.HTTPError:
-            raise AdapterFailure(
-                "LLM connection failed or timed out",
+                    if finish_reason not in {"length", "max_tokens", "refusal", "content_filter"}:
+                        require(all(call["id"] and call["function"]["name"] for call in calls.values()),
+                                "ADAPTER_PROTOCOL_ERROR", "Model tool calls require an ID and function name")
+                        require(len({call["id"] for call in calls.values()}) == len(calls),
+                                "ADAPTER_PROTOCOL_ERROR", "Model tool call IDs must be unique")
+        except httpx.HTTPError as exc:
+            failures = (
+                (httpx.PoolTimeout, "MODEL_POOL_TIMEOUT", "Model connection pool wait timed out", "pool"),
+                (httpx.ConnectTimeout, "MODEL_CONNECT_TIMEOUT", "Model connection establishment timed out", "connect"),
+                (httpx.ReadTimeout, "MODEL_READ_TIMEOUT", "Waiting for the model response timed out", "read"),
+                (httpx.WriteTimeout, "MODEL_WRITE_TIMEOUT", "Sending the model request timed out", "write"),
+                (httpx.ConnectError, "MODEL_CONNECTION_FAILED", "Model connection could not be established", "connect"),
+                (httpx.RemoteProtocolError, "MODEL_PROTOCOL_ERROR", "Model connection ended with a protocol error", "response"),
+            )
+            code, message, operation = next(((code, message, operation) for cls, code, message, operation in failures if isinstance(exc, cls)),
+                                           ("MODEL_TRANSPORT_ERROR", "Model transport failed", "transport"))
+            failure = AdapterFailure(
+                message, code=code,
                 retryable=True,
                 safe_to_retry=not text and not calls,
-            ) from None
+                details={"stage": "model", "origin": "transport", "operation": operation,
+                         "exception_type": type(exc).__name__, "partial_response": bool(text or calls)},
+            )
+            raise failure from None
+        except RuntimeFault as exc:
+            failure = exc
+            raise
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            stage.attributes.update(finish_reason=finish_reason, usage=usage, output_chars=len(text))
+            if purpose == "model" and completed and not failure and getattr(context, "request", None) is not None:
+                stage.attributes["tool_calls"] = [{"id": call["id"], "name": call["function"]["name"]} for call in calls.values()]
+                causes = getattr(context, "model_tool_causes", None)
+                if causes is None:
+                    context.model_tool_causes = causes = {}
+                for call in calls.values():
+                    if finish_reason not in {"length", "max_tokens", "refusal", "content_filter"}:
+                        causes[(stage.id, call["id"])] = call["function"]["name"]
+                while len(causes) > 128:
+                    causes.pop(next(iter(causes)))
+            state = ("CANCELLED" if cancelled else "FAILED" if failure or not completed else
+                     "INCOMPLETE" if finish_reason in {"length", "max_tokens", "content_filter"} or refused else "SUCCEEDED")
+            await stage.record(state, failure)
+            if purpose == "model" and state in {"FAILED", "CANCELLED"} and (text or usage) and getattr(context, "request", None) is not None:
+                partial_text = await context._runtime.continuations.merge_output(context, text)
+                context.partial_model_result = TaskResult(output={"text": partial_text}, metadata={
+                    "model_completion": {"finish_reason": finish_reason or "stream_error", "usage": usage},
+                    "acceptance": {"state": "FAILED", "checks": ["model_completion"],
+                                   "failures": [{"code": failure.code if failure else "MODEL_STREAM_INTERRUPTED"}],
+                                   "semantic_review": "UNVERIFIED"}})
+        if purpose == "model" and not calls and getattr(context, "request", None) is not None:
+            text = await context._runtime.continuations.merge_output(context, text)
         yield {
+            "call_id": stage.id,
             "text": text,
             "calls": [calls[k] for k in sorted(calls)],
-            "finish_reason": finish_reason,
+            "finish_reason": "refusal" if refused else finish_reason,
+            "usage": usage,
         }
 
-    async def complete(self, messages, context, *, tools=None, on_event=None, tool_choice=None):
+    async def complete(self, messages, context, *, tools=None, on_event=None, tool_choice=None, purpose="model", project_context=True):
         usage, result = {}, None
-        async for event in self.stream_completion(messages, context, tools, tool_choice):
+        async for event in self.stream_completion(messages, context, tools, tool_choice, purpose=purpose, project_context=project_context):
             if isinstance(event, dict):
                 result = event
             else:
@@ -249,6 +343,7 @@ class ConfiguredLLM:
             "Model did not return a completion",
         )
         return LLMResponse(
+            call_id=result["call_id"],
             model=self.config.model,
             text=result["text"],
             tool_calls=result["calls"],
@@ -283,6 +378,8 @@ class RunLLM:
                     "model",
                     "temperature",
                     "max_output_tokens",
+                    "context_window_tokens",
+                    "context_budget_tokens",
                     "token_parameter",
                     "timeout_seconds",
                 )
@@ -290,7 +387,8 @@ class RunLLM:
         }
 
     async def complete(
-        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None
+        self, messages, *, tools=None, include_instructions=True, emit_progress=False, tool_choice=None,
+        allow_incomplete=False
     ):
         from pydantic import ValidationError
 
@@ -301,6 +399,7 @@ class RunLLM:
                 include_instructions=include_instructions,
                 emit_progress=emit_progress,
                 tool_choice=tool_choice,
+                allow_incomplete=allow_incomplete,
             )
         except ValidationError:
             raise RuntimeFault(
@@ -341,6 +440,8 @@ class RunLLM:
         from .operations import OPERATIONS_GUIDANCE, COORDINATOR_GUIDANCE
         context, runtime = self.context, self.context._runtime
         messages = list(request.messages)
+        if context.request.continuation:
+            messages.append({"role": "user", "content": (context.request.resume_input or {}).get("content", "Complete the retained result.")})
         if request.include_instructions:
             instructions = "\n\n".join(
                 filter(
@@ -399,4 +500,22 @@ class RunLLM:
                                         "run.progress", {"delta": tail, "format": "markdown", "channel": "summary"})
         await context.check_current()
         safe = runtime.clean_json(response.model_dump(mode="json"), 524288)
-        return LLMResponse.model_validate(safe)
+        response = LLMResponse.model_validate(safe)
+        failure = None
+        if response.finish_reason in {"length", "max_tokens"}:
+            failure = ("OUTPUT_TRUNCATED", "Model output reached its limit")
+        elif response.finish_reason in {"refusal", "content_filter"}:
+            failure = ("MODEL_REFUSED", "Model did not provide the requested result")
+        elif not response.tool_calls and not response.text.strip() and context.request.result_policy.kind != "artifacts":
+            failure = ("EMPTY_OUTPUT", "Model did not provide nonempty result text")
+        context.incomplete_model_completion = None
+        if failure:
+            context.incomplete_model_completion = {"finish_reason": response.finish_reason, "usage": response.usage,
+                                                   "empty": not response.text.strip() and not response.tool_calls}
+            context.partial_model_result = TaskResult(output={"text": response.text}, metadata={
+                "model_completion": context.incomplete_model_completion,
+                "acceptance": {"state": "FAILED", "checks": ["model_completion"],
+                               "failures": [{"code": failure[0]}], "semantic_review": "UNVERIFIED"}})
+            if not request.allow_incomplete or response.tool_calls:
+                raise RuntimeFault(*failure, details={"stage": "model", "finish_reason": response.finish_reason})
+        return response

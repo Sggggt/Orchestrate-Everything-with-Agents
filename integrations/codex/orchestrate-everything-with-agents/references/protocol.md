@@ -32,7 +32,7 @@ pointer 是 JSON Pointer；对象键里的 `/` 编码成 `~1`，`~` 编码成 `~
 
 ## 幂等、状态与授权
 
-一个逻辑动作一个幂等键；网络重试原动作时参数与键保持一致。修改语义才生成新键。sessions.create / threads.create / fork / 文件上传没有调用方幂等键，未知结果先核对现有对象。
+一个逻辑动作一个幂等键；网络重试原动作时参数与键保持一致。修改语义才生成新键。threads.fork 和 tasks.continue_result 支持稳定键。sessions.create / threads.create / 文件上传没有调用方幂等键，未知结果先核对现有对象。
 
 主要状态：QUEUED、RUNNING、WAITING、SUCCEEDED、FAILED、CANCELLED、SKIPPED、UNCERTAIN。WAITING 释放执行槽；UNCERTAIN 保留需要核对的边界。WAIT_TIMEOUT 是客户端等待结束，不表示任务失败。
 

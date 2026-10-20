@@ -7,6 +7,7 @@ import { createWorkflowUI } from "/assets/workflows.js";
 import { createAgentStatusIndex } from "/assets/agent-status.mjs";
 import { messageItems, matchesMessageFilter } from "/assets/message-feed.mjs";
 import { api } from "/assets/api.mjs";
+import { canContinue, executionTrace } from "/assets/execution-view.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -134,6 +135,8 @@ const state = {
   workflowRows: [],
   resources: [],
   turnRequests: new Map(),
+  forkRequests: new Map(),
+  continuationRequests: new Map(),
   savingSettings: false,
   testingModelId: null,
   modelTestResult: null,
@@ -409,7 +412,7 @@ function chat() {
   const pending = state.snapshot.messages.filter(
     (m) => m.target_thread_id === t.id && m.state === "PENDING",
   );
-  return `<div class="chat-layout ${state.inspectorOpen ? "show-inspector" : ""}"><section class="chat-panel"><header class="chat-header">${avatar(t.agent_id, true)}<div><h2>${escape(t.title)}</h2><p>${escape(a?.model || (a?.kind === "mock" ? "Mock · 本地执行" : "独立执行端"))} · 上下文版本 ${t.revision}</p></div><div class="chat-header-actions"><button class="icon-btn" data-action="toggle-inspector" title="执行详情" aria-label="切换执行详情" aria-expanded="${state.inspectorOpen}">${icon("panel")}</button><button class="btn small" data-action="compose-message">${icon("mail")}协作消息</button><button class="icon-btn" data-action="fork" data-id="${escape(t.id)}" title="从最近保存的进度创建分支" aria-label="创建对话分支" ${!t.latest_checkpoint_id ? "disabled" : ""}>${icon("branch")}</button></div></header>
+  return `<div class="chat-layout ${state.inspectorOpen ? "show-inspector" : ""}"><section class="chat-panel"><header class="chat-header">${avatar(t.agent_id, true)}<div><h2>${escape(t.title)}</h2><p>${escape(a?.model || (a?.kind === "mock" ? "Mock · 本地执行" : "独立执行端"))} · 上下文版本 ${t.revision}</p></div><div class="chat-header-actions"><button class="icon-btn" data-action="toggle-inspector" title="执行详情" aria-label="切换执行详情" aria-expanded="${state.inspectorOpen}">${icon("panel")}</button><button class="btn small" data-action="compose-message">${icon("mail")}协作消息</button><button class="icon-btn" data-action="fork" data-id="${escape(t.id)}" title="从最近保存的进度创建分支" aria-label="创建对话分支" ${!t.latest_checkpoint_id || !t.adapter_snapshot?.supports_fork ? "disabled" : ""}>${icon("branch")}</button></div></header>
     <div class="conversation" aria-label="对话记录">${conversation?.has_more ? '<button class="btn small load-more" data-action="older">加载更早的消息</button>' : ""}${!conversation ? '<div class="loading-inline">正在读取对话记录…</div>' : conversation.items.length ? conversation.items.map((entry) => message(entry, t)).join("") : empty("这是一个独立的对话", "向这个 agent 描述目标，或启动待应用的协作消息。")}
       <div id="live-messages">${live.map((stream) => streamMessage(stream, t)).join("")}</div>
       ${current?.state === "WAITING" ? `<div class="storage-note">${icon("clock")}<div>任务已暂停并保存进度，可在补充信息后继续。${current.wait?.kind === "input" ? '<button class="text-link" data-action="task-detail" data-id="' + escape(current.id) + '">提供输入并恢复 →</button>' : current.wait?.kind === "message" ? "等待协作消息到达。" : "等待子任务完成。"}</div></div>` : ""}
@@ -441,7 +444,7 @@ function chat() {
 }
 function message(entry, t) {
   const user = entry.role === "user";
-  return `<article class="message ${user ? "user" : ""}">${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong><time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}</div></article>`;
+  return `<article class="message ${user ? "user" : ""}">${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong><time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}${!user && entry.task_id ? `<button class="text-link message-execution" data-action="task-detail" data-id="${escape(entry.task_id)}">${entry.metadata?.acceptance?.state === "FAILED" ? "结果未完整交付 · 查看原因" : "执行详情"}</button>` : ""}${!user && entry.metadata?.checkpoint_id && t.adapter_snapshot?.supports_fork ? `<button class="text-link message-execution" data-action="fork" data-id="${escape(entry.thread_id)}" data-checkpoint="${escape(entry.metadata.checkpoint_id)}">从此处分支</button>` : ""}</div></article>`;
 }
 function streamMessage(stream, t) {
   return `<article class="message streaming">${avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${escape(agent(t.agent_id)?.name || t.title)}</strong><span>正在执行</span></div><div class="message-text">${markdown(stream.text)}</div><div class="stream-label"><span class="typing-dots"><i></i><i></i><i></i></span>${escape(stream.tool || "正在输出")}</div></div></article>`;
@@ -626,7 +629,7 @@ function modelSetupNotice(d) {
 function agentGeneral(d) {
   return `<section class="form-section"><h3>基本信息</h3><div class="form-grid">${field("显示名称", "name", d.name, { placeholder: "为这个 agent 命名" })}${field("Agent ID", "id", d.id, { readonly: !!state.settingsId, placeholder: "小写字母、数字和连字符" })}<label class="field">执行方式<select data-setting="kind" data-focus="setting-kind"><option value="llm" ${d.kind === "llm" ? "selected" : ""}>模型 API（兼容 OpenAI）</option><option value="mock" ${d.kind === "mock" ? "selected" : ""}>本机协议验证（无模型）</option><option value="process" ${d.kind === "process" ? "selected" : ""}>本机 Agent 程序</option></select></label>${field("并发上限", "max_concurrency", d.max_concurrency, { type: "number", hint: "同一对话每次只执行一个任务。" })}</div></section>
     ${d.kind === "process" ? `<section class="form-section"><h3>模型接入</h3><label class="toggle-row"><span>使用平台统一模型<small>此执行端需要模型推理时开启；纯文件处理或计算可以关闭。</small></span><input type="checkbox" data-setting="llm_required" data-focus="setting-llm_required" ${d.llm_required ? "checked" : ""}></label></section>` : ""}
-    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API 地址", "base_url", d.base_url, { placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}</div><details class="form-advanced"><summary>模型高级参数</summary><div class="form-grid">${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></details></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
+    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API 地址", "base_url", d.base_url, { placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}</div><details class="form-advanced"><summary>模型高级参数</summary><div class="form-grid">${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("模型上下文上限（可选）", "context_window_tokens", d.context_window_tokens, { type: "number", placeholder: "未知时留空", hint: "按模型规格填写；留空时使用保守预算，历史内容由平台自动管理。" })}${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></details></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
     ${d.kind === "process" ? agentLaunch.panel(d) : ""}<section class="form-section"><h3>行为与协作</h3><details class="form-advanced"><summary>编辑系统指令</summary><label class="field">系统指令<textarea data-setting="system_prompt" data-focus="setting-system_prompt" placeholder="定义执行端的工作方式与输出要求。">${escape(d.system_prompt)}</textarea></label></details><div class="instruction-preview">${content(d.system_prompt || "尚未添加系统指令。可在“工作指令”中定义职责与交付要求。")}</div><label class="toggle-row"><span>启用协作工具<small>允许同空间消息、子任务提交和 checkpoint 等待。</small></span><input type="checkbox" data-setting="collaboration" ${d.collaboration ? "checked" : ""}></label><label class="toggle-row"><span>启用 Agent<small>关闭后停止新派发，保留历史记录。</small></span><input type="checkbox" data-setting="enabled" ${d.enabled ? "checked" : ""}></label></section>`;
 }
 function workbenchSettings(d) {
@@ -831,6 +834,7 @@ function renderModal() {
   const root = $("#modal-root"),
     m = state.modal;
   const wasOpen = !!root.firstElementChild;
+  const openTraceNodes = new Set([...root.querySelectorAll("details[data-trace-node][open]")].map(node => node.dataset.traceNode));
   const memory = focusMemory();
   const modalScroll = root.querySelector(".modal-content")?.scrollTop || 0;
   const sourceScroll = root.querySelector(".artifact-source");
@@ -939,6 +943,7 @@ function renderModal() {
     wide = !!extensionModal.wide;
   }
   root.innerHTML = `<div class="modal-backdrop ${wasOpen ? "continuing" : ""}"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><header><h2 id="dialog-title">${title}</h2><button class="icon-btn" data-action="close-modal" aria-label="关闭对话框" ${m.pending ? "disabled" : ""}>${icon("close")}</button></header><div class="modal-content">${content}</div><footer>${footer}</footer></section></div>`;
+  for (const node of root.querySelectorAll("details[data-trace-node]")) node.open = openTraceNodes.has(node.dataset.traceNode);
   if (m.type === "artifact") {
     const source = root.querySelector(".artifact-source code");
     if (source) {
@@ -952,10 +957,13 @@ function renderModal() {
 }
 function taskDetail(task) {
   if (!task) return '<div class="loading-inline">正在读取任务…</div>';
-  return `<div class="task-detail"><div class="split">${badge(task.state)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3>${content(task.spec?.payload?.input || task.title || "协作任务")}${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>状态说明</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>完成结果</h3><div class="message-text">${markdown(task.result.summary_markdown || "任务已完成，完整内容已保留供协作使用。")}</div>` : ""}
+  const partial = task.result?.metadata?.acceptance?.state === "FAILED";
+  const modal = state.modal;
+  return `<div class="task-detail"><div class="split">${badge(task.state)}<span class="task-id">${escape(task.id)}</span></div><h3>指令</h3>${content(task.spec?.payload?.input || task.title || "协作任务")}${task.queue_reason ? `<p>等待原因：${escape(task.queue_reason === "MODEL_CONFIGURATION" ? "等待模型配置（保存后自动继续）" : task.queue_reason)}</p>` : ""}${task.error ? `<h3>状态说明</h3><div class="message-text">${markdown(task.error.safe_message || task.error.code || "执行异常")}</div>` : ""}${task.result ? `<h3>${partial ? "部分结果" : "交付结果"}</h3><div class="message-text">${markdown(task.result.summary_markdown || (partial ? "未取得有效正文，可查看执行过程与已保存产物。" : "结果已保存，完整内容可供协作读取。"))}</div>` : ""}
+    ${modal?.trace ? executionTrace(modal.trace, modal.receipts, modal.receiptLoading) : ""}${modal?.traceError ? `<p class="execution-error" role="alert">${escape(modal.traceError)}</p>` : ""}${!modal?.trace || modal.trace.has_more ? `<button class="text-link" data-action="task-trace" ${modal?.traceLoading ? "disabled" : ""}>${modal?.traceLoading ? "正在读取…" : modal?.trace ? "加载更多执行记录" : "查看执行过程"}</button>` : ""}
     <h3>执行尝试</h3>${(task.runs || []).map((r) => `<div class="kv"><span>Run ${r.attempt_no} · ${time(r.started_at)}</span><strong>${escape(statuses[r.state] || r.state)}</strong></div>`).join("") || "<p>尚未派发。</p>"}
     ${task.spec?.depends_on?.length ? `<h3>依赖任务</h3>${task.spec.depends_on.map((id) => `<button class="text-link" data-action="task-detail" data-id="${escape(id)}">${escape(id)}</button>`).join("<br>")}` : ""}
-    <div class="inline-actions">${["RUNNING", "QUEUED", "WAITING"].includes(task.state) ? `<button class="btn danger" data-action="cancel-task" data-id="${escape(task.id)}">提交取消申请</button>` : ""}${terminal.has(task.state) ? `<button class="btn" data-action="retry-task" data-id="${escape(task.id)}">创建重试任务</button>` : ""}</div>
+    <div class="inline-actions">${canContinue(task, thread(task.thread_id)) ? `<button class="btn primary" data-action="continue-task" data-id="${escape(task.id)}">继续完善</button>` : ""}${["RUNNING", "QUEUED", "WAITING"].includes(task.state) ? `<button class="btn danger" data-action="cancel-task" data-id="${escape(task.id)}">提交取消申请</button>` : ""}${terminal.has(task.state) ? `<button class="btn" data-action="retry-task" data-id="${escape(task.id)}">创建重试任务</button>` : ""}</div>
     ${task.state === "WAITING" && task.wait?.kind === "input" ? `<h3>提供等待输入</h3><label class="field"><textarea id="resume-content" data-focus="resume-content" aria-label="恢复任务的补充信息" placeholder="为当前任务提供输入">${escape(state.modal?.resume || "")}</textarea></label><div class="toolbar"><button class="btn primary" data-action="resume-task" data-id="${escape(task.id)}">恢复任务</button></div>` : ""}
     ${
       task.state === "UNCERTAIN"
@@ -1120,6 +1128,14 @@ function connectEvents(epoch) {
     if (value.durable) {
       if (value.seq <= state.cursor) return;
       state.cursor = value.seq;
+      if (value.type === "run.stage") {
+        const modal = state.modal;
+        if (modal?.type === "task" && modal.task?.id === value.task_id && modal.trace) {
+          modal.trace.items = [...modal.trace.items, { ...value.payload, seq: value.seq, run_id: value.run_id }].slice(-200);
+          renderModal();
+        }
+        return;
+      }
       state.events.push(value);
       state.events = state.events.slice(-100);
       workflowUI.onEvent(value).catch((error) => toast(error.message, true));
@@ -1208,6 +1224,9 @@ async function refreshSession() {
   )
     return;
   state.snapshot = snapshot;
+  for (const [id, request] of state.continuationRequests) {
+    if ((snapshot.tasks.find(task => task.id === id)?.continuation_runs ?? 0) > request.runs) state.continuationRequests.delete(id);
+  }
   state.runtime = bootstrap.runtime;
   state.projects = bootstrap.projects || [];
   state.agents = bootstrap.agents;
@@ -1577,7 +1596,7 @@ async function action(name, element) {
   if (name === "test-model") {
     const d = state.settingsDraft, saved = agent(state.settingsId);
     if (!saved || state.testingModelId || state.savingSettings) return;
-    const fields = ["kind", "llm_required", "base_url", "model", "temperature", "max_output_tokens", "token_parameter", "timeout_seconds"];
+    const fields = ["kind", "llm_required", "base_url", "model", "temperature", "max_output_tokens", "context_window_tokens", "context_budget_tokens", "token_parameter", "timeout_seconds"];
     if (d.api_key || fields.some((key) => (d[key] ?? null) !== (saved[key] ?? null))) {
       toast("请先保存模型配置，再测试连接。", true);
       return;
@@ -1651,7 +1670,7 @@ async function action(name, element) {
   if (name === "process-messages") await sendTurn(state.selectedThread, "");
   if (name === "process-target") await sendTurn(id, "");
   if (name === "task-detail") {
-    const modal = { type: "task", task: null };
+    const modal = { type: "task", task: null, receipts: {}, receiptLoading: new Set() };
     state.modal = modal;
     renderModal();
     const task = await api(`/tasks/${id}`);
@@ -1659,6 +1678,67 @@ async function action(name, element) {
       modal.task = task;
       renderModal();
     }
+  }
+  if (name === "task-trace") {
+    const modal = state.modal;
+    if (modal?.type !== "task" || !modal.task || modal.traceLoading) return;
+    modal.traceLoading = true;
+    modal.traceError = null;
+    renderModal();
+    try {
+      const cursor = modal.trace?.has_more ? `?cursor=${encodeURIComponent(modal.trace.cursor)}` : "";
+      const trace = await api(`/tasks/${encodeURIComponent(modal.task.id)}/trace${cursor}`);
+      modal.trace = { ...trace, items: [...(modal.trace?.items || []), ...trace.items],
+        tools: modal.trace?.tools || trace.tools, tools_has_more: modal.trace?.tools_has_more ?? trace.tools_has_more };
+    } catch (error) { modal.traceError = error.message; }
+    finally { modal.traceLoading = false; if (state.modal === modal) renderModal(); }
+    return;
+  }
+  if (name === "tool-receipt") {
+    const modal = state.modal;
+    if (modal?.type !== "task" || !modal.task || modal.receiptLoading.has(id)) return;
+    if (modal.receipts[id]) { delete modal.receipts[id]; renderModal(); return; }
+    modal.receiptLoading.add(id);
+    modal.traceError = null;
+    renderModal();
+    try {
+      const response = await api("/rpc", { method: "POST", body: { method: "workbench.calls",
+        params: { task_id: modal.task.id, tool_call_id: id } } });
+      modal.receipts[id] = response.result;
+    } catch (error) { modal.traceError = error.message; }
+    finally { modal.receiptLoading.delete(id); if (state.modal === modal) renderModal(); }
+    return;
+  }
+  if (name === "trace-tools") {
+    const modal = state.modal;
+    if (modal?.type !== "task" || !modal.trace || modal.toolsLoading) return;
+    modal.toolsLoading = true;
+    try {
+      const { result } = await api("/rpc", { method: "POST", body: { method: "workbench.calls",
+        params: { task_id: modal.task.id, cursor: modal.toolsCursor || "", limit: 50 } } });
+      const calls = new Map(modal.trace.tools.map(call => [call.id, call]));
+      for (const call of result.items) if (!calls.has(call.id)) calls.set(call.id, call);
+      modal.trace.tools = [...calls.values()];
+      modal.toolsCursor = result.next_cursor;
+      modal.trace.tools_has_more = !!result.next_cursor;
+    } catch (error) { modal.traceError = error.message; }
+    finally { modal.toolsLoading = false; if (state.modal === modal) renderModal(); }
+    return;
+  }
+  if (name === "continue-task") {
+    const task = state.modal?.task;
+    if (task?.id !== id) return;
+    let request = state.continuationRequests.get(id);
+    if (!request) {
+      request = { key: idempotency(), runs: task.continuation_runs || 0 };
+      state.continuationRequests.set(id, request);
+    }
+    await api(`/tasks/${encodeURIComponent(id)}/continue`, { method: "POST", body: { idempotency_key: request.key } });
+    state.continuationRequests.delete(id);
+    state.modal = null;
+    await refreshSession();
+    toast("已继续完善原任务");
+    return;
   }
   if (name === "cancel-task") {
     await api(`/tasks/${id}/cancel`, { method: "POST", body: {} });
@@ -1710,13 +1790,20 @@ async function action(name, element) {
     toast("核对依据与处理结果已保存");
   }
   if (name === "fork") {
-    const value = await api(`/threads/${id}/fork`, {
+    const slot = id + ":" + (element.dataset.checkpoint || "latest");
+    let request = state.forkRequests.get(slot);
+    if (!request) {
+      request = { idempotency_key: idempotency(), checkpoint_id: element.dataset.checkpoint || thread(id)?.latest_checkpoint_id };
+      state.forkRequests.set(slot, request);
+    }
+    const value = await api(`/threads/${encodeURIComponent(id)}/fork`, {
       method: "POST",
-      body: {},
+      body: request,
     });
-    state.snapshot.threads.push(value);
+    state.forkRequests.delete(slot);
+    if (!thread(value.id)) state.snapshot.threads.push(value);
     await selectThread(value.id);
-    toast("已从已提交的 checkpoint 创建分支");
+    toast("已从保存的结果创建分支");
   }
   if (name === "older") {
     await refreshConversation(state.selectedThread, true);
@@ -1811,6 +1898,7 @@ const writeActions = new Set([
   "process-target",
   "cancel-task",
   "retry-task",
+  "continue-task",
   "resume-task",
   "reconcile-task",
   "fork",
@@ -1878,6 +1966,7 @@ document.addEventListener("input", (event) => {
       [
         "temperature",
         "max_output_tokens",
+        "context_window_tokens",
         "max_concurrency",
         "timeout_seconds",
       ].includes(e.dataset.setting)
@@ -1957,6 +2046,8 @@ document.addEventListener("submit", async (event) => {
         "workbench",
         "temperature",
         "max_output_tokens",
+        "context_window_tokens",
+        "context_budget_tokens",
         "token_parameter",
         "timeout_seconds",
         "max_concurrency",

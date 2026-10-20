@@ -1,11 +1,11 @@
 """Finite execution constraints and durable evidence shared by all adapters."""
 
 from .errors import require
-from .models import TaskSpec, UsePolicy, content_hash, now_ms
+from .models import ResultPolicy, TaskSpec, UsePolicy, content_hash, now_ms
 from .store import rows
 
 PLATFORM_TOOLS = frozenset({"list_threads", "send_message", "submit_task", "spawn_instances", "put_file", "put_bytes"})
-LIFECYCLE_TOOLS = frozenset({"wait_for_tasks", "wait_for_message", "wait_for_input", "report_issue", "operations"})
+LIFECYCLE_TOOLS = frozenset({"wait_for_tasks", "wait_for_message", "wait_for_input", "report_issue", "operations", "read_context"})
 
 
 def request_hash(spec):
@@ -14,6 +14,14 @@ def request_hash(spec):
     for key in ("tool_policy", "skill_policy"):
         if getattr(spec, key) == UsePolicy():
             value.pop(key)
+    if spec.result_policy == ResultPolicy():
+        value.pop("result_policy")
+    if spec.context_budget_tokens is None:
+        value.pop("context_budget_tokens")
+    if not spec.context_refs:
+        value.pop("context_refs")
+    if spec.continuation_policy is None:
+        value.pop("continuation_policy")
     return content_hash(value)
 
 
