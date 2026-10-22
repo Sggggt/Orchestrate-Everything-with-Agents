@@ -143,6 +143,8 @@ class ArtifactStore:
                 ),
             )
             if not internal:
+                if caller_run_id:
+                    self.runtime.budgets.progress(db, task.id, "publish_artifact", {"name": name, "sha256": checksum})
                 emit(db, "artifact.created", session_id=session_id, payload={"artifact_id": artifact_id, "name": name})
 
         await self.runtime.store.call(insert, transaction=True)

@@ -380,7 +380,7 @@ class Sessions:
                     public(r)
                     for r in rows(
                         db,
-                        "SELECT * FROM messages WHERE session_id=? AND (state IN ('PENDING','OFFERED') OR id IN (SELECT id FROM messages WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200)) ORDER BY created_at DESC,rowid DESC",
+                        "SELECT * FROM messages WHERE session_id=? AND (state IN ('PENDING','OFFERED') OR id IN (SELECT id FROM messages WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200)) ORDER BY created_at DESC,rowid DESC" + (" LIMIT 200" if presentation else ""),
                         (session_id, session_id),
                     )
                 ],
@@ -403,14 +403,21 @@ class Sessions:
             reports = [dict(r) for r in rows(db,
                 "SELECT r.id,t.thread_id,r.task_id,r.summary AS summary_markdown,r.wait_for_guidance,r.reply_message_id IS NOT NULL AS replied,r.created_at FROM operations_reports r JOIN tasks t ON t.id=r.task_id WHERE r.session_id=? ORDER BY r.created_at DESC,r.rowid DESC LIMIT 10",
                 (session_id,))] if presentation else []
-            return snapshot, attention, failed, reports
+            activity = self.rt.supervision.summaries(db, session_id) if presentation else []
+            positions = self.rt.supervision.display_positions(db, snapshot.messages, reports) if presentation else {}
+            delivery = {row.message_id: row.state for row in rows(db,
+                "SELECT message_id,state FROM message_delivery WHERE message_id IN (" + ",".join("?" for _ in snapshot.messages) + ")",
+                tuple(item.id for item in snapshot.messages))} if presentation and snapshot.messages else {}
+            return snapshot, attention, failed, reports, activity, positions, delivery
 
-        result, attention, failed, reports = await self.rt.store.call(read, transaction=True)
+        result, attention, failed, reports, activity, positions, delivery = await self.rt.store.call(read, transaction=True)
         if presentation:
             from .presentation import markdown_summary, result_summary
             value = result.model_dump(mode="json")
             value["attention_thread_ids"] = attention
             value["failed_thread_ids"] = failed
+            value["thread_activity"] = activity
+            value["message_activity"] = positions
             value["agent_reports"] = [{**report, "summary_markdown": markdown_summary(report["summary_markdown"], limit=320),
                                        "wait_for_guidance": bool(report["wait_for_guidance"]), "replied": bool(report["replied"])}
                                       for report in reports]
@@ -423,6 +430,9 @@ class Sessions:
                     task["result"]["output"] = {}
                     task["result"]["summary_markdown"] = summary
             for message in value["messages"]:
+                message["delivery_state"] = delivery.get(message["id"], message["state"])
+                if message["delivery_state"] in {"REJECTED", "EXPIRED"}:
+                    message["state"] = message["delivery_state"]
                 message["envelope"]["payload"] = {"summary_markdown": markdown_summary(message["envelope"]["payload"])}
             value["progress"] = await self.rt.events.live(session_id)
             return value
@@ -758,6 +768,46 @@ class Threads:
             )
         )
 
+    async def ownership(self, thread_id):
+        """Explicit origin view; the original strict thread snapshot stays stable."""
+        def read(db):
+            thread = need(db, "threads", thread_id)
+            session = need(db, "sessions", thread.session_id)
+            owner = one(db, "SELECT w.id,w.workflow_id,w.revision FROM thread_workflow_runs h "
+                        "JOIN workflow_runs w ON w.id=h.run_id WHERE h.thread_id=?", (thread_id,))
+            return {"thread_id": thread_id, "session_id": thread.session_id, "project_id": session.project_id,
+                    "workflow_run_id": owner.id if owner else None,
+                    "workflow_id": owner.workflow_id if owner else None,
+                    "workflow_revision": owner.revision if owner else None}
+        return await self.rt.store.call(read)
+
+    async def instances(self, session_id, agent_id=None, cursor=None, limit=25):
+        return await self.rt.supervision.instances(session_id, agent_id, cursor, limit)
+
+    async def activity(self, thread_id, cursor=None, limit=50):
+        return await self.rt.supervision.activity(thread_id, cursor, limit)
+
+    async def mark_read(self, thread_id, positions):
+        return await self.rt.supervision.mark_read(thread_id, positions)
+
+    async def history(self, thread_id, *, checkpoint_id=None, cursor=None, limit=50):
+        """Page immutable native messages without projecting or replaying them."""
+        require(cursor is None or checkpoint_id, "INVALID_REQUEST", "Continue history pages at the returned checkpoint_id")
+        def read(db):
+            thread = need(db, "threads", thread_id)
+            checkpoint = need(db, "checkpoints", checkpoint_id or thread.latest_checkpoint_id)
+            require(checkpoint.thread_id == thread.id, "PERMISSION_DENIED", "Checkpoint belongs to another thread")
+            from .chat_history import CHAT_VERSION, LEGACY_CHAT_VERSION
+            require(checkpoint.format_version in {CHAT_VERSION, LEGACY_CHAT_VERSION}, "UNSUPPORTED_CAPABILITY", "This adapter does not store native message history")
+            return self.rt.chat_history.page(db, checkpoint, thread, cursor, limit)
+        return await self.rt.store.call(read, transaction=True)
+
+    async def prepare_workdir(self, thread_id, idempotency_key, kind="managed", commit=None):
+        return await self.rt.workdirs.prepare(thread_id, idempotency_key, kind, commit)
+
+    async def workdir(self, thread_id):
+        return await self.rt.workdirs.get(thread_id)
+
     async def fork(self, thread_id, title=None, *, checkpoint_id=None, message_id=None, idempotency_key=None):
         self.rt.admit()
         source = await self.get(thread_id)
@@ -846,6 +896,7 @@ class Threads:
             db.execute("INSERT INTO checkpoint_windows VALUES(?,?,?)", (new_cp, window.user_seq, window.message_seq))
             if prepared["native"]:
                 db.execute("INSERT INTO chat_checkpoint_heads VALUES(?,?)", (new_cp, reference.get("message_head")))
+            self.rt.context_merges.fork(db, cp.id, identity, new_cp)
             db.execute("UPDATE thread_fork_receipts SET completed=1 WHERE source_thread_id=? AND idempotency_key=?", (thread_id, key))
             emit(
                 db,
@@ -885,8 +936,9 @@ class Threads:
             observed = value.pop("observed_state")
             value["execution_state"] = execution_state(observed, value.pop("observed_error"))
             if presentation and value["role"] == "assistant":
-                from .presentation import markdown_summary
-                value["content"] = markdown_summary(value.get("summary_markdown") or value["content"])
+                from .presentation import markdown_summary, delivery_summary
+                value["content"] = (delivery_summary(value["content"]) if (value["metadata"].get("acceptance") or {}).get("state") == "FAILED"
+                                    else markdown_summary(value.get("summary_markdown") or value["content"]))
             return ConversationEntry.model_validate(value)
         await self.get(thread_id)
         limit = min(200, max(1, int(limit)))
@@ -913,6 +965,7 @@ class Threads:
 
     async def turn(self, thread_id, content, idempotency_key, **options):
         thread = await self.get(thread_id)
+        budget_id = options.pop("budget_id", None)
         payload = {"input": str(content)}
         return await self.rt.tasks.submit(
             TaskSpec(
@@ -922,7 +975,7 @@ class Threads:
                 payload=payload,
                 idempotency_key=idempotency_key,
                 **options,
-            )
+            ), budget_id=budget_id
         )
 
 
@@ -969,9 +1022,11 @@ class Tasks:
                     (live[-1]["summary_markdown"] if live else ""),
                 "ephemeral": not bool(task.result)}
 
-    def insert(self, db, spec, identity=None, retry_of=None, caller_run_id=None):
+    def insert(self, db, spec, identity=None, retry_of=None, caller_run_id=None, *, workflow_run_id=None, budget_id=None, inherited_budget_id=None):
         from .execution_policy import request_hash
         digest = request_hash(spec)
+        if budget_id is not None:
+            digest = content_hash({"request_hash": digest, "budget_id": budget_id})
         existing = one(
             db,
             "SELECT * FROM tasks WHERE session_id=? AND idempotency_key=?",
@@ -989,6 +1044,62 @@ class Tasks:
                 "Idempotency key belongs to another retry request",
             )
             return TaskHandle(id=existing.id, state=existing.state, reused=True)
+        session, thread, caller = self.validate_submission(db, spec, identity=identity, caller_run_id=caller_run_id)
+        identity = identity or new_id("tsk")
+        stamp = now_ms()
+        db.execute(
+            "INSERT INTO tasks(id,session_id,thread_id,spec_json,state,queue_reason,idempotency_key,request_hash,retry_of_task_id,created_at,updated_at) VALUES(?,?,?,?,'QUEUED','SCHEDULER',?,?,?,?,?)",
+            (
+                identity,
+                spec.session_id,
+                spec.thread_id,
+                json_dump(spec),
+                spec.idempotency_key,
+                digest,
+                retry_of,
+                stamp,
+                stamp,
+            ),
+        )
+        if spec.context_refs:
+            db.executemany("INSERT OR IGNORE INTO context_access(task_id,reference) VALUES(?,?)", ((identity, reference) for reference in spec.context_refs))
+        self.rt.context_merges.assign(db, identity, thread, spec, session.project_id)
+        parent_task_id = caller.id if caller_run_id else retry_of
+        self.rt.budgets.task(db, identity, explicit=budget_id if budget_id is not None else inherited_budget_id,
+                             parent_task_id=parent_task_id, workflow_run_id=workflow_run_id)
+        if workflow_run_id is not None:
+            from .ownership import own_workflow_task
+            own_workflow_task(db, identity, workflow_run_id)
+        for dependency in set(spec.depends_on):
+            db.execute(
+                "INSERT INTO task_dependencies VALUES(?,?)", (identity, dependency)
+            )
+        user_input = spec.payload.get("input")
+        if isinstance(user_input, str) and user_input:
+            db.execute(
+                "INSERT INTO conversation(id,session_id,thread_id,task_id,role,content,metadata_json,created_at) VALUES(?,?,?,?,'user',?,'{}',?)",
+                (
+                    new_id("chat"),
+                    spec.session_id,
+                    spec.thread_id,
+                    identity,
+                    user_input,
+                    stamp,
+                ),
+            )
+        emit(
+            db,
+            "task.accepted",
+            session_id=spec.session_id,
+            thread_id=spec.thread_id,
+            task_id=identity,
+            payload={"agent_id": spec.agent_id, "state": "QUEUED"},
+        )
+        return TaskHandle(id=identity, state="QUEUED", reused=False)
+
+    def validate_submission(self, db, spec, *, identity=None, caller_run_id=None):
+        """Shared read-only request boundary for submission and admission advice."""
+        caller = None
         session = need(db, "sessions", spec.session_id)
         resolve_project(db, session.project_id)
         require(agent_project(db, spec.agent_id) == session.project_id, "PROJECT_MISMATCH",
@@ -1008,6 +1119,7 @@ class Tasks:
             )
         require(allowed, "SESSION_CLOSED", "Workspace is closing")
         thread = need(db, "threads", spec.thread_id)
+        self.rt.workdirs.snapshot(db, thread.id)
         self.rt.contexts.validate_refs(db, spec, session.project_id, caller_run_id)
         require(
             thread.session_id == spec.session_id and thread.agent_id == spec.agent_id,
@@ -1038,57 +1150,14 @@ class Tasks:
                 "DEPENDENCY_CYCLE",
                 "A task cannot depend on itself",
             )
-        identity = identity or new_id("tsk")
-        stamp = now_ms()
-        db.execute(
-            "INSERT INTO tasks(id,session_id,thread_id,spec_json,state,queue_reason,idempotency_key,request_hash,retry_of_task_id,created_at,updated_at) VALUES(?,?,?,?,'QUEUED','SCHEDULER',?,?,?,?,?)",
-            (
-                identity,
-                spec.session_id,
-                spec.thread_id,
-                json_dump(spec),
-                spec.idempotency_key,
-                digest,
-                retry_of,
-                stamp,
-                stamp,
-            ),
-        )
-        if spec.context_refs:
-            db.executemany("INSERT OR IGNORE INTO context_access(task_id,reference) VALUES(?,?)", ((identity, reference) for reference in spec.context_refs))
-        for dependency in set(spec.depends_on):
-            db.execute(
-                "INSERT INTO task_dependencies VALUES(?,?)", (identity, dependency)
-            )
-        user_input = spec.payload.get("input")
-        if isinstance(user_input, str) and user_input:
-            db.execute(
-                "INSERT INTO conversation(id,session_id,thread_id,task_id,role,content,metadata_json,created_at) VALUES(?,?,?,?,'user',?,'{}',?)",
-                (
-                    new_id("chat"),
-                    spec.session_id,
-                    spec.thread_id,
-                    identity,
-                    user_input,
-                    stamp,
-                ),
-            )
-        emit(
-            db,
-            "task.accepted",
-            session_id=spec.session_id,
-            thread_id=spec.thread_id,
-            task_id=identity,
-            payload={"agent_id": spec.agent_id, "state": "QUEUED"},
-        )
-        return TaskHandle(id=identity, state="QUEUED", reused=False)
+        return session, thread, caller
 
-    async def submit(self, spec: TaskSpec | dict, *, caller_run_id=None):
+    async def submit(self, spec: TaskSpec | dict, *, caller_run_id=None, budget_id=None):
         self.rt.admit()
         spec = TaskSpec.model_validate(spec)
         spec = TaskSpec.model_validate(self.rt.clean_json(spec.model_dump(mode="json")))
         result = await self.rt.store.call(
-            lambda db: self.insert(db, spec, caller_run_id=caller_run_id),
+            lambda db: self.insert(db, spec, caller_run_id=caller_run_id, budget_id=budget_id),
             transaction=True,
         )
         self.rt.notify()
@@ -1390,17 +1459,27 @@ class Tasks:
                 "SELECT * FROM runs WHERE task_id=? ORDER BY attempt_no DESC LIMIT 1",
                 (task_id,),
             )
-            if resolution.result:
-                self.rt.check_artifacts(
-                    db, task.session_id, resolution.result.artifact_ids
-                )
             value = resolution.resolution
-            result_json = json_dump(resolution.result) if resolution.result else None
+            result = resolution.result
+            artifacts = self.rt.check_artifacts(db, task.session_id, result.artifact_ids) if result else []
+            if value == "SUCCEEDED":
+                from .execution_policy import check_completion
+                from .result_validation import validate_result
+                from .models import ResultPolicy
+                spec = TaskSpec.model_validate_json(task.spec_json)
+                check_completion(db, task, spec)
+                if spec.result_policy != ResultPolicy() or result.metadata.get("model_completion"):
+                    result, error = validate_result(result, spec.result_policy, artifacts)
+                    if error:
+                        raise RuntimeFault(error["code"], error["safe_message"], details=error.get("details", {}))
+            result_json = json_dump(result) if result else task.result_json
+            error_json = task.error_json if value in {"FAILED", "CANCELLED"} else None
             db.execute(
-                "UPDATE tasks SET state=?,result_json=?,error_json=NULL,queue_reason=?,updated_at=? WHERE id=?",
+                "UPDATE tasks SET state=?,result_json=?,error_json=?,queue_reason=?,updated_at=? WHERE id=?",
                 (
                     value,
                     result_json,
+                    error_json,
                     "RECONCILED" if value == "QUEUED" else None,
                     now_ms(),
                     task_id,
@@ -1425,21 +1504,19 @@ class Tasks:
                     (
                         "RECONCILED",
                         now_ms(),
-                        json_dump({"evidence": resolution.evidence}),
+                        json_dump({**json.loads(run.error_json or "{}"), "evidence": resolution.evidence,
+                                   "reconciliation": {"resolution": value, "confirmed_stopped": True}}),
                         run.id,
                     ),
                 )
-                db.execute(
-                    "UPDATE messages SET state='PENDING',target_run_id=NULL WHERE target_run_id=? AND state='OFFERED'",
-                    (run.id,),
-                )
+                self.rt.delivery.reset_offers(db, run.id)
                 db.execute(
                     "UPDATE tool_calls SET state='RESOLVED',error_json=?,updated_at=? WHERE run_id=? AND state IN ('INTENT','DISPATCHED','UNCERTAIN')",
                     (json_dump({"evidence": resolution.evidence}), now_ms(), run.id),
                 )
-            if resolution.result:
+            if result:
                 self.rt.append_reply(
-                    db, task, run.id if run else None, resolution.result
+                    db, task, run.id if run else None, result
                 )
             emit(
                 db,
@@ -1466,6 +1543,16 @@ class Tasks:
 class Messages:
     def __init__(self, rt):
         self.rt = rt
+
+    async def delivery(self, message_id):
+        return await self.rt.delivery.get(message_id)
+
+    async def reject(self, message_id, reason, idempotency_key, *, caller_run_id=None):
+        return await self.rt.delivery.dispose(message_id, "REJECTED", reason, idempotency_key, caller_run_id=caller_run_id)
+
+    async def expire(self, message_id, expires_at_ms, reason, idempotency_key, *, caller_run_id=None):
+        return await self.rt.delivery.dispose(message_id, "EXPIRED", reason, idempotency_key,
+                                              expires_at_ms=expires_at_ms, caller_run_id=caller_run_id)
 
     def insert(self, db, spec, caller_run_id=None):
         source_key = spec.source_thread_id or "external"

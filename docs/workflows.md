@@ -14,9 +14,9 @@ Export contains the definition and graph, without credentials or run data. Impor
 
 | Type | Configuration | Output |
 | --- | --- | --- |
-| `start` | Object `input_schema`, without schema references | Run input object |
+| `start` | Object `input_schema`, without schema references; optional `failure_policy` | Run input object |
 | `agent` | `agent_id`, `payload`, attempt timeout and retry policy | Complete `TaskResult.output` |
-| `map` | `agent_ids`, `items`, per-item `payload`, `max_concurrency`, `routing`, timeout/retry | Ordered `outputs` array and `count` |
+| `map` | `agent_ids`, `items`, per-item `payload`, `max_concurrency`, `routing`, timeout/retry, `result_mode` | Ordered `outputs` and `count`, or explicit settled member records |
 | `condition` | `left`, `operator`, `right` | `{"result": true/false}` and selected branch |
 | `template` | Text `template` | `{"text": "resolved text"}` |
 | `end` | JSON object `outputs` | Final output object |
@@ -29,7 +29,9 @@ The canvas supports acyclic graphs, not loops, arbitrary script nodes or nested 
 
 ### Parallel map
 
-A map node resolves an input or upstream list of up to 128 items. Its payload can reference `{{item}}`, `{{item.field}}` and `{{index}}` as well as ordinary upstream variables. Each item creates an independent thread/task in a durable instance batch, using the ordinary scheduler and the selected Agent pool. All members must succeed before downstream nodes advance. Outputs preserve input order even when completion order differs; an empty list succeeds with `outputs=[]` and `count=0`.
+A map node resolves an input or upstream list of up to 128 items. Its payload can reference `{{item}}`, `{{item.field}}` and `{{index}}` as well as ordinary upstream variables. Each item creates an independent thread/task in a durable instance batch, using the ordinary scheduler and the selected Agent pool. The default `result_mode="all_succeeded"` requires every member to succeed. Outputs preserve input order even when completion order differs; an empty list succeeds with `outputs=[]` and `count=0`.
+
+Choose `result_mode="all_settled"` to collect each member's `ordinal`, task/thread identity, `state`, complete `result` and `error` in `results`, with `count` and `counts`. Downstream references use `{{nodes.parallel.results}}`. A failed member stays visible; it is not filtered out or replaced with a default value. Waiting and uncertain members do not count as settled. The empty result is `results=[]`, `count=0`, `counts={}`. Collecting a complete failure report does not establish that the original substantive goal succeeded.
 
 ```python
 graph = (
@@ -43,7 +45,7 @@ graph = (
 )
 ```
 
-The canvas exposes the same map configuration and member states. Run records include `batch_id` and member task IDs. Resume or reconcile one member using `instance_index` with `resume_node` / `reconcile_node`; cancellation still covers the entire workflow. A failed member stops normal advancement, and uncertainty blocks downstream execution until reconciled. Map currently uses all-success aggregation; first-result and quorum policies are not provided. Existing linear Agent nodes keep their original behavior.
+The canvas exposes the same map configuration and member states, including links to member conversations. Run records include `batch_id` and member task IDs. Resume or reconcile one member using `instance_index` with `resume_node` / `reconcile_node`; cancellation covers only executions owned by that workflow run and its linked children. First-result and quorum policies are not provided. Existing linear Agent nodes keep their original behavior.
 
 ### References
 
@@ -92,11 +94,19 @@ Update with `update(workflow_id, expected_revision, graph=..., name=...)`. List 
 
 ## Execution and recovery
 
-Starting a run atomically saves its definition revision, graph, inputs, initial states and a same-project session. Each node has its own thread. Agent nodes submit ordinary durable tasks and share runtime budgets, model snapshots and tool authorization.
+Starting a run atomically saves its definition revision, graph, inputs and initial states. Supply `session_id` to use an open session in the same project; omission keeps the original behavior of creating a session. Multiple definitions and multiple runs of one definition can share a session. Each executing node has its own thread, bound to exactly one workflow run. `threads.ownership` exposes this origin separately from the original strict thread snapshot. Ordinary turns and execution ownership are tracked separately, so sharing a session or a thread's origin does not implicitly extend a cancellation set.
+
+Agent nodes submit ordinary durable tasks and share runtime budgets, model snapshots and tool authorization. Reusing a run key with different inputs or a different explicit session is a conflict. A receipt retry returns its original revision and session even if the definition has since changed.
+
+The start node defaults to `failure_policy="fail_fast"`. Choose `collect_independent` to let independent branches finish when another branch fails; failed dependencies block their downstream nodes. Successful evidence and partial end outputs remain in `get_run`, while the workflow still fails when required branches failed. An independent waiting node can resume despite another branch's failure. This policy does not release unresolved external work.
 
 Waiting nodes keep their original task. Supply actual input with `resume_node`; message and task waits use normal task wake-up rules. Missing model configuration leaves work queued until the Agent's model settings are saved and tested. Completed nodes are not replayed after host restart.
 
-An uncertain Agent result stops downstream dispatch. Use `reconcile_node` with actual stop evidence and external results. `cancel(run_id)` requests cancellation of the run and its session tasks; it remains `CANCELLING` until stops are confirmed, or `UNCERTAIN` when they cannot be established. Cancellation does not roll back external effects.
+For a terminal run, `repair(source_run_id, idempotency_key, inputs=None, expected_revision=None, rerun_nodes=())` creates a new run in its open session. It preserves the source graph unless an explicit current definition revision is selected. Failed or changed nodes and their downstream dependants rerun; unchanged successful nodes reference their original results. Map repairs keep successful members with unchanged payloads and rerun only the remaining input ordinals. Explicitly selecting a map in `rerun_nodes` requests all of its members again. `get_repair` records the source run, invalidated nodes, result versions and member provenance. Original terminal runs, tasks and thread ownership remain unchanged; source execution with an unknown outcome must be reconciled first.
+
+An uncertain Agent result stops dependent dispatch. Use `reconcile_node` with actual stop evidence and external results. `cancel(run_id)` requests cancellation of that run's owned tasks and linked child instances; other runs and ordinary threads in the session continue. It remains `CANCELLING` until stops are confirmed, or `UNCERTAIN` when they cannot be established. Completion and waiting checks use the same ownership boundary. Cancellation does not roll back external effects.
+
+The browser highlights active definitions and groups their run instances. The instance selector starts with executing runs, followed by waiting/uncertain and completed runs; creation time and identity break ties. A manual selection survives new runs, definition edits and event refreshes. The canvas displays the selected run's saved graph. `runs(order="active")` exposes this ordering; the default SDK history ordering remains creation order. `activity(project_id)` returns bounded active-run counts. Browser updates use the existing SSE stream.
 
 An unfinished workflow blocks archival, deletion or folder changes of its project and closure/deletion of its run session. A workflow run's session cannot move to another project.
 

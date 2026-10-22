@@ -33,6 +33,8 @@ The entry point routes to one workflow at a time: Agent development, configurati
 
 ## Coordinate independent instances
 
+For complex work, the skill routes to one [heavy-task workflow](../integrations/codex/orchestrate-everything-with-agents/workflows/heavy-task.md). Use `admission.candidates` for bounded same-project filtering, `admission.describe` for one Agent's declarations and qualified observations, and `admission.check` for an existing-thread TaskSpec preflight. These shared-service operations do not execute, reserve capacity or probe upstream systems. Unknown capabilities and unmeasured costs remain explicit; planning stays with the coordinating Agent.
+
 For bidirectional supervision use the `operations` area: bind a receiver, inspect or dispatch a diagnostic test, wait for compact inbox summaries and reply to a selected report. It adds no top-level MCP tools. [Operations and guidance](operations.md) describes replay, acknowledgement and Codex parameter recommendations.
 
 Use `platform_guide(area="instances", action="spawn")` to discover only the batch contract, then `platform_call` with one `InstanceBatchSpec`. The `instances` area exposes `spawn`, `get`, `list`, `result` and `cancel`; it adds no top-level MCP tools. Batches reuse Agent configurations and create independent threads/tasks. Agent pools, stable request keys and batch limits support bounded orchestration by the coordinating client.
@@ -45,6 +47,6 @@ Shared [Skill registrations and task policies](skills.md) complement MCP binding
 
 Register STDIO, Streamable HTTP or SSE services through the frontend or `client.mcp.configure()`. Credentials go through `secret_values`, not command arguments or URLs. Bind the required tools to an Agent with `mcp_bindings`. Skills and instructions guide behavior; the runtime's bindings enforce tool access.
 
-Use a stable, distinct `consumer_id` per conversation. Consumer-scoped connections isolate stateful upstream sessions; shared connections intentionally share them. Discover the tool catalog first, then request the selected tool's schema. Do not import this platform's own bridge back into itself.
+Use a stable, distinct `consumer_id` per conversation. Consumer-scoped connections isolate stateful upstream sessions; shared connections intentionally share them. After explicit connection/discovery, read the paginated cached `mcp.catalog`, then `mcp.tool` for one full schema with its protocol version and fingerprint. Preserve referenced definitions and distinguish schema validity from provider compatibility. Do not import this platform's own bridge back into itself.
 
 The platform does not widen an external service's authorization. Unknown tool outcomes require reconciliation; the bridge never makes blind retries safe.

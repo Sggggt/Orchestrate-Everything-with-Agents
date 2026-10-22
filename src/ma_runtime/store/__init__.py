@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -12,6 +13,7 @@ import apsw
 
 from ..errors import RuntimeFault, require
 from ..models import View, json_dump, new_id, now_ms
+from ..commands import command_context
 
 T = TypeVar("T")
 
@@ -35,6 +37,9 @@ def emit(
     payload=None,
 ):
     event_id = new_id("evt")
+    command = command_context.get()
+    if command:
+        payload = {**(payload or {}), "command": command}
     db.execute(
         "INSERT INTO events(id,session_id,thread_id,task_id,run_id,type,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
         (
@@ -102,6 +107,17 @@ class StoreActor:
             Path(__file__).with_name("schema-12.sql"),
             Path(__file__).with_name("schema-13.sql"),
             Path(__file__).with_name("schema-14.sql"),
+            Path(__file__).with_name("schema-15.sql"),
+            Path(__file__).with_name("schema-16.sql"),
+            Path(__file__).with_name("schema-17.sql"),
+            Path(__file__).with_name("schema-18.sql"),
+            Path(__file__).with_name("schema-19.sql"),
+            Path(__file__).with_name("schema-20.sql"),
+            Path(__file__).with_name("schema-21.sql"),
+            Path(__file__).with_name("schema-22.sql"),
+            Path(__file__).with_name("schema-23.sql"),
+            Path(__file__).with_name("schema-24.sql"),
+            Path(__file__).with_name("schema-25.sql"),
         ]
         scripts = [source.read_text(encoding="utf-8") for source in sources]
         checksums = [hashlib.sha256(script.encode()).hexdigest() for script in scripts]
@@ -139,9 +155,15 @@ class StoreActor:
                     backup.step(-1)
             finally:
                 before.close()
+            rebuild_parent = version == 15
+            if rebuild_parent:
+                self.db.pragma("foreign_keys", "OFF")
             self.db.execute("BEGIN IMMEDIATE")
             try:
                 self.db.execute(scripts[index])
+                if rebuild_parent:
+                    require(not rows(self.db, "PRAGMA foreign_key_check"), "SCHEMA_MISMATCH",
+                            "Migration would leave invalid references")
                 self.db.execute(
                     "INSERT INTO schema_migrations VALUES(?,?,?)",
                     (version, checksums[index], now_ms()),
@@ -150,6 +172,9 @@ class StoreActor:
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
+            finally:
+                if rebuild_parent:
+                    self.db.pragma("foreign_keys", "ON")
         require(
             next(iter(self.db.execute("PRAGMA quick_check"))).get("quick_check")
             == "ok",
@@ -161,11 +186,13 @@ class StoreActor:
         require(not self.closed, "STORE_UNAVAILABLE", "State store is closed")
         loop = asyncio.get_running_loop()
 
+        command_scope = copy_context() if command_context.get() else None
+
         def invoke():
             if transaction:
                 self.db.execute("BEGIN IMMEDIATE")
             try:
-                result = fn(self.db)
+                result = command_scope.run(fn, self.db) if command_scope else fn(self.db)
                 if transaction:
                     self.db.execute("COMMIT")
                 return result

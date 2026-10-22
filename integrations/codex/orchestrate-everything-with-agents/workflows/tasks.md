@@ -1,6 +1,6 @@
 # 任务与依赖工作流
 
-派发前按需用 `agents.capabilities {agent_id}` 确认关联 MCP/Skill。`threads.turn`、`tasks.submit` 和批次均支持 tool_policy / skill_policy，省略默认 mode=auto；none 禁用新使用，allowed 收窄范围，required 指定必要成功动作。工具标识用 mcp:server_id:tool_name 或平台工具名，Skill 用 ID。显式 required Skill 在执行前加载，工具成功回执和正文加载记录由 Runtime 核验，缺失时不能成功。策略不会扩大 Agent 的授权；不要仅因需要使用某 Skill 就读取所有技能正文。
+派发前按需用 `admission.describe {agent_id}` 看配置/声明/观测；已有线程的 TaskSpec 可用 `admission.check {spec,budget_id?}` 无副作用预检。它不探测上游，unknown 不能当成可用证明。`threads.turn`、`tasks.submit` 和批次均支持 tool_policy / skill_policy，省略默认 mode=auto；none 禁用新使用，allowed 收窄范围，required 指定必要成功动作。工具标识用 mcp:server_id:tool_name 或平台工具名，Skill 用 ID。显式 required Skill 在执行前加载，工具成功回执和正文加载记录由 Runtime 核验，缺失时不能成功。策略不会扩大 Agent 的授权；不要仅因需要使用某 Skill 就读取所有技能正文。
 
 可保存、带变量传递和画布编辑的项目工作流使用 [orchestration.md](orchestration.md) 与 `workflows` area。本文的 tasks.workflow 保留为一次性会话任务依赖接口。
 
@@ -16,6 +16,8 @@
 ```
 
 不要把示例 ID 当成真实 ID。依赖、资源锁、期限、超时和重试只在业务需要时配置；字段以该动作的 TaskSpec 为准。
+
+普通任务自动有累计预算；`budgets.for_task` 查看用量，entries 分页查账。显式共享总量时先 `budgets.create`，提交时传 budget_id。摘要、继续、子任务和修复共用原账本；有效证据才重置停滞计数。PROGRESS_STALLED / BUDGET_EXHAUSTED 保留部分结果，先定位缺项，不靠重复续写或新实例绕过。
 
 ## 依赖编排
 
@@ -45,7 +47,7 @@ UNCERTAIN 不是一般失败。没有充分证据时说明缺失项，保留隔�
 
 空正文、截断、缺少产物或覆盖项会保留部分结果，并标为 FAILED。先读 `tasks.get` 的 result/error/metadata.acceptance；定位耗时或故障阶段才读 `tasks.trace`，按 cursor 翻页，工具原始回执只读所需调用。不要根据“连接失败”猜测服务责任，也不要把通过交付检查当成审查正确。
 
-若原线程未前进且有已提交检查点，可显式 `tasks.continue_result {task_id,idempotency_key,content}` 修补独立任务。沿用同键核对回执；后端限制次数、所有追加模型调用（含摘要）、输出和时间，并阻止新的外部动作。默认无需额外配置；确有需要时在原任务 `continuation_policy` 中收窄。预算耗尽或不满足条件时停止续写，说明剩余缺口。已定稿工作流用独立修补任务，不改旧结果。
+若原线程未前进且有已提交检查点，可显式 `tasks.continue_result {task_id,idempotency_key,content}` 修补独立任务。沿用同键核对回执；后端限制次数、所有追加模型调用（含摘要）、输出和时间，并阻止新的外部动作。默认无需额外配置；确有需要时在原任务 `continuation_policy` 中收窄。预算耗尽或不满足条件时停止续写，说明剩余缺口。已终态工作流用 `workflows.repair` 创建新修复运行并保留来源，不改旧结果。
 
 大资料和依赖保留原文，模型只接收当前工作集。独立任务交接用必要的 `context_refs`，需要原文再 `contexts.read {reference,project_id,offset,limit}`；沿 next_offset 读取需要的片段，沿 previous_reference 回溯历史。引用是版本快照且不授予额外工具权限。长审查按具体段落/问题派发，要求证据位置与明确交付项，避免多个 Agent 各自重读全量材料。
 

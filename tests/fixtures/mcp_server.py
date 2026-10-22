@@ -3,6 +3,8 @@
 import asyncio
 import os
 import argparse
+import time
+import json
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -45,6 +47,14 @@ async def delay_echo(text: str, delay: float = 0.01) -> dict:
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def timed_echo(delay: float = 0.1) -> dict:
+    """Expose actual call overlap and connection state for capacity contracts."""
+    started = time.monotonic_ns()
+    await asyncio.sleep(min(delay, 3))
+    return {"started": started, "ended": time.monotonic_ns(), "project": selected, "pid": os.getpid()}
+
+
+@server.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def credential_echo(password: str = "") -> dict:
     """Exercise schema preservation and configured-secret redaction."""
     return {"value": os.environ.get("FIXTURE_SECRET", ""), "password": password}
@@ -53,6 +63,13 @@ def credential_echo(password: str = "") -> dict:
 @server.resource("fixture://readme")
 def readme() -> str:
     return "A local MCP resource used only for platform contract tests."
+
+
+@server.resource("fixture://timed/{delay}")
+async def timed_resource(delay: str) -> str:
+    started = time.monotonic_ns()
+    await asyncio.sleep(min(float(delay), 3))
+    return json.dumps({"started": started, "ended": time.monotonic_ns()})
 
 
 @server.prompt()

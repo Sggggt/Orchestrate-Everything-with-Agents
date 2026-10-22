@@ -3,7 +3,7 @@
 import asyncio
 
 from .errors import RuntimeFault, require
-from .models import InstanceBatchSpec, MessageSpec, TaskSpec
+from .models import InstanceBatchSpec, MessageSpec, TaskSpec, new_id, content_hash
 
 
 class RunContext:
@@ -20,6 +20,7 @@ class RunContext:
         self.used_tools = set()
         self.loaded_skill_ids = set()
         self.llm = RunLLM(self, model_client)
+        self.channel = None
 
     async def initialize(self):
         from .store import rows
@@ -31,6 +32,8 @@ class RunContext:
         self.loaded_skill_ids = {row.name for row in evidence if row.kind == "skill"}
         for skill_id in self.request.skill_policy.required:
             self.loaded_skills[skill_id] = await self.read_skill(skill_id)
+        from .execution_policy import prepare_required_tools
+        await prepare_required_tools(self)
 
     def check_tool(self, name):
         require(self.request.tool_policy.permits(name), "PERMISSION_DENIED", "Tool is disabled by this task's policy")
@@ -56,11 +59,22 @@ class RunContext:
                 self.request.run_id
             )
         from .context_projection import READ_CONTEXT_TOOL
-        return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request), READ_CONTEXT_TOOL]}
+        from .chat_history import READ_HISTORY_TOOL
+        history = [READ_HISTORY_TOOL] if (self.request.resume_ref or {}).get("history_truncated") else []
+        return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request), READ_CONTEXT_TOOL, *history]}
+
+    async def read_history(self, cursor=None, limit=20):
+        await self._charge_tool("read_history")
+        checkpoint = (self.request.resume_ref or {}).get("checkpoint_id")
+        require(checkpoint, "UNSUPPORTED_CAPABILITY", "No native message history was assigned to this run")
+        result = await self._runtime.threads.history(self.request.thread_id, checkpoint_id=checkpoint, cursor=cursor, limit=limit)
+        await self._record_progress("read_history", result)
+        return result
 
     async def read_context(self, reference, offset=0, limit=8192, *, _parent_stage=None):
         from .tracing import RunStage
         stage = RunStage(self, "context_read", reference=reference, offset=offset, parent_stage_id=_parent_stage)
+        await self._charge_tool("read_context", identity=stage.id)
         try:
             result = await self._runtime.contexts.read_for_run(self, reference, offset, limit)
         except RuntimeFault as exc:
@@ -68,7 +82,25 @@ class RunContext:
             raise
         stage.attributes["bytes_read"] = len(result["text"].encode("utf-8"))
         await stage.record("SUCCEEDED")
+        await self._record_progress("read_context", {key: result[key] for key in ("sha256", "offset", "text")})
         return result
+
+    async def _charge_tool(self, name, *, key=None, identity=None):
+        identity = identity or ("operation:" + content_hash([self.request.task_id, name, key]) if key else new_id("operation"))
+        def charge(db):
+            self._runtime.check_run(db, self.request.run_id)
+            self._runtime.budgets.tool(db, self.request, identity, name)
+        try:
+            await self._runtime.store.call(charge, transaction=True)
+        except RuntimeFault as exc:
+            self._runtime.budgets.reject(self, exc)
+            raise
+
+    async def _record_progress(self, source, value):
+        def record(db):
+            self._runtime.check_run(db, self.request.run_id)
+            self._runtime.budgets.progress(db, self.request.task_id, source, value)
+        await self._runtime.store.call(record, transaction=True)
 
     async def tool_parent(self, name, idempotency_key, model_call_id=None, tool_call_id=None):
         causes = getattr(self, "model_tool_causes", {})
@@ -104,7 +136,7 @@ class RunContext:
     async def read_skill(self, skill_id, path="SKILL.md"):
         from .profiles import read_skill
 
-        await self.check_current()
+        await self._charge_tool("read_skill")
         current = self._runtime.agent_configs.get(self.request.agent_id)
         require(any(s.id == skill_id and s.enabled for s in self._runtime.skills.for_agent(current)),
                 "PERMISSION_DENIED", "Skill is no longer enabled for this Agent")
@@ -170,7 +202,7 @@ class RunContext:
     async def list_threads(self):
         self.check_tool("list_threads")
         require(self.collaboration, "PERMISSION_DENIED", "This Agent cannot inspect collaboration threads")
-        await self.check_current()
+        await self._charge_tool("list_threads")
         result = (await self._runtime.sessions.snapshot(self.request.session_id))[
             "threads"
         ]
@@ -197,11 +229,33 @@ class RunContext:
                 "source_run_id": self.request.run_id,
             }
         )
+        await self._charge_tool("send_message", key=spec.idempotency_key)
         result = await self._runtime.messages.send(
             spec, caller_run_id=self.request.run_id
         )
         await self.record_use("tool", "send_message")
         return result
+
+    async def reject_message(self, message_id, reason, idempotency_key):
+        return await self._runtime.messages.reject(message_id, reason, idempotency_key, caller_run_id=self.request.run_id)
+
+    async def _channel(self):
+        if self.channel is None:
+            self.channel = await self._runtime.channels.bind(self.request.run_id, self.request.thread_id,
+                "in-process:" + self.request.run_id, capabilities=("generation", "inbox", "receipts", "reconnect"))
+        return self.channel
+
+    async def reconnect_channel(self, connection_id):
+        previous = await self._channel()
+        self.channel = await self._runtime.channels.bind(self.request.run_id, self.request.thread_id,
+            connection_id, capabilities=previous["capabilities"], expected_generation=previous["generation"])
+        return self.channel
+
+    async def inbox(self, after_position=0, limit=32):
+        return await self._runtime.channels.inbox(await self._channel(), after_position=after_position, limit=limit)
+
+    async def acknowledge_messages(self, positions):
+        return await self._runtime.channels.acknowledge(await self._channel(), positions)
 
     async def submit_task(self, spec: TaskSpec | dict):
         self.check_tool("submit_task")
@@ -216,6 +270,7 @@ class RunContext:
             "PERMISSION_DENIED",
             "Cross-session task is not allowed",
         )
+        await self._charge_tool("submit_task", key=spec.idempotency_key)
         result = await self._runtime.tasks.submit(spec, caller_run_id=self.request.run_id)
         await self.record_use("tool", "submit_task")
         return result
@@ -231,13 +286,14 @@ class RunContext:
         spec = InstanceBatchSpec.model_validate(spec)
         require(self.collaboration and spec.session_id == self.request.session_id,
                 "PERMISSION_DENIED", "Child instances must stay in the current collaboration session")
+        await self._charge_tool("spawn_instances", key=spec.idempotency_key)
         result = await self._runtime.instances.spawn(spec, caller_run_id=self.request.run_id)
         await self.record_use("tool", "spawn_instances")
         return result
 
     async def put_file(self, path, *, metadata=None):
         self.check_tool("put_file")
-        await self.check_current()
+        await self._charge_tool("put_file")
         from .workspace import Workspace
         require(self.request.workbench, "PERMISSION_DENIED", "File delivery requires a workbench source grant")
         self._runtime.workbench.authorize(self.request, "publish_artifact")
@@ -250,7 +306,7 @@ class RunContext:
 
     async def put_bytes(self, name, data, *, metadata=None):
         self.check_tool("put_bytes")
-        await self.check_current()
+        await self._charge_tool("put_bytes")
         result = await self._runtime.artifacts.put_bytes(
             self.request.session_id, name, data, metadata=metadata, caller_run_id=self.request.run_id
         )
@@ -289,6 +345,8 @@ class RunContext:
         parent = await self.tool_parent(name, idempotency_key, model_call_id, tool_call_id)
         if name == "read_context":
             return await self.read_context(**arguments, _parent_stage=parent)
+        if name == "read_history":
+            return await self.read_history(**arguments)
         from .execution_policy import mcp_name
         provider = self._runtime.tools.providers.get(name)
         identifier = mcp_name(provider.server_id, provider.tool["name"]) if hasattr(provider, "server_id") else name

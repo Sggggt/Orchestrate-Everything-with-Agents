@@ -111,7 +111,7 @@ export function createIntegrationUI({
   }
   function mcpPage() {
     if (state.mcpDraft) return mcpEditor();
-    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 工具</h1><p>注册服务 → 连接并发现工具 → 在 Agent 配置中授权使用。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button></div></div><details class="form-section directory-registration"><summary>已有 mcp.json？从目录注册</summary><div class="section-heading"><div><h2>从目录注册 MCP</h2><p class="form-hint">选择含 mcp.json 的目录。连接配置在目录中维护，凭据在注册后单独设置。</p></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" placeholder="含 mcp.json 的绝对目录路径"></label><button class="btn primary" data-action="mcp-directory-register">${icon("plus")}注册目录</button></div></details><div class="integration-banner"><span class="integration-banner-icon">${icon("plug")}</span><div><h2>工具需要单独授权给 Agent</h2><p>连接测试仅发现工具。实际调用由 Agent 的工具配置与运行时权限共同约束。</p></div><button class="btn" data-action="mcp-sdk">${icon("terminal")}SDK 与 Codex 接入</button></div><div class="integration-stats">${[
+    return `<section class="panel-page mcp-page"><div class="page-heading"><div><p class="eyebrow">ONE CONNECTION. SHARED CAPABILITIES.</p><h1>MCP 工具</h1><p>注册服务 → 连接并发现工具 → 在 Agent 配置中授权使用。</p></div><div class="heading-actions"><button class="btn" data-action="mcp-import">${icon("download")}导入 Codex 配置</button><button class="btn primary" data-action="mcp-new">${icon("plus")}注册服务</button><button class="icon-btn" data-action="mcp-sdk" title="SDK 与 Codex 接入" aria-label="SDK 与 Codex 接入">${icon("terminal")}</button></div></div><form id="mcp-registry-form" class="form-section directory-registration"><div class="section-heading"><div><h2>注册 MCP 目录</h2><p class="form-hint">选择含 mcp.json 的目录。连接配置在目录中维护，凭据在注册后单独设置。</p></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" data-focus="mcp-directory" value="${escape(state.mcpDirectory || "")}" placeholder="含 mcp.json 的绝对目录路径" required></label><button class="btn primary" type="submit">${icon("plus")}注册 MCP</button></div></form><div class="integration-stats">${[
       ["已注册服务", state.mcpServers.length],
       [
         "已连接",
@@ -625,6 +625,7 @@ export function createIntegrationUI({
       state.mcpQuery = e.value;
       document.querySelector("#mcp-cards").innerHTML = mcpCards();
     }
+    if (e.id === "mcp-directory") state.mcpDirectory = e.value;
     if (e.dataset.mcp && state.mcpDraft) {
       state.mcpDraft[e.dataset.mcp] =
         e.type === "checkbox"
@@ -689,6 +690,14 @@ export function createIntegrationUI({
   }
   async function submit(event) {
     if (await skillUI.submit(event)) return true;
+    if (event.target.id === "mcp-registry-form") {
+      const directory = document.querySelector("#mcp-directory").value.trim();
+      if (!directory) throw new Error("填写 MCP 目录路径");
+      await api("/mcp/register-directory", { method: "POST", body: { directory } });
+      state.mcpDirectory = "";
+      await loadBootstrap(); render(); toast("MCP 目录已注册");
+      return true;
+    }
     if (event.target.id !== "mcp-form") return false;
     if (state.mcpSaving) return true;
     const d = state.mcpDraft,

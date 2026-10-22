@@ -322,7 +322,6 @@ kbd {
   white-space: nowrap;
 }
 .thread-link .dot {
-  margin-left: auto;
   flex-shrink: 0;
   width: 5px;
   height: 5px;
@@ -1028,17 +1027,26 @@ kbd {
   margin: 0 8px;
   background: var(--line);
 }
-.message-unread-dot {
-  display: inline-block;
+.message-unread-badge,
+.instance-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #d1707c;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  color: #fff;
+  background: #d44354;
+  font-size: 10px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
-.side-nav > .message-unread-dot {
+.side-nav > .message-unread-badge,
+.thread-link > .instance-unread {
   margin-left: auto;
-  box-shadow: 0 0 0 3px #d1707c16;
 }
 .browser-tab > .icon {
   width: 15px;
@@ -1121,7 +1129,7 @@ kbd {
   flex: 1;
   overflow-y: auto;
   padding: 35px max(32px, calc((100% - 850px) / 2));
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 .message {
   display: flex;
@@ -2529,8 +2537,8 @@ button:active:not(:disabled), .btn:active:not(:disabled) { transform: translateY
 .summary-done strong { color: var(--green); }
 .section-heading { margin: 26px 0 15px; }
 .section-heading h2 { font-size: 17px; font-weight: 650; color: var(--ink); }
-.agent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 36px; row-gap: 0; align-items: start; }
-.agent-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; min-width: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 20px 0; background: transparent; box-shadow: none; }
+.agent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; column-gap: 36px; row-gap: 0; align-items: stretch; }
+.agent-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 44px 18px 44px 40px; gap: 12px; min-width: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 20px 0; background: transparent; box-shadow: none; }
 .agent-card:hover { transform: none; box-shadow: none; border-color: var(--line); }
 .agent-card-head { grid-column: 1 / -1; gap: 12px; }
 .agent-card-name { font-size: 15px; color: var(--ink); }
@@ -2539,10 +2547,12 @@ button:active:not(:disabled), .btn:active:not(:disabled) { transform: translateY
 .agent-description { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--muted); height: 3.4em; line-height: 1.7; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .agent-description p { margin: 0; }
 .agent-description h1, .agent-description h2, .agent-description h3 { font-size: 14px; margin: 0; }
-.agent-doc-links { margin: 0; padding: 0; border: 0; flex-wrap: wrap; align-self: center; }
+.agent-card .agent-doc-links { margin: 0; padding: 0; border: 0; flex-wrap: nowrap; align-self: center; min-width: 0; overflow: hidden; }
 .agent-doc-links button { font-size: 12px; }
 .agent-card-detail { margin: 0; padding: 0; border: 0; background: none; display: flex; align-items: center; justify-content: start; gap: 12px; }
 .agent-card-detail button { font-size: 13px; color: var(--accent); }
+.agent-card-detail > .icon-btn { width: 30px; height: 30px; flex: 0 0 30px; padding: 6px; }
+.agent-card-detail > .icon-btn .icon { width: 16px; height: 16px; }
 .agent-card-detail .primary { color: white; }
 .activity-list { border: 0; border-radius: 0; box-shadow: none; }
 .activity-row { padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -2760,3 +2770,27 @@ body { min-width: 1100px; }
 .execution-request > .execution-request, .execution-tool { margin: 10px 0 10px 12px; padding-left: 12px; border-left: 2px solid var(--line); }
 .execution-tool > .text-link { font-size: 12px; }
 .execution-receipt { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--soft); border-radius: 6px; font: 12px/1.7 Consolas, monospace; }
+/* Multiple instances share a stacked surface; badges count only unread messages. */
+.agent-card, .thread-link, .instance-option { position: relative; }
+.agent-card.is-stacked { box-shadow: 3px 3px 0 -1px var(--surface, #fff), 3px 3px 0 0 #e2e4ed, 6px 6px 0 -1px var(--surface, #fff), 6px 6px 0 0 #e9eaf1; }
+.thread-link.is-stacked { box-shadow: 0 3px 0 -1px #e5e7ef, 0 6px 0 -2px #eef0f5; margin-bottom: 6px; }
+.instance-status-counts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: #74798b; }
+.instance-status-counts:empty { display: none; }
+.instance-status-counts .RUNNING { color: #7952bd; }
+.instance-status-counts .WAITING { color: #987015; }
+.instance-status-counts .FAILED, .instance-status-counts .UNCERTAIN { color: #b93b4a; }
+.thread-name .instance-status-counts { margin-top: 3px; gap: 5px; }
+.agent-message-preview { max-height: 100px; overflow: hidden; }
+.instance-picker { display: grid; gap: 10px; }
+.instance-option { width: 100%; padding: 14px 18px; border: 1px solid #e5e7ef; border-radius: 12px; background: #fff; text-align: left; color: inherit; cursor: pointer; }
+.instance-option:hover, .instance-option:focus-visible { border-color: #9b88cf; background: #fbfaff; outline: 2px solid transparent; }
+.instance-option.is-idle { background: #f3f4f7; color: #74798b; border-color: #e4e6ec; }
+.instance-option.is-idle .instance-preview { color: #7d8190; }
+.instance-option.is-idle:hover, .instance-option.is-idle:focus-visible { background: #eceaf2; border-color: #9b88cf; }
+.instance-option-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-right: 8px; }
+.instance-option-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.instance-origin { display: block; margin-top: 5px; color: #787d8e; font-size: 12px; }
+.instance-preview { display: block; max-height: 68px; overflow: hidden; margin-top: 7px; color: #535b70; font-size: 13px; }
+.instance-preview p { margin: 0; }
+.activity-notice > .icon { color: #82789b; flex-shrink: 0; margin: 6px; }
+.activity-notice .message-content { border-left: 2px solid #ddd6eb; padding-left: 12px; }

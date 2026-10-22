@@ -1,20 +1,18 @@
-// Project current session state without another subscription or maintenance request.
+// Availability comes from current configuration and ownership, not past messages.
 import { executionState } from "./execution-status.mjs";
 
 const statuses = {
-  UNCERTAIN: { tone: "error", label: "待核对", priority: 6 },
-  FAILED: { tone: "error", label: "执行失败", priority: 5 },
-  GUIDANCE: { tone: "waiting", label: "待回复报告", priority: 4 },
+  BLOCKED: { tone: "waiting", label: "暂不可继续", hint: "先核对当前实例的执行结果，再继续对话", priority: 4 },
   WAITING: { tone: "waiting", label: "等待中", priority: 3 },
-  RUNNING: { tone: "running", label: "执行中", priority: 2 },
+  RUNNING: { tone: "running", label: "工作中", hint: "正在处理任务，仍可发送后续指令", priority: 2 },
   QUEUED: { tone: "muted", label: "排队中", priority: 1 },
-  READY: { tone: "ready", label: "准备就绪", priority: 0 },
+  READY: { tone: "ready", label: "可对话", hint: "执行端已配置，可发送指令", priority: 0 },
   DISABLED: { tone: "muted", label: "已停用", priority: 0 },
   UNCONFIGURED: { tone: "muted", label: "待配置模型", priority: 0 },
   OFFLINE: { tone: "muted", label: "连接中断，状态待确认", priority: 0 },
   CONNECTING: { tone: "muted", label: "连接中，状态待确认", priority: 0 },
 };
-const active = new Set(["RUNNING", "WAITING", "QUEUED", "UNCERTAIN"]);
+const active = new Set(["RUNNING", "WAITING", "QUEUED"]);
 const choose = (a, b) => !a || b.priority > a.priority ? b : a;
 
 export function createAgentStatusIndex(agents, snapshot, connection = "online") {
@@ -25,23 +23,25 @@ export function createAgentStatusIndex(agents, snapshot, connection = "online") 
   for (const task of tasks) {
     const observed = executionState(task);
     if (active.has(observed)) assign(task.thread_id, statuses[observed]);
+    if (observed === "UNCERTAIN") assign(task.thread_id, statuses.BLOCKED);
   }
-  for (const threadId of snapshot.failed_thread_ids || []) assign(threadId, statuses.FAILED);
-  for (const threadId of snapshot.attention_thread_ids || []) assign(threadId, statuses.GUIDANCE);
   for (const thread of snapshot.threads || []) {
     const status = threads.get(thread.id);
-    if (status) byAgent.set(thread.agent_id, choose(byAgent.get(thread.agent_id), status));
+    if (status && status !== statuses.BLOCKED) byAgent.set(thread.agent_id, choose(byAgent.get(thread.agent_id), status));
   }
   function display(agentId, current) {
     if (connection !== "online") return connection === "connecting" ? statuses.CONNECTING : statuses.OFFLINE;
-    if (current) return current;
     const a = configs.get(agentId);
     if (!a?.enabled) return statuses.DISABLED;
     if ((a.kind === "llm" || (a.kind === "process" && a.llm_required)) && !(a.base_url?.trim() && a.model?.trim())) return statuses.UNCONFIGURED;
-    return statuses.READY;
+    return current || statuses.READY;
   }
   return {
     forAgent: id => display(id, byAgent.get(id)),
-    forThread: thread => display(thread.agent_id, threads.get(thread.id)),
+    forThread: thread => {
+      const observed = executionState(thread);
+      return display(thread.agent_id, thread.blocked_reason || observed === "UNCERTAIN" ? statuses.BLOCKED :
+        threads.get(thread.thread_id || thread.id) || (active.has(observed) ? statuses[observed] : null));
+    },
   };
 }

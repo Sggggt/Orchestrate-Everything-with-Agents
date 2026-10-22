@@ -81,10 +81,18 @@ class Environments:
             return json.loads(saved.snapshot_json)
         self.validate(agent, require_host=False)
         entry = self.entry(agent.workbench.environment_id)
+        task = one(db, "SELECT thread_id FROM tasks WHERE id=?", (task_id,))
+        binding = self.rt.workdirs.snapshot(db, task.thread_id)
         value = {**agent.workbench.model_dump(mode="json"), "revision": entry["revision"],
                  "environment": entry["config"].model_dump(mode="json"),
                  "project_folder": project.local_folder,
                  "directory": str(self.rt.root / "workbench" / task_id)}
+        if binding:
+            require(binding["kind"] != "git" or binding["repository"] == project.local_folder,
+                    "WORKDIR_UNAVAILABLE", "Project repository changed after this worktree was bound")
+            value["directory"] = binding["path"]
+            value["thread_workdir"] = binding
+            value["project_read_only"] = True
         db.execute("INSERT INTO task_workbenches VALUES(?,?)", (task_id, json_dump(value)))
         return value
 

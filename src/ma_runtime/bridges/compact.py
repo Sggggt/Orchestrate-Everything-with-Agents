@@ -22,9 +22,18 @@ from ..operations import Operations, OPERATIONS_ACTIONS
 from ..execution import Environments
 from ..workspace import Workbench
 from ..context_projection import ContextStore
+from ..channels import ExecutionChannels
+from ..a2a import A2AMapping
+from ..budgets import Budgets
+from ..admission import Admission
 
 AREAS = {
-    "contexts": ("按引用读取项目内上下文证据；保留原文与版本", {"read": "contexts.read"}),
+    "admission": ("有界能力摘要、同项目候选硬约束和只读任务预检；不创建对象或占用容量", {name: "admission." + name for name in ("describe", "candidates", "check")}),
+    "budgets": ("会话内累计模型、token、工具和时间预算；子任务与修复继承同一账本", {name: "budgets." + name for name in ("create", "get", "for_task", "entries", "amend")}),
+    "a2a": ("A2A v1.0.1 内部对象映射；消息与执行意图分开；无网络绑定", {name: "a2a." + name for name in ("capabilities", "send", "get_task")}),
+    "channels": ("执行逻辑通道、当前代次与连续传输确认；连接不创建执行者", {"get": "channels.get"}),
+    "resources": ("数量容量、组合准入预检和持久租约；未知执行保留隔离占用", {name: "resources." + name for name in ("inspect", "configure", "preflight", "request", "get", "release_lease")}),
+    "contexts": ("按引用读取项目内上下文证据；固定来源与版本显式合并", {name: "contexts." + name for name in ("read", "merge", "get_merge")}),
     "environments": ("外部受限执行环境与受管准备任务", {name: "environments." + name for name in ("list", "get", "configure", "prepare", "check")}),
     "workbench": ("Agent 工作能力、目录映射与原生工具回执", {name: "workbench." + name for name in ("inspect", "calls", "reconcile")}),
     "projects": (
@@ -86,7 +95,7 @@ AREAS = {
         "Agent 独立对话、继续执行、上下文与分支",
         {
             name: "threads." + name
-            for name in ("create", "get", "conversation", "turn", "fork")
+            for name in ("create", "get", "ownership", "instances", "activity", "mark_read", "conversation", "history", "turn", "fork", "prepare_workdir", "workdir")
         },
     ),
     "tasks": (
@@ -111,7 +120,7 @@ AREAS = {
     ),
     "messages": (
         "同一会话内传递完整消息、检查回执",
-        {name: "messages." + name for name in ("send", "get", "list")},
+        {name: "messages." + name for name in ("send", "get", "list", "delivery", "reject", "expire")},
     ),
     "instances": (
         "受管子 Agent 多实例、Agent 池路由、批次预算、结果与取消",
@@ -121,7 +130,7 @@ AREAS = {
         "项目工作流、画布节点/连线、变量、校验与版本运行记录",
         {name: "workflows." + name for name in (
             "create", "get", "list", "update", "archive", "delete", "restore", "validate", "node_types",
-            "run", "get_run", "runs", "result", "cancel", "resume_node", "reconcile_node",
+            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair",
         )},
     ),
     "artifacts": (
@@ -141,10 +150,15 @@ AREAS = {
                 "get",
                 "configure",
                 "register_directory",
+                "configure_policy",
+                "policy",
+                "reconcile_capacity",
                 "delete",
                 "connect",
                 "disconnect",
                 "tools",
+                "catalog",
+                "tool",
                 "call",
                 "calls",
                 "resources",
@@ -162,6 +176,10 @@ AREAS = {
 }
 
 OWNERS = {
+    "admission": Admission,
+    "budgets": Budgets,
+    "a2a": A2AMapping,
+    "channels": ExecutionChannels,
     "contexts": ContextStore,
     "environments": Environments,
     "workbench": Workbench,
@@ -181,6 +199,13 @@ OWNERS = {
     "instances": Instances,
 }
 PARAM_MODELS = {
+    ("admission.check", "spec"): models.TaskSpec,
+    ("budgets.create", "policy"): models.BudgetPolicy,
+    ("budgets.amend", "policy"): models.BudgetPolicy,
+    ("mcp.configure_policy", "policy"): models.MCPResourcePolicy,
+    ("resources.configure", "config"): models.ResourceCapacity,
+    ("resources.request", "spec"): models.ResourceLeaseSpec,
+    ("contexts.merge", "spec"): models.ContextMergeSpec,
     ("workbench.reconcile", "resolution"): models.Reconciliation,
     ("environments.configure", "config"): models.EnvironmentConfig,
     ("operations.test", "tool_policy"): models.UsePolicy,
@@ -229,6 +254,12 @@ EXTRA_PARAMS = {
     "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": 4000},
 }
 NOTES = {
+    "budgets.amend": "Explicit administrative limit change. Read the current policy_hash first; submit the complete policy, stable idempotency_key and reason. Usage, start time, progress counters and inherited bindings are preserved. Do not use amendments as an automatic response to budget exhaustion.",
+    "admission.describe": "Bounded configured purpose, actual adapter declarations, grants, capacity and latest 32 model observations for current settings. Configuration is not verified expertise. Prices and matched workloads are absent, so no cost/speed ranking or semantic quality claim is made.",
+    "admission.candidates": "Required project_id. Pages include eligible candidates and explicit exclusions; capabilities accepts supports_suspend/supports_fork/supports_probe. Hard constraints first; capacity exhaustion means wait, not a new host. Unknown live availability is reported. No automatic selection or execution.",
+    "admission.check": "Read-only TaskSpec preflight against shared submission rules, cached dependencies, current capacity and optional budget_id. No objects, connections, reservations or model calls. Unknown model/upstream behavior is not success. Submission and execution recheck current state. An identical existing key returns its receipt; do not resubmit unknown effects with a new key.",
+    "mcp.catalog": "Read a cached paginated tool directory with stable identifiers, protocol version, schema fingerprints and estimated input size. Never connects. If discovery is missing, explicitly connect first. Use mcp.tool for one complete schema including recursive definitions.",
+    "mcp.tool": "Read one complete cached tool schema, optionally requiring an expected_fingerprint. Includes local schema validation, protocol version and size. Provider compatibility and upstream execution are separate and remain unverified. Full schema preserves all local references; stale fingerprints require reinspection.",
     "threads.fork": "Fork a committed checkpoint or result message with a stable idempotency_key. Omit selectors for latest; the receipt freezes that resolved checkpoint. Replays return the same branch. Shared prefixes exclude later inputs and evidence. Native graph adapters must explicitly implement safe completed-state forks.",
     "tasks.continue_result": "Explicitly repair a failed standalone delivery in its unchanged thread, preserving task identity and tool keys. Requires a committed checkpoint and no unresolved effects. Reuse the same key after disconnects. Frozen run/call/token/time limits include summary requests. New external actions are blocked; inspect the retained partial result and trace before choosing recovery.",
     "contexts.read": "Read one source reference in an explicit project, using bounded UTF-8 byte offsets. Follow next_offset for continuation. References identify immutable evidence snapshots, not current file contents or permission grants. Do not load every source or replace full results with UI summaries.",
@@ -249,10 +280,10 @@ NOTES = {
     "workflows.delete": "Requires confirmed=true after user authorization for this workflow. Recoverable deletion; unfinished or uncertain runs block it. Graph, project ownership and all run history are retained.",
     "workflows.restore": "Restores a deleted workflow to its previous active/archived state. Restore/reopen its project first if needed. Idempotent; does not reexecute runs.",
     "workflows.validate": "Checks DAG, start/end, true/false ports, upstream variable references, input schema and project Agents. Returns errors/warnings; does not execute anything.",
-    "workflows.run": "Runs a validated saved revision in a fresh, same-project session. Stable idempotency_key; optional expected_revision pins the canvas revision. Inputs must match the start JSON Schema. Agent nodes use the existing global budget and grants.",
+    "workflows.run": "Runs a saved revision in optional session_id (open, same project); omission creates a session. Multiple runs can share a session with independent ownership. Stable idempotency_key; expected_revision pins the definition. Inputs match the start JSON Schema; ordinary budgets and grants apply.",
     "workflows.get_run": "Durable node states, task IDs, full outputs and immutable graph snapshot. UNCERTAIN blocks downstream work until evidence-based task reconciliation; never automatically replay.",
     "workflows.result": "Nonblocking by default; timeout=0..30 seconds. WAIT_TIMEOUT leaves the workflow running.",
-    "workflows.cancel": "Requests cancellation of the run and its session tasks. Inspect get_run until confirmed terminal; uncertain or unsupported stops are never reported as completed.",
+    "workflows.cancel": "Requests cancellation of executions owned by this run and its linked child instances. Other runs and ordinary session tasks continue. Inspect get_run until confirmed terminal; uncertain or unsupported stops are never reported as completed.",
     "workflows.archive": "Reversible archive; prevents new runs and edits. Existing runs and history are retained.",
     "workflows.resume_node": "Resume one waiting Agent node using genuine input and a stable idempotency_key. Same task, no reexecution of completed nodes.",
     "workflows.reconcile_node": "Evidence-based resolution of an UNCERTAIN Agent node. Same Reconciliation contract as tasks.reconcile; never fabricate stopped or external-action confirmation.",

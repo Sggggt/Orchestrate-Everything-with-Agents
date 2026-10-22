@@ -9,7 +9,8 @@ import time
 import httpx
 
 from .errors import AdapterFailure, RuntimeFault, require
-from .models import AdapterEvent, LLMRequest, LLMResponse, TaskResult
+from .models import (AdapterEvent, LLMRequest, LLMResponse, TaskResult, QuantityRequirement, content_hash,
+                     MAX_MODEL_REQUEST_BYTES, MAX_MODEL_RESPONSE_BYTES)
 
 
 def model_required(config):
@@ -17,6 +18,16 @@ def model_required(config):
         config
         and (config.kind == "llm" or (config.kind == "process" and config.llm_required))
     )
+
+
+def model_fingerprint(config):
+    """Identify model settings without exposing endpoint or credential material."""
+    settings = {key: getattr(config, key) for key in (
+        "base_url", "model", "temperature", "max_output_tokens", "token_parameter",
+        "context_window_tokens", "context_budget_tokens", "timeout_seconds")}
+    if config.reasoning_effort is not None:
+        settings["reasoning_effort"] = config.reasoning_effort
+    return content_hash(settings)
 
 
 def model_setup(config, *, has_api_key=False):
@@ -100,6 +111,37 @@ async def drain_completion(stream):
         return False
 
 
+async def provider_error_details(response, context, api_key):
+    """Keep bounded diagnostic fields, never raw headers, bodies or credentials."""
+    data = bytearray()
+    try:
+        async with asyncio.timeout(1):
+            async for chunk in response.aiter_bytes(chunk_size=2048):
+                if len(data) + len(chunk) > 8192:
+                    return {"provider_error_body": "too_large"}
+                data.extend(chunk)
+    except (TimeoutError, httpx.HTTPError):
+        return {"provider_error_body": "unavailable"}
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return {"provider_error_body": "not_json"}
+    error = value.get("error", value) if isinstance(value, dict) else {}
+    if isinstance(error, str):
+        error = {"message": error}
+    if not isinstance(error, dict):
+        return {}
+    result = {}
+    for key in ("code", "type", "param", "message"):
+        item = error.get(key)
+        if isinstance(item, (str, int)):
+            safe = context._runtime.vault.redact(str(item))
+            if api_key:
+                safe = safe.replace(api_key, "[redacted]")
+            result["provider_" + key] = safe[:800 if key == "message" else 128]
+    return result
+
+
 class ConfiguredLLM:
     def __init__(self, config, api_key=""):
         self.config = config.model_copy(deep=True)
@@ -111,7 +153,7 @@ class ConfiguredLLM:
             "AGENT_NOT_CONFIGURED",
             "Configure an API endpoint and model first",
         )
-        from .context_projection import prepare_context
+        from .context_projection import prepare_context, estimated_tokens
         context_view = None
         if project_context:
             context_started = time.perf_counter()
@@ -120,11 +162,11 @@ class ConfiguredLLM:
         from .workspace import model_images
         messages = await model_images(messages, context)
         output_limit = self.config.max_output_tokens
-        if getattr(context, "request", None) is not None and context.request.continuation:
-            output_limit = await context._runtime.continuations.reserve_model(context, output_limit)
         body = {"model": self.config.model, "messages": messages, "stream": True}
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature
+        if self.config.reasoning_effort is not None:
+            body["reasoning_effort"] = self.config.reasoning_effort
         if output_limit is not None:
             body[self.config.token_parameter] = output_limit
         if tools:
@@ -137,15 +179,22 @@ class ConfiguredLLM:
             headers["Authorization"] = "Bearer " + self.api_key
         calls, text, completed, finish_reason, usage, refused = {}, "", False, None, {}, False
         from .tracing import RunStage
-        stage = RunStage(context, purpose, model=self.config.model, max_output_tokens=output_limit)
+        stage = RunStage(context, purpose, model=self.config.model, model_fingerprint=model_fingerprint(self.config),
+                         tools_requested=bool(tools), max_output_tokens=output_limit,
+                         input_tokens_estimate=estimated_tokens(messages) + estimated_tokens(tools or []))
         if context_view:
             stage.attributes["context"] = context_view
+        if self.config.reasoning_effort is not None:
+            stage.attributes["reasoning_effort"] = self.config.reasoning_effort
         await stage.record("RUNNING")
-        if purpose == "model" and getattr(context, "request", None) is not None:
-            context.partial_model_result = None
+        if getattr(context, "request", None) is not None:
+            body[self.config.token_parameter] = stage.attributes["max_output_tokens"]
         failure, cancelled = None, False
+        resource_key = "model:" + content_hash({"base_url": self.config.base_url, "model": self.config.model})[:24]
+        resources = context._runtime.resources
+        resources.defaults(resource_key, context._runtime.config.max_concurrency, unit="request")
         try:
-            async with context._runtime.model_transport.borrow(self.config.base_url) as client:
+            async with resources.phase(stage.id, (QuantityRequirement(key=resource_key),), timeout=self.config.timeout_seconds), context._runtime.model_transport.borrow(self.config.base_url) as client:
                 async with client.stream(
                     "POST",
                     self.config.base_url + "/chat/completions",
@@ -156,16 +205,17 @@ class ConfiguredLLM:
                     stage.attributes["response_headers_ms"] = stage.elapsed()
                     stage.attributes["http_status"] = response.status_code
                     if response.status_code >= 400:
+                        provider = await provider_error_details(response, context, self.api_key)
                         if response.status_code in {400, 415, 422} and any(
                             isinstance(message.get("content"), list) and any(block.get("type") == "image_url" for block in message["content"])
                             for message in messages):
-                            raise RuntimeFault("MODEL_IMAGE_REJECTED", "The configured model rejected the image request")
+                            raise RuntimeFault("MODEL_IMAGE_REJECTED", "The configured model rejected the image request", details=provider)
                         raise AdapterFailure(
                             f"LLM API returned HTTP {response.status_code}",
                             retryable=response.status_code in {429, 502, 503, 504},
                             safe_to_retry=True,
                             code="MODEL_HTTP_ERROR",
-                            details={"stage": "model", "origin": "provider_response", "http_status": response.status_code},
+                            details={"stage": "model", "origin": "provider_response", "http_status": response.status_code, **provider},
                         )
                     require(
                         "text/event-stream"
@@ -319,6 +369,10 @@ class ConfiguredLLM:
                                    "semantic_review": "UNVERIFIED"}})
         if purpose == "model" and not calls and getattr(context, "request", None) is not None:
             text = await context._runtime.continuations.merge_output(context, text)
+        if purpose == "model" and getattr(context, "request", None) is not None:
+            context.partial_model_result = TaskResult(output={"text": text}, metadata={
+                "model_completion": {"finish_reason": finish_reason, "usage": usage},
+                "acceptance": {"state": "INCOMPLETE", "semantic_review": "UNVERIFIED"}})
         yield {
             "call_id": stage.id,
             "text": text,
@@ -371,6 +425,7 @@ class RunLLM:
         config = self.client.config
         return {
             **model_setup(config, has_api_key=bool(self.client.api_key)),
+            **({"reasoning_effort": config.reasoning_effort} if config.reasoning_effort is not None else {}),
             **{
                 key: getattr(config, key)
                 for key in (
@@ -436,30 +491,25 @@ class RunLLM:
                 await asyncio.gather(work, cancellation, return_exceptions=True)
 
     async def _complete(self, request):
-        from .presentation import OUTPUT_GUIDANCE, SummaryStream
-        from .operations import OPERATIONS_GUIDANCE, COORDINATOR_GUIDANCE
+        from .presentation import SummaryStream
+        from .model_input import instruction_text
         context, runtime = self.context, self.context._runtime
         messages = list(request.messages)
         if context.request.continuation:
             messages.append({"role": "user", "content": (context.request.resume_input or {}).get("content", "Complete the retained result.")})
         if request.include_instructions:
-            instructions = "\n\n".join(
-                filter(
-                    None, [self.client.config.system_prompt, context.request.agent_md, OUTPUT_GUIDANCE, OPERATIONS_GUIDANCE]
-                )
-            )
-            if instructions:
-                messages.insert(0, {"role": "system", "content": instructions})
             skills = await context.list_skills()
-            if skills:
-                messages.insert(0, {"role": "system", "content": "Enabled Skill catalog; use context.read_skill to load relevant instructions:\n" + json.dumps(skills)})
-        if context.loaded_skills:
-            messages.insert(0, {"role": "system", "content": "Required Skill instructions loaded by the platform:\n" + json.dumps(list(context.loaded_skills.values()))})
-        if context.request.operations_consumer_id:
-            messages.insert(0, {"role": "system", "content": COORDINATOR_GUIDANCE})
+            messages.insert(0, {"role": "system", "content": instruction_text(context.request, self.client.config,
+                skills, context.loaded_skills.values())})
+        else:
+            if context.loaded_skills:
+                messages.insert(0, {"role": "system", "content": "Required Skill instructions loaded by the platform:\n" + json.dumps(list(context.loaded_skills.values()))})
+            if context.request.operations_consumer_id:
+                from .operations import COORDINATOR_GUIDANCE
+                messages.insert(0, {"role": "system", "content": COORDINATOR_GUIDANCE})
         # Retain the run's configuration snapshot; never accept caller-supplied
         # endpoint, model, Authorization, or another Agent's identity.
-        messages = runtime.clean_json(messages, 524288)
+        messages = runtime.clean_json(messages, MAX_MODEL_REQUEST_BYTES)
 
         summary_stream = SummaryStream()
         async def progress(event):
@@ -499,7 +549,7 @@ class RunLLM:
                 runtime.events.progress(req.session_id, req.thread_id, req.task_id, req.run_id,
                                         "run.progress", {"delta": tail, "format": "markdown", "channel": "summary"})
         await context.check_current()
-        safe = runtime.clean_json(response.model_dump(mode="json"), 524288)
+        safe = runtime.clean_json(response.model_dump(mode="json"), MAX_MODEL_RESPONSE_BYTES)
         response = LLMResponse.model_validate(safe)
         failure = None
         if response.finish_reason in {"length", "max_tokens"}:

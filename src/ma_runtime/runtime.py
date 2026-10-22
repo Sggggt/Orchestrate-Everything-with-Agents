@@ -9,7 +9,6 @@ import random
 import shutil
 import time
 from dataclasses import dataclass
-from collections import Counter
 
 from .artifacts import ArtifactStore
 from .context import RunContext
@@ -107,7 +106,7 @@ class Runtime:
         self.allow_trusted_local = allow_trusted_local
         self.lock = WorkspaceLock(self.root)
         self.store = StoreActor(self.root)
-        self.resources = ResourceCoordinator()
+        self.resources = ResourceCoordinator(self)
         self.projects = Projects(self)
         self.sessions, self.agents, self.threads = (
             Sessions(self),
@@ -115,17 +114,35 @@ class Runtime:
             Threads(self),
         )
         self.tasks, self.messages = Tasks(self), Messages(self)
+        from .budgets import Budgets
+        self.budgets = Budgets(self)
+        from .admission import Admission
+        self.admission = Admission(self)
+        from .message_delivery import MessageDelivery
+        from .channels import ExecutionChannels
+        self.delivery = MessageDelivery(self.store, check_run=self.check_run, notify=self.notify)
+        self.channels = ExecutionChannels(self.store, check_run=self.check_run, delivery=self.delivery)
+        from .a2a import A2AMapping
+        self.a2a = A2AMapping(self)
         from .instances import Instances
 
         self.instances = Instances(self)
         from .workflows import Workflows
 
         self.workflows = Workflows(self)
+        from .workflow_repairs import WorkflowRepairs
+        self.workflow_repairs = WorkflowRepairs(self)
         self.events = EventHub(self)
         from .model_transport import ModelTransport
         self.model_transport = ModelTransport()
         from .context_projection import ContextStore
         self.contexts = ContextStore(self)
+        from .context_merges import ContextMerges
+        self.context_merges = ContextMerges(self)
+        from .workdirs import Workdirs
+        self.workdirs = Workdirs(self)
+        from .supervision import Supervision
+        self.supervision = Supervision(self)
         from .chat_history import ChatHistory
         self.chat_history = ChatHistory()
         from .continuations import Continuations
@@ -162,8 +179,12 @@ class Runtime:
         self.lock.acquire()
         try:
             await self.store.open()
+            await self.budgets.open()
             self.vault = SecretVault(self.root)
             self.artifacts = ArtifactStore(self)
+            from .commands import CommandBus
+            from .bridges.dispatch import methods
+            self.commands = CommandBus(methods(self))
             from .tools import ToolGateway
 
             self.tools = ToolGateway(self)
@@ -179,6 +200,8 @@ class Runtime:
                     self.adapters[config.id] = self.make_adapter(config)
             for adapter in self.adapters.values():
                 self.validate_adapter(adapter)
+            await self.resources.open()
+            await self.channels.open()
             await self.mcp.open()
             await self.skills.open()
             await self.operations.open()
@@ -470,6 +493,8 @@ class Runtime:
             task, run = self.check_run(db, run_id)
             result = event.result
             active = self.active.get(run_id)
+            if active and getattr(active.context, "budget_failure", None):
+                raise active.context.budget_failure
             if event.type == "completed":
                 incomplete = getattr(active.context, "incomplete_model_completion", None) if active else None
                 if incomplete:
@@ -505,19 +530,7 @@ class Runtime:
                     "UNSUPPORTED_CAPABILITY",
                     "Checkpoint format does not match the execution endpoint",
                 )
-            offered = {
-                m.id
-                for m in rows(
-                    db,
-                    "SELECT id FROM messages WHERE target_run_id=? AND state='OFFERED'",
-                    (run_id,),
-                )
-            }
-            require(
-                set(event.applied_message_ids) <= offered,
-                "ADAPTER_PROTOCOL_ERROR",
-                "Receipt contains messages not offered to this run",
-            )
+            self.delivery.validate_application(db, run_id, event.applied_message_ids)
             require(
                 not event.applied_message_ids
                 or descriptor["message_receipts"] == "next_turn_ack",
@@ -567,20 +580,9 @@ class Runtime:
                 )
                 if cp.format_version == "chat-messages-v2":
                     db.execute("INSERT INTO chat_checkpoint_heads VALUES(?,?)", (checkpoint_id, checkpoint_ref.get("message_head")))
-            for identity in event.applied_message_ids:
-                db.execute(
-                    "UPDATE messages SET state='APPLIED',applied_checkpoint_id=?,updated_at=? WHERE id=?",
-                    (checkpoint_id, now_ms(), identity),
-                )
-                emit(
-                    db,
-                    "message.applied",
-                    session_id=task.session_id,
-                    thread_id=thread.id,
-                    task_id=task.id,
-                    run_id=run_id,
-                    payload={"message_id": identity, "state": "APPLIED"},
-                )
+                self.context_merges.checkpoint(db, thread.id, checkpoint_id)
+            self.delivery.apply(db, task, run_id, checkpoint_id, event.applied_message_ids)
+            self.delivery.reset_offers(db, run_id)
             # Preserve source validation while the run is still current.
             if event.outgoing_messages:
                 self.check_collaboration(run)
@@ -598,7 +600,6 @@ class Runtime:
                     }
                 )
                 self.messages.insert(db, outgoing, caller_run_id=run_id)
-            # Unacknowledged offers stay OFFERED until the stopped run is reconciled.
             state = "WAITING" if event.type == "suspended" else "FAILED" if result_error else "SUCCEEDED"
             receipt = {
                 "run_id": run_id,
@@ -637,6 +638,7 @@ class Runtime:
             )
             if result:
                 self.append_reply(db, task, run_id, result, checkpoint_id if event.checkpoint else None)
+            self.channels.end_in(db, run_id, thread.id)
             if event.checkpoint:
                 cutoff = active.request.conversation_cutoff if active else json.loads(run.adapter_run_ref_json or "{}").get("conversation_cutoff", 0)
                 ceiling = one(db, "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation WHERE thread_id=?", (thread.id,)).seq
@@ -675,8 +677,16 @@ class Runtime:
             raise
         if run_id in self.active:
             self.active[run_id].committed = True
+            self.channels.ended(run_id, self.active[run_id].request.thread_id)
+            self._discard_committed_boundary(self.active[run_id].adapter, run_id)
         self.notify()
         return receipt
+
+    @staticmethod
+    def _discard_committed_boundary(adapter, run_id):
+        discard = getattr(adapter, "discard_committed_boundary", None)
+        if discard is not None:
+            discard(run_id)
 
     async def close_sessions(self):
         def close(db):
@@ -742,7 +752,7 @@ class Runtime:
                 elif wait.kind == "message":
                     pending = rows(
                         db,
-                        "SELECT * FROM messages WHERE target_thread_id=? AND target_port=? AND state='PENDING'",
+                        "SELECT m.* FROM messages m JOIN message_delivery d ON d.message_id=m.id WHERE target_thread_id=? AND target_port=? AND m.state='PENDING' AND d.state='DELIVERED'",
                         (task.thread_id, wait.port),
                     )
                     ready = any(
@@ -771,6 +781,7 @@ class Runtime:
         try:
             while not self.closing:
                 self.wake.clear()
+                await self.resources.tick()
                 await self.wake_waiting()
                 await self.workflows.tick()
                 await self.dispatch()
@@ -819,13 +830,6 @@ class Runtime:
             return candidates, dependencies
         candidates, dependency_states = await self.store.call(snapshot)
 
-        def counts():
-            # Drivers can finish during store awaits. Recount live runs, and never
-            # double-count an uncertain receipt whose driver has not exited yet.
-            by_run = dict(self._uncertain_owners)
-            for run_id, active in self.active.items():
-                by_run[run_id] = (active.request.agent_id, active.batch_id)
-            return Counter(a for a, _ in by_run.values()), Counter(b for _, b in by_run.values() if b)
         groups = {}
         for task in candidates:
             groups.setdefault(task.session_id, []).append(task)
@@ -840,7 +844,6 @@ class Runtime:
             if group:
                 sessions.append(session_id)
             self.last_session = session_id
-            agent_active, batch_active = counts()
             spec = TaskSpec.model_validate_json(task.spec_json)
             reason = None
             adapter = self.adapters.get(spec.agent_id)
@@ -861,13 +864,9 @@ class Runtime:
                 reason = "AGENT_DISABLED"
             elif model_required(config) and not (config.base_url and config.model):
                 reason = "MODEL_CONFIGURATION"
-            elif (
-                agent_active[spec.agent_id] >= min(adapter.describe().max_concurrency,
-                                                  config.max_concurrency if config else 64)
-            ):
-                reason = "AGENT_LIMIT"
-            if task.batch_id and batch_active[task.batch_id] >= task.batch_limit:
-                reason = "BATCH_LIMIT"
+            claims = self.resources.execution_claims(spec.agent_id,
+                min(adapter.describe().max_concurrency, config.max_concurrency if config else 64)
+                if adapter else 1, task.batch_id, task.batch_limit)
             dependencies = dependency_states.get(task.id, ())
             if any(state not in TERMINAL for state in dependencies):
                 reason = "DEPENDENCIES"
@@ -887,8 +886,12 @@ class Runtime:
                 or any(a.request.thread_id == task.thread_id for a in self.active.values())
             ):
                 reason = "THREAD"
-            if not self.resources.can_acquire("", spec.resources):
-                reason = "RESOURCES"
+            blockers = self.resources.reasons("", spec.resources, claims)
+            if blockers:
+                key = blockers[0]["key"]
+                reason = ("AGENT_LIMIT" if key.startswith("execution:agent:") else
+                          "BATCH_LIMIT" if key.startswith("execution:batch:") else
+                          "GLOBAL_LIMIT" if key == "execution:global" else "RESOURCES")
             if reason:
                 if task.queue_reason != reason:
                     await self.store.call(
@@ -900,10 +903,8 @@ class Runtime:
                     )
                 continue
             run_id = new_id("run")
-            self.resources.acquire(run_id, spec.resources)
             try:
                 async with self.configuration_lock:
-                    agent_active, batch_active = counts()
                     adapter = self.adapter(spec.agent_id)
                     config = self.agent_configs.get(spec.agent_id)
                     model_client = (
@@ -922,10 +923,13 @@ class Runtime:
                             model_required(config)
                             and not (config.base_url and config.model)
                         )
-                        or agent_active[spec.agent_id] >= min(adapter.describe().max_concurrency,
-                                                             config.max_concurrency if config else 64)
                     ):
                         self.resources.release(run_id)
+                        continue
+                    claims = self.resources.execution_claims(spec.agent_id,
+                        min(adapter.describe().max_concurrency, config.max_concurrency if config else 64),
+                        task.batch_id, task.batch_limit)
+                    if not self.resources.acquire(run_id, spec.resources, claims):
                         continue
                     request = await self.store.call(
                         lambda db, t=task, s=spec, a=adapter, rid=run_id: self.prepare(
@@ -935,7 +939,7 @@ class Runtime:
                     )
             except RuntimeFault as exc:
                 self.resources.release(run_id)
-                if exc.code in {"UNSUPPORTED_CAPABILITY", "ADAPTER_PROTOCOL_ERROR", "PERMISSION_DENIED"}:
+                if exc.code in {"UNSUPPORTED_CAPABILITY", "ADAPTER_PROTOCOL_ERROR", "PERMISSION_DENIED", "BUDGET_EXHAUSTED"}:
                     await self.store.call(
                         lambda db, t=task, e=exc: self.finish_idle(
                             db, t, "FAILED", e.as_dict()
@@ -971,6 +975,7 @@ class Runtime:
         ):
             return None
         descriptor = adapter.describe()
+        self.budgets.start(db, task_id)
         profile = self.agent_configs.get(spec.agent_id)
         checkpoint = None
         if thread.latest_checkpoint_id:
@@ -983,7 +988,11 @@ class Runtime:
                 "UNSUPPORTED_CAPABILITY",
                 "Saved checkpoint is not compatible with this adapter",
             )
-            checkpoint = self.chat_history.load(db, cp, thread) if descriptor.checkpoint_format_version == "chat-messages-v2" else json.loads(cp.ref_json)
+            if descriptor.checkpoint_format_version == "chat-messages-v2":
+                budget = min(profile.context_budget_tokens if profile else 48000, spec.context_budget_tokens or 1048576)
+                checkpoint = self.chat_history.load(db, cp, thread, max_bytes=max(1024, budget * 2))
+            else:
+                checkpoint = json.loads(cp.ref_json)
         from .chat_history import user_cutoff
         cutoff = user_cutoff(db, thread, task)
         attempt = task.attempt_count + 1
@@ -1027,25 +1036,7 @@ class Runtime:
             "UPDATE threads SET owner_task_id=?,active_run_id=? WHERE id=?",
             (task_id, run_id, thread.id),
         )
-        pending = rows(
-            db,
-            "SELECT * FROM messages WHERE target_thread_id=? AND state='PENDING' ORDER BY created_at,rowid LIMIT 100",
-            (thread.id,),
-        )
-        for message in pending:
-            db.execute(
-                "UPDATE messages SET state='OFFERED',target_run_id=?,updated_at=? WHERE id=?",
-                (run_id, now_ms(), message.id),
-            )
-            emit(
-                db,
-                "message.offered",
-                session_id=task.session_id,
-                thread_id=thread.id,
-                task_id=task_id,
-                run_id=run_id,
-                payload={"message_id": message.id, "state": "OFFERED"},
-            )
+        pending = self.delivery.offer_pending(db, task, run_id)
         from .chat_history import conversation_rows
         history = [] if checkpoint and descriptor.checkpoint_format_version == "chat-messages-v2" else list(reversed(
             conversation_rows(db, thread.id, limit=200, descending=True, user_limit=cutoff)))
@@ -1095,7 +1086,7 @@ class Runtime:
             skill_policy=spec.skill_policy,
             result_policy=spec.result_policy,
             context_budget_tokens=spec.context_budget_tokens,
-            context_refs=spec.context_refs,
+            context_refs=(*spec.context_refs, *self.context_merges.references(db, task.id)),
             operations_consumer_id=self.operations.for_thread(task.session_id, thread.id),
             workbench=self.environments.snapshot(db, task_id, profile, project),
         )
@@ -1106,8 +1097,10 @@ class Runtime:
         if active.context.cancelled.is_set():
             raise asyncio.CancelledError
         preparation_started = time.perf_counter()
-        await active.context.initialize()
-        active.context.preparation_ms = round((time.perf_counter() - preparation_started) * 1000, 3)
+        try:
+            await active.context.initialize()
+        finally:
+            active.context.preparation_ms = round((time.perf_counter() - preparation_started) * 1000, 3)
         active.started = True
         boundary = None
         last_seq = 0
@@ -1164,7 +1157,9 @@ class Runtime:
         run_id = active.request.run_id
         try:
             saved = await self.store.call(
-                lambda db: need(db, "tasks", active.request.task_id)
+                lambda db: one(db, "SELECT t.*,b.started_at+json_extract(b.policy_json,'$.max_elapsed_seconds')*1000 AS budget_deadline "
+                    "FROM tasks t JOIN task_budgets tb ON tb.task_id=t.id JOIN execution_budgets b ON b.id=tb.budget_id WHERE t.id=?",
+                    (active.request.task_id,))
             )
         except BaseException:
             self.accepting = False
@@ -1187,6 +1182,9 @@ class Runtime:
             )
         if active.request.continuation:
             timeout = max(0, min(timeout, (active.request.continuation["deadline_at"] - now_ms()) / 1000))
+        budget_timeout = max(0, (saved.budget_deadline - now_ms()) / 1000)
+        budget_limited = budget_timeout <= timeout
+        timeout = min(timeout, budget_timeout)
         stopped = False
         try:
             done, _ = await asyncio.wait(
@@ -1229,7 +1227,7 @@ class Runtime:
                 await self.fail_run(
                     active,
                     RuntimeFault(
-                        "TASK_CANCELLED" if user_cancel else "ATTEMPT_TIMEOUT",
+                        "TASK_CANCELLED" if user_cancel else "BUDGET_EXHAUSTED" if budget_limited else "ATTEMPT_TIMEOUT",
                         (
                             "Cancellation requested"
                             if user_cancel
@@ -1251,13 +1249,20 @@ class Runtime:
                 stopped=False,
             )
         except Exception as exc:
-            probe = await self.probe(active.adapter, {"run_id": run_id})
-            stopped = active.worker.done() and probe.confirmed_stopped
+            if active.started:
+                probe = await self.probe(active.adapter, {"run_id": run_id})
+                stopped = active.worker.done() and probe.confirmed_stopped
+            else:
+                # Dependency preparation has not entered adapter.execute; an
+                # unsupported probe cannot turn this into an unknown execution.
+                stopped = True
             error = (
                 exc
                 if isinstance(exc, RuntimeFault)
                 else RuntimeFault("ADAPTER_FAILED", "Execution endpoint failed")
             )
+            if not active.started:
+                error.identity.update(stage="preparation", task_id=active.request.task_id, run_id=run_id)
             await self.fail_run(active, error, stopped=stopped, never_started=not active.started)
         finally:
             cancellation.cancel()
@@ -1399,10 +1404,8 @@ class Runtime:
                 ),
             )
             if stopped and not uncertain:
-                db.execute(
-                    "UPDATE messages SET state='PENDING',target_run_id=NULL WHERE target_run_id=? AND state='OFFERED'",
-                    (run.id,),
-                )
+                self.delivery.reset_offers(db, run.id)
+            self.channels.end_in(db, run.id, task.thread_id)
             for tool in unresolved:
                 db.execute(
                     "UPDATE tool_calls SET state='UNCERTAIN',updated_at=? WHERE id=?",
@@ -1427,6 +1430,7 @@ class Runtime:
             return state
 
         state = await self.store.call(fail, transaction=True)
+        self.channels.ended(active.request.run_id, active.request.thread_id)
         if state == "UNCERTAIN":
             self.retain_uncertain(active)
             self.resources.isolate(
@@ -1450,8 +1454,8 @@ class Runtime:
         pending = await self.store.call(
             lambda db: rows(
                 db,
-                "SELECT r.*,t.session_id,t.thread_id,t.spec_json,m.batch_id FROM runs r JOIN tasks t ON t.id=r.task_id "
-                "LEFT JOIN instance_members m ON m.task_id=t.id WHERE r.state IN ('RUNNING','UNCERTAIN')",
+                "SELECT r.*,t.session_id,t.thread_id,t.spec_json,m.batch_id,b.max_concurrency AS batch_limit FROM runs r JOIN tasks t ON t.id=r.task_id "
+                "LEFT JOIN instance_members m ON m.task_id=t.id LEFT JOIN instance_batches b ON b.id=m.batch_id WHERE r.state IN ('RUNNING','UNCERTAIN')",
             )
         )
         for run in pending:
@@ -1484,7 +1488,11 @@ class Runtime:
                 ResourceRequirement.model_validate(r)
                 for r in json.loads(run.held_resources_json)
             ]
-            self.resources.acquire(run.id, requirements)
+            config = self.agent_configs.get(spec.agent_id)
+            claims = self.resources.execution_claims(spec.agent_id,
+                min(adapter.describe().max_concurrency, config.max_concurrency if config else 64)
+                if adapter else 1, run.batch_id, run.batch_limit)
+            self.resources.restore(run.id, requirements, claims)
             if probe.state == "NOT_STARTED" and probe.confirmed_stopped:
 
                 def not_started(db, r=run):
@@ -1507,10 +1515,7 @@ class Runtime:
                         "UPDATE threads SET active_run_id=NULL,blocked_reason=NULL WHERE id=?",
                         (r.thread_id,),
                     )
-                    db.execute(
-                        "UPDATE messages SET state='PENDING',target_run_id=NULL WHERE target_run_id=? AND state='OFFERED'",
-                        (r.id,),
-                    )
+                    self.delivery.reset_offers(db, r.id)
                     emit(
                         db,
                         "run.recovered_not_started",
@@ -1559,6 +1564,7 @@ class Runtime:
                     await self.commit_boundary(
                         run.id, probe.boundary, probe.boundary.local_seq or 1
                     )
+                    self._discard_committed_boundary(adapter, run.id)
                     self.resources.release(run.id)
                     continue
                 except RuntimeFault:
@@ -1570,7 +1576,7 @@ class Runtime:
                     (now_ms() if p.confirmed_stopped else None, r.id),
                 )
                 db.execute(
-                    "UPDATE tasks SET state='UNCERTAIN',error_json=?,updated_at=? WHERE id=?",
+                    "UPDATE tasks SET state='UNCERTAIN',error_json=COALESCE(error_json,?),updated_at=? WHERE id=?",
                     (
                         json_dump(
                             {
@@ -1614,7 +1620,7 @@ class Runtime:
             )
         ):
             owner = tool.run_id + ":" + tool.id
-            self.resources.acquire(
+            self.resources.restore(
                 owner,
                 [
                     ResourceRequirement.model_validate(r)
@@ -1673,6 +1679,8 @@ class Runtime:
         self.wake.set()
         if self.scheduler:
             await self.scheduler
+        if self.workdirs.pending:
+            await asyncio.gather(*(entry[1] for entry in tuple(self.workdirs.pending.values())), return_exceptions=True)
         for active in tuple(self.active.values()):
             active.context.cancelled.set()
         drivers = [active.driver for active in self.active.values() if active.driver]

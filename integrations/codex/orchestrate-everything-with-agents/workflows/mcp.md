@@ -16,8 +16,8 @@
 
 ## 单工具使用
 
-1. `mcp.tools {server_id, consumer_id}` 只读工具目录。需要刷新时显式 `refresh=true`。
-2. 选定一个工具，再 `mcp.tools {server_id, tool_name, consumer_id}` 读取其输入协议。
+1. `mcp.catalog {server_id,cursor,limit}` 分页读缓存目录，含稳定工具标识、协议版本、schema 指纹和估算大小；不建立连接。source=unknown 时按授权用 `mcp.connect` 发现，不把空目录当成没有工具。
+2. 选定一个工具，用 `mcp.tool {server_id,tool_name,expected_fingerprint}` 读取完整协议及引用定义。指纹冲突先重读目录。旧 `mcp.tools` 入口保留，refresh=true 会连接刷新。
 3. 按已授权业务目标调用 `mcp.call {server_id, tool_name, arguments, consumer_id, idempotency_key}`。一次调用一个工具；检查平台 `ok` 和上游结果 `isError`。
 4. 需要核对时 `mcp.calls {server_id, limit:25}`，沿用调用 ID 和幂等键；不因超时换键重试。
 
@@ -26,6 +26,10 @@
 `consumer_id` 使用本次对话稳定且与其他独立对话不同的值。consumer 模式隔离上游会话，shared 模式刻意共享状态；共享配置不等于所有客户端应共用当前项目选择。有项目选择或浏览器状态的服务使用 consumer 隔离，并显式选择当前目标。
 
 查询服务协议不等于允许读取其数据。访问外部服务时遵守用户授权和该服务的访问约束。
+
+本地 JSON Schema 合法、OEA 帧/模型输入可容纳、供应商接受工具格式、上游执行业务成功是不同检查。缓存目录只证明曾完成发现；递归 schema 保留完整定义，不为缩短输入切掉必要引用。
+
+容量由 `mcp.policy` 查看，变更用 configure_policy；服务调用数、单连接调用数和连接数共同限制工具、资源和提示调用。未知/超时在实际停止前保留占用；真实停止证据齐全才用 `mcp.reconcile_capacity` 解除隔离。
 
 ## 授权、资源和提示
 

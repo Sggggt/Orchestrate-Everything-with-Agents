@@ -25,16 +25,20 @@ class Instances:
             require(adapter.describe().execution_mode != "external", "UNSUPPORTED_CAPABILITY",
                     "Instances require platform-managed Agents")
 
-    def insert(self, db, spec, caller_run_id=None, *, task_metadata=None):
+    def insert(self, db, spec, caller_run_id=None, *, task_metadata=None, workflow_run_id=None, budget_id=None):
         parent = None
         if caller_run_id:
             parent, run = self.rt.check_run(db, caller_run_id)
             self.rt.check_collaboration(run)
             require(parent.session_id == spec.session_id, "PERMISSION_DENIED",
                     "Child instances must stay in the current session")
+            from .ownership import workflow_owner
+            workflow_run_id = workflow_owner(db, parent.id)
         parent_id = parent.id if parent else None
         from .execution_policy import request_hash
         digest = request_hash(spec)
+        if budget_id is not None:
+            digest = content_hash({"request_hash": digest, "budget_id": budget_id})
         if task_metadata:
             digest = content_hash({"request_hash": digest, "metadata": task_metadata})
         old = one(db, "SELECT * FROM instance_batches WHERE session_id=? AND idempotency_key=?",
@@ -63,6 +67,11 @@ class Instances:
         identity, stamp = new_id("batch"), now_ms()
         db.execute("INSERT INTO instance_batches(id,session_id,parent_task_id,idempotency_key,request_hash,max_concurrency,routing,created_at) VALUES(?,?,?,?,?,?,?,?)",
                    (identity, spec.session_id, parent_id, spec.idempotency_key, digest, spec.max_concurrency, spec.routing, stamp))
+        inherited = (self.rt.budgets.task(db, parent_id) if parent_id else
+                     self.rt.budgets.workflow(db, workflow_run_id, spec.session_id) if workflow_run_id else None)
+        selected_budget = self.rt.budgets.select(db, spec.session_id, explicit=budget_id,
+                                               inherited=inherited, key="batch:" + identity)
+        db.execute("INSERT INTO batch_budgets VALUES(?,?)", (identity, selected_budget))
         for ordinal, payload in enumerate(spec.payloads):
             agent_id = (spec.agent_ids[ordinal % len(spec.agent_ids)] if spec.routing == "round_robin"
                         else min(spec.agent_ids, key=lambda candidate: (candidate in unavailable,
@@ -72,6 +81,9 @@ class Instances:
             db.execute("INSERT INTO threads(id,session_id,agent_id,title,adapter_snapshot_json,created_at) VALUES(?,?,?,?,?,?)",
                        (thread_id, spec.session_id, agent_id, f"{agent_id} · {ordinal + 1}",
                         json_dump(self.rt.adapter(agent_id).describe()), stamp))
+            if workflow_run_id is not None:
+                from .ownership import bind_workflow_thread
+                bind_workflow_thread(db, thread_id, workflow_run_id)
             emit(db, "thread.created", session_id=spec.session_id, thread_id=thread_id,
                  payload={"agent_id": agent_id, "batch_id": identity})
             task = TaskSpec(session_id=spec.session_id, thread_id=thread_id, agent_id=agent_id,
@@ -81,17 +93,18 @@ class Instances:
                                                          "parent_task_id": parent_id, **(task_metadata or {})},
                 tool_policy=spec.tool_policy, skill_policy=spec.skill_policy, result_policy=spec.result_policy,
                 context_budget_tokens=spec.context_budget_tokens, context_refs=spec.context_refs, continuation_policy=spec.continuation_policy)
-            handle = self.rt.tasks.insert(db, task, caller_run_id=caller_run_id)
+            handle = self.rt.tasks.insert(db, task, caller_run_id=caller_run_id, workflow_run_id=workflow_run_id,
+                                          inherited_budget_id=selected_budget)
             db.execute("INSERT INTO instance_members VALUES(?,?,?)", (identity, ordinal, handle.id))
         emit(db, "instances.spawned", session_id=spec.session_id,
              payload={"batch_id": identity, "count": len(spec.payloads), "parent_task_id": parent_id})
         return self.snapshot(db, identity)
 
-    async def spawn(self, spec: InstanceBatchSpec | dict, *, caller_run_id=None):
+    async def spawn(self, spec: InstanceBatchSpec | dict, *, caller_run_id=None, budget_id=None):
         self.rt.admit()
         spec = InstanceBatchSpec.model_validate(spec)
         spec = InstanceBatchSpec.model_validate(self.rt.clean_json(spec.model_dump(mode="json")))
-        result = await self.rt.store.call(lambda db: self.insert(db, spec, caller_run_id), transaction=True)
+        result = await self.rt.store.call(lambda db: self.insert(db, spec, caller_run_id, budget_id=budget_id), transaction=True)
         self.rt.notify()
         return result
 

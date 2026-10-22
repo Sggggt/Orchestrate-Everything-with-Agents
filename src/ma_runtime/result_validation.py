@@ -88,6 +88,8 @@ def validate_result(result, policy, artifacts):
     checked = result.model_copy(update={"metadata": {**result.metadata, "acceptance": acceptance}})
     error = None
     if failures:
+        from .presentation import delivery_summary
+        checked = checked.model_copy(update={"summary_markdown": delivery_summary(result.output)})
         first = failures[0]
         error = {"code": first["code"], "category": "result", "retryable": False,
                  "safe_message": first["message"], "details": {"stage": "validation", "failures": failures}}

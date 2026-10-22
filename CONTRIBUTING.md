@@ -9,7 +9,7 @@ Use Python 3.12 or newer. Create a virtual environment and runtime/test outputs 
 ```sh
 python -m pip install -c constraints.txt -e '.[web,mcp,langgraph,workbench]'
 python -B -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs tests/test_agent_status.mjs tests/test_browser_integration.mjs tests/test_message_feed.mjs
+node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs tests/test_agent_status.mjs tests/test_browser_integration.mjs tests/test_message_feed.mjs tests/test_instance_view.mjs tests/test_workflow_ui.mjs
 python -B scripts/check_release.py
 ```
 

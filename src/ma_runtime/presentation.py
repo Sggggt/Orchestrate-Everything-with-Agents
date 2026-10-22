@@ -14,7 +14,7 @@ OUTPUT_GUIDANCE = (
 )
 
 
-def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="任务已处理，完整结果已保留供协作使用。"):
+def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="内容已保留，可查看相关记录。"):
     """Best-effort projection, never a business-output validator."""
     if isinstance(value, dict):
         for key in ("summary_markdown", "summary", "text", "content", "conclusion"):
@@ -62,7 +62,14 @@ def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="任务已处理，
     return text or fallback
 
 
+def delivery_summary(value, *, limit=SUMMARY_LIMIT):
+    partial = markdown_summary(value, limit=max(1, limit - 40), fallback="")
+    return "交付检查未通过。" + ("\n\n" + partial if partial else "请查看保留的结果和执行记录。")
+
+
 def result_summary(result):
+    if (getattr(result, "metadata", {}).get("acceptance") or {}).get("state") == "FAILED":
+        return delivery_summary(getattr(result, "output", {}))
     explicit = getattr(result, "summary_markdown", "")
     output = getattr(result, "output", {})
     return markdown_summary(explicit or output)

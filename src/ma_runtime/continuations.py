@@ -71,20 +71,15 @@ class Continuations:
         self.rt.notify()
         return result
 
-    async def reserve_model(self, context, requested):
-        if not context.request.continuation:
-            return requested
-        def reserve(db):
-            task, _ = self.rt.check_run(db, context.request.run_id)
-            budget = one(db, "SELECT * FROM task_continuations WHERE task_id=?", (task.id,))
-            policy = ContinuationPolicy.model_validate_json(budget.policy_json)
-            remaining = policy.max_output_tokens - budget.tokens_reserved
-            require(now_ms() < budget.deadline_at and budget.calls_used < policy.max_model_calls and remaining > 0,
-                    "CONTINUATION_BUDGET_EXCEEDED", "Continuation model budget is exhausted", details={"stage": "model"})
-            allowed = min(requested or 4096, remaining)
-            db.execute("UPDATE task_continuations SET calls_used=calls_used+1,tokens_reserved=tokens_reserved+? WHERE task_id=?", (allowed, task.id))
-            return allowed
-        return await self.rt.store.call(reserve, transaction=True)
+    def reserve_model(self, db, request, requested):
+        budget = one(db, "SELECT * FROM task_continuations WHERE task_id=?", (request.task_id,))
+        policy = ContinuationPolicy.model_validate_json(budget.policy_json)
+        remaining = policy.max_output_tokens - budget.tokens_reserved
+        require(now_ms() < budget.deadline_at and budget.calls_used < policy.max_model_calls and remaining > 0,
+                "CONTINUATION_BUDGET_EXCEEDED", "Continuation model budget is exhausted", details={"stage": "model"})
+        allowed = min(requested or 4096, remaining)
+        db.execute("UPDATE task_continuations SET calls_used=calls_used+1,tokens_reserved=tokens_reserved+? WHERE task_id=?", (allowed, request.task_id))
+        return allowed
 
     def settle_model(self, db, task_id, reserved, usage):
         actual = usage.get("completion_tokens") if isinstance(usage, dict) else None

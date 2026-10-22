@@ -1,12 +1,13 @@
 """A finite RPC method allowlist, shared by local transports."""
 
 from ..errors import RuntimeFault
-import inspect
 
 
 def methods(rt):
     from ..operations import OPERATIONS_ACTIONS
     return {
+        **{"admission." + name: getattr(rt.admission, name) for name in ("describe", "candidates", "check")},
+        **{"budgets." + name: getattr(rt.budgets, name) for name in ("create", "get", "for_task", "entries", "amend")},
         "projects.create": rt.projects.create,
         "projects.get": rt.projects.get,
         "projects.list": rt.projects.list,
@@ -37,6 +38,13 @@ def methods(rt):
         "agents.skill_delete": rt.agents.skill_delete,
         "threads.create": rt.threads.create,
         "threads.get": rt.threads.get,
+        "threads.ownership": rt.threads.ownership,
+        "threads.instances": rt.threads.instances,
+        "threads.activity": rt.threads.activity,
+        "threads.mark_read": rt.threads.mark_read,
+        "threads.history": rt.threads.history,
+        "threads.prepare_workdir": rt.threads.prepare_workdir,
+        "threads.workdir": rt.threads.workdir,
         "threads.fork": rt.threads.fork,
         "threads.conversation": rt.threads.conversation,
         "threads.turn": rt.threads.turn,
@@ -46,6 +54,8 @@ def methods(rt):
         "tasks.trace": rt.tasks.trace,
         "tasks.continue_result": rt.tasks.continue_result,
         "contexts.read": rt.contexts.read,
+        "contexts.merge": rt.contexts.merge,
+        "contexts.get_merge": rt.contexts.get_merge,
         "tasks.list": rt.tasks.list,
         "tasks.result": rt.tasks.result,
         "tasks.cancel": rt.tasks.cancel,
@@ -58,23 +68,38 @@ def methods(rt):
         )},
         **{"workflows." + name: getattr(rt.workflows, name) for name in (
             "create", "get", "list", "update", "archive", "delete", "restore", "validate", "node_types",
-            "run", "get_run", "runs", "result", "cancel", "resume_node", "reconcile_node",
+            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair",
         )},
         "messages.send": rt.messages.send,
         "messages.get": rt.messages.get,
         "messages.list": rt.messages.list,
+        "messages.delivery": rt.messages.delivery,
+        "messages.reject": rt.messages.reject,
+        "messages.expire": rt.messages.expire,
+        "channels.get": rt.channels.get,
+        "a2a.capabilities": rt.a2a.capabilities,
+        "a2a.send": rt.a2a.send,
+        "a2a.get_task": rt.a2a.get_task,
         "artifacts.get": rt.artifacts.get,
         "events.list": rt.events.list,
         "events.live": rt.events.live,
         "resources.inspect": rt.resources.inspect,
+        **{"resources." + name: getattr(rt.resources, name) for name in (
+            "configure", "preflight", "request", "get", "release_lease",
+        )},
         "mcp.list": rt.mcp.list,
         "mcp.get": rt.mcp.get,
         "mcp.configure": rt.mcp.configure,
+        "mcp.configure_policy": rt.mcp.configure_policy,
+        "mcp.policy": rt.mcp.policy,
+        "mcp.reconcile_capacity": rt.mcp.reconcile_capacity,
         "mcp.register_directory": rt.mcp.register_directory,
         "mcp.delete": rt.mcp.delete,
         "mcp.connect": rt.mcp.connect,
         "mcp.disconnect": rt.mcp.disconnect,
         "mcp.tools": rt.mcp.tools,
+        "mcp.catalog": rt.mcp.catalog,
+        "mcp.tool": rt.mcp.tool,
         "mcp.call": rt.mcp.call,
         "mcp.calls": rt.mcp.calls,
         "mcp.resources": rt.mcp.resources,
@@ -91,19 +116,15 @@ def methods(rt):
     }
 
 
-async def dispatch(rt, method, params):
+async def dispatch(rt, method, params, *, view_version="1.1"):
+    from ..views import check_request, project
+    await check_request(rt, method, params, view_version)
     if method == "protocol.describe":
         from ..protocol import describe
 
         return describe(rt)
-    calls = methods(rt)
-    function = calls.get(method)
-    if function is None:
+    from ..models import CommandEnvelope
+    if method not in rt.commands.handlers:
         raise RuntimeFault("METHOD_NOT_FOUND", "Method is not available on this bridge")
-    try:
-        inspect.signature(function).bind(**params)
-    except TypeError:
-        raise RuntimeFault(
-            "INVALID_REQUEST", "Method parameters do not match its contract"
-        ) from None
-    return await function(**params)
+    value = await rt.commands.execute(CommandEnvelope(method=method, params=params))
+    return project(method, value, view_version)

@@ -4,15 +4,19 @@ File, image, command and delivery capabilities use the shared [workbench and env
 
 Shared Skill registration, Agent associations and task policies are described in [Skills and execution policies](skills.md).
 
+Execution adapters receive a run-bound context. `inbox()` reads pending messages, `acknowledge_messages()` records contiguous transport receipt, and a committed boundary declares application. When the host advertises logical reconnection, `reconnect_channel(connection_id)` changes its generation within the same execution; replay the same ID after response loss. It does not recreate an execution process or an operating-system transport. See [message and channel contracts](api.md).
+
+Adapters that retain a boundary for probing may implement the optional synchronous `discard_committed_boundary(run_id)` hook. Runtime calls it only after the durable commit is confirmed, including commit replay and recovery. Built-in adapters then release their temporary copy; full results remain in the store. Unconfirmed boundaries remain available for probing, and this hook does not release execution resources or stop a worker.
+
 For active diagnostics, passive receiving and run-bound Agent reports, see [Operations and guidance](operations.md). `client.operations` uses the same service as MCP and HTTP RPC; process Agents use `context.report_issue` and the scoped coordinator router. The browser reflects execution and pending reports through Agent status colors.
 
-The public package is `oea`. The existing `ma_runtime` and `agent` imports and `multi-agent` command remain compatible. New code should use `oea`, `oea.stdio` and the `oea` command.
+The public package is `oea`. Use `oea.client` for an existing host, `oea.execution` for adapter contracts, `oea.context` for run-bound capabilities, `oea.tools` for tool contracts and `oea.workflows` for graph definitions. The existing top-level `oea`, `ma_runtime` and `agent` imports and `multi-agent` command remain compatible. Process entry points use `oea.stdio`.
 
 ## Connect to an existing host
 
 ```python
 import asyncio
-from oea import PlatformClient
+from oea.client import PlatformClient
 
 async def main():
     async with PlatformClient.from_data_dir() as client:
@@ -25,6 +29,8 @@ asyncio.run(main())
 Pass the same external `data_dir` used by the host if it is not the CLI default. The client reads loopback connection metadata and a local token; no token belongs in application source. Remote client methods return JSON dictionaries. `client.call(method, params)` exposes the RPC catalog.
 
 Common services are `projects`, `sessions`, `threads`, `agents`, `tasks`, `messages`, `artifacts`, `workflows` and `mcp`. A project groups Agents and sessions; a session groups independent Agent threads. Tasks are durable units of execution. Messages exchange complete context. Artifacts store session-owned work files and provenance; their references can be included in messages and results. A reference alone does not give an Agent a text-reading tool.
+
+`client.budgets` creates and inspects cumulative execution limits. Bind a budget with the optional `budget_id` submission parameter when independent tasks or workflows should share a cap; descendant tasks and repairs inherit it automatically. The SDK selects response view `1.1`; use `view_version="1.0"` only for legacy response models. See [budget and view contracts](api.md#cumulative-execution-budgets).
 
 ## Run independent instances
 
@@ -82,7 +88,11 @@ Register the program as `kind=process` with an explicit command array such as `[
 
 For a model-backed process Agent, set `llm_required=True` and call `await context.llm.complete(...)`. The runtime supplies the model and credentials configured in the frontend. `context.llm.info()` returns non-secret settings; model tool calls must still be executed through authorized context methods. See [model_agent.py](../examples/model_agent.py). A mock test proves transport behavior; real model acceptance requires saved credentials and a successful model test.
 
+When supported by the provider, save `reasoning_effort` in the Agent configuration to control reasoning cost. The default is unspecified, so existing requests remain unchanged. This is a host setting, not a per-call override available to execution code. Output limits include provider reasoning tokens; a response that consumes its limit without visible delivery remains an incomplete result.
+
 STDIO carries UTF-8 JSONL only; write logs to stderr. Complete an execution with a `completed` or `suspended` boundary. Process memory is not durable across executions; use checkpoints and artifacts. The subprocess boundary provides lifecycle management, not an operating-system sandbox.
+
+Model requests permit up to 8 MiB of encoded JSON and model responses up to 2 MiB; managed Agent frames permit up to 16 MiB. These byte limits allow large configured contexts across the process boundary without changing task, message or artifact-upload limits. The saved context budget, output reservation, cumulative usage limits and provider context window still apply independently. A configured 500K-token context is not proof that a particular gateway accepts that input size.
 
 ## Output and collaboration
 

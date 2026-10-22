@@ -13,6 +13,7 @@ import sys
 import uuid
 
 from ma_runtime.errors import RuntimeFault, require
+from ma_runtime.models import MAX_AGENT_FRAME_BYTES
 from ma_runtime.models import (
     AdapterEvent,
     ExecutionRequest,
@@ -102,6 +103,23 @@ class RemoteRunContext:
     async def send_message(self, spec):
         return await self._call("runtime.messages.send", spec=spec)
 
+    async def reject_message(self, message_id, reason, idempotency_key):
+        return await self._call("runtime.messages.reject", message_id=message_id, reason=reason, idempotency_key=idempotency_key)
+
+    async def inbox(self, after_position=0, limit=32):
+        return await self._call("runtime.channel.inbox", after_position=after_position, limit=limit)
+
+    async def acknowledge_messages(self, positions):
+        return await self._call("runtime.channel.ack", positions=positions)
+
+    async def reconnect_channel(self, connection_id):
+        previous = self.endpoint.channel or {}
+        require("reconnect" in previous.get("capabilities", ()), "UNSUPPORTED_CAPABILITY", "Host does not support channel reconnection")
+        value = await self._call("runtime.channel.reconnect", connection_id=connection_id,
+                                 expected_generation=previous["generation"])
+        self.endpoint.channel = value
+        return value
+
     async def set_run_ref(self, native_ref):
         return await self._call("runtime.run_ref.set", ref=native_ref)
 
@@ -126,13 +144,18 @@ class _Endpoint:
         self.writing = asyncio.Lock()
         self.worker = None
         self.context = None
+        self.channel = None
 
     async def write(self, frame):
+        if frame.get("id") == "host:describe" and "result" in frame:
+            frame = {**frame, "extensions": {"oea.channel": "1.0"}}
+        if self.channel and (frame.get("method") == "agent.event" or frame.get("method", "").startswith("runtime.")):
+            frame = {**frame, "params": {**frame.get("params", {}), "channel": self.channel}}
         encoded = (json_dump(frame) + "\n").encode("utf-8")
         require(
-            len(encoded) <= 1048576,
+            len(encoded) <= MAX_AGENT_FRAME_BYTES,
             "ADAPTER_PROTOCOL_ERROR",
-            "JSONL frame exceeds 1 MiB",
+            "JSONL frame exceeds 16 MiB",
         )
         async with self.writing:
             sys.stdout.buffer.write(encoded)
@@ -180,6 +203,10 @@ class _Endpoint:
                 file=sys.stderr,
                 flush=True,
             )
+            failure = exc if isinstance(exc, RuntimeFault) else RuntimeFault(
+                "ADAPTER_FAILED", "Agent execution failed before a boundary",
+                details={"exception_type": type(exc).__name__[:120]},
+            )
             await self.write(
                 {
                     "jsonrpc": "2.0",
@@ -203,7 +230,7 @@ class _Endpoint:
                     "error": {
                         "code": -32000,
                         "message": "Agent execution ended without a boundary",
-                        **({"data": exc.as_dict()} if isinstance(exc, RuntimeFault) else {}),
+                        "data": failure.as_dict(),
                     },
                 }
             )
@@ -214,13 +241,13 @@ class _Endpoint:
         self.exit_requested = asyncio.Event()
         try:
             while not self.exit_requested.is_set():
-                line = await asyncio.to_thread(sys.stdin.buffer.readline, 1048577)
+                line = await asyncio.to_thread(sys.stdin.buffer.readline, MAX_AGENT_FRAME_BYTES + 1)
                 if not line:
                     break
                 require(
-                    len(line) <= 1048576,
+                    len(line) <= MAX_AGENT_FRAME_BYTES,
                     "ADAPTER_PROTOCOL_ERROR",
-                    "JSONL input frame exceeds 1 MiB",
+                    "JSONL input frame exceeds 16 MiB",
                 )
                 frame = json.loads(line)
                 identity = frame.get("id")
@@ -245,6 +272,10 @@ class _Endpoint:
                 method, params = frame["method"], frame.get("params", {})
                 if method == "agent.describe":
                     value = self.adapter.describe()
+                elif method == "agent.channel":
+                    require(self.worker is None and params.get("protocol_version") == "1.0", "UNSUPPORTED_CAPABILITY", "Cannot bind this execution channel")
+                    self.channel = params
+                    value = {"generation": params["generation"]}
                 elif method == "agent.execute":
                     require(
                         self.worker is None,

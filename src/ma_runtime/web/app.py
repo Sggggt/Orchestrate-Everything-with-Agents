@@ -201,6 +201,9 @@ def create_app(
     def rt():
         return app.state.runtime
 
+    async def command(request, method, **params):
+        return await dispatch(rt(), method, params, view_version=request.headers.get("X-OEA-View-Version", "1.0"))
+
     async def invoke(function, *args, **kwargs):
         try:
             inspect.signature(function).bind(*args, **kwargs)
@@ -241,13 +244,13 @@ def create_app(
     app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     @app.get("/api/bootstrap")
-    async def bootstrap(project_id: str | None = None):
+    async def bootstrap(request: Request, project_id: str | None = None):
         projects = await rt().projects.list()
         selected = next((p for p in projects if p.id == project_id), projects[0] if projects else None)
         return {
             "projects": projects,
             "project": selected,
-            "agents": await rt().agents.list(project_id=selected.id) if selected else [],
+            "agents": await command(request, "agents.list", project_id=selected.id) if selected else [],
             "environments": await rt().environments.list(project_id=selected.id) if selected else [],
             "mcp_servers": await rt().mcp.list(),
             "skill_registry": await rt().skills.list(limit=200),
@@ -309,8 +312,8 @@ def create_app(
         return config.model_dump()
 
     @app.get("/api/agents")
-    async def agents(project_id: str | None = None):
-        return await rt().agents.list(project_id=project_id)
+    async def agents(request: Request, project_id: str | None = None):
+        return await command(request, "agents.list", project_id=project_id)
 
     @app.put("/api/agents/{agent_id}")
     async def agent_config(agent_id: str, request: Request):
@@ -327,7 +330,7 @@ def create_app(
             "Agent ID does not match the URL",
         )
         data["id"] = agent_id
-        return await rt().agents.configure(data, api_key=key if key else None)
+        return await command(request, "agents.configure", config=data, api_key=key if key else None)
 
     @app.delete("/api/agents/{agent_id}/secret")
     async def delete_secret(agent_id: str):
@@ -357,6 +360,20 @@ def create_app(
     async def restore_session(session_id: str):
         return await rt().sessions.restore(session_id)
 
+    @app.get("/api/presence")
+    async def presence(request: Request):
+        async def stream():
+            yield ": connected\n\n"
+            while not rt().closed and not await request.is_disconnected():
+                try:
+                    await asyncio.wait_for(rt().events.changed.wait(), timeout=15)
+                except TimeoutError:
+                    pass
+                yield ": heartbeat\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"X-Accel-Buffering": "no"})
+
     @app.get("/api/sessions/{session_id}/events")
     async def events(session_id: str, request: Request, after_seq: int = 0):
         await rt().sessions.get(session_id)
@@ -366,7 +383,7 @@ def create_app(
             raise RuntimeFault("INVALID_REQUEST", "Invalid event cursor") from None
 
         async def stream():
-            async for event in rt().events.subscribe(session_id, cursor):
+            async for event in rt().events.subscribe(session_id, cursor, include_project_workflows=True):
                 if await request.is_disconnected():
                     break
                 if event["type"] == "stream.heartbeat":
@@ -413,51 +430,51 @@ def create_app(
     async def workflow(request: Request):
         data = await body(request)
         # Preserve the original one-shot task DAG API.
-        return await invoke(rt().tasks.workflow if "session_id" in data else rt().workflows.create, **data)
+        return await command(request, "tasks.workflow" if "session_id" in data else "workflows.create", **data)
 
     @app.get("/api/workflows")
     async def workflows_list(project_id: str, cursor: str | None = None, limit: int = 25, include_archived: bool = False, deleted_only: bool = False):
         return await rt().workflows.list(project_id, cursor, limit, include_archived, deleted_only)
 
     @app.get("/api/workflows/node-types")
-    async def workflow_node_types():
-        return await rt().workflows.node_types()
+    async def workflow_node_types(request: Request):
+        return await command(request, "workflows.node_types")
 
     @app.post("/api/workflows/validate")
     async def workflow_validate(request: Request):
-        return await invoke(rt().workflows.validate, **await body(request))
+        return await command(request, "workflows.validate", **await body(request))
 
     @app.get("/api/workflows/{workflow_id}")
-    async def workflow_get(workflow_id: str):
-        return await rt().workflows.get(workflow_id)
+    async def workflow_get(workflow_id: str, request: Request):
+        return await command(request, "workflows.get", workflow_id=workflow_id)
 
     @app.patch("/api/workflows/{workflow_id}")
     async def workflow_update(workflow_id: str, request: Request):
-        return await invoke(rt().workflows.update, workflow_id=workflow_id, **await body(request))
+        return await command(request, "workflows.update", workflow_id=workflow_id, **await body(request))
 
     @app.delete("/api/workflows/{workflow_id}")
     async def workflow_delete(workflow_id: str, request: Request):
-        return await invoke(rt().workflows.delete, workflow_id=workflow_id, **await body(request))
+        return await command(request, "workflows.delete", workflow_id=workflow_id, **await body(request))
 
     @app.post("/api/workflows/{workflow_id}/restore")
-    async def workflow_restore(workflow_id: str):
-        return await rt().workflows.restore(workflow_id)
+    async def workflow_restore(workflow_id: str, request: Request):
+        return await command(request, "workflows.restore", workflow_id=workflow_id)
 
     @app.post("/api/workflows/{workflow_id}/archive")
     async def workflow_archive(workflow_id: str, request: Request):
-        return await invoke(rt().workflows.archive, workflow_id=workflow_id, **await body(request))
+        return await command(request, "workflows.archive", workflow_id=workflow_id, **await body(request))
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def workflow_run(workflow_id: str, request: Request):
-        return await invoke(rt().workflows.run, workflow_id=workflow_id, **await body(request))
+        return await command(request, "workflows.run", workflow_id=workflow_id, **await body(request))
 
     @app.get("/api/workflows/{workflow_id}/runs")
     async def workflow_runs(workflow_id: str, cursor: str | None = None, limit: int = 25):
         return await rt().workflows.runs(workflow_id, cursor, limit)
 
     @app.get("/api/workflow-runs/{run_id}")
-    async def workflow_run_get(run_id: str):
-        return await rt().workflows.get_run(run_id)
+    async def workflow_run_get(run_id: str, request: Request):
+        return await command(request, "workflows.get_run", run_id=run_id)
 
     @app.post("/api/workflow-runs/{run_id}/{action}")
     async def workflow_run_action(run_id: str, action: str, request: Request):
@@ -545,7 +562,8 @@ def create_app(
             "INVALID_REQUEST",
             "Invalid RPC request",
         )
-        return {"result": await dispatch(rt(), data["method"], data.get("params", {}))}
+        return {"result": await dispatch(rt(), data["method"], data.get("params", {}),
+                                         view_version=request.headers.get("X-OEA-View-Version", "1.0"))}
 
     @app.get("/api/protocol")
     async def protocol():

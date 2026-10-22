@@ -9,15 +9,38 @@ import { content, compactTitle, schemaView, schemaDefaults, valueEditor, toolRes
 import { argumentOptions, describeLaunch, buildLaunch, createLaunchEditor } from "../src/ma_runtime/web/static/launch.mjs";
 import { artifactDownload, artifactSource, groupArtifacts, decodeArtifactText, readArtifactPreview } from "../src/ma_runtime/web/static/artifacts.mjs";
 
+test("MCP directory registration submits the trimmed path and clears the saved draft", async t => {
+  const state = { mcpDirectory: "  /example/tools  " };
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: { querySelector: () => ({ value: state.mcpDirectory }) }, configurable: true });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else delete globalThis.document;
+  });
+  const requests = [];
+  let bootstrap = 0, renders = 0;
+  const ui = createIntegrationUI({ state, escape: String, icon: () => "", badge: String, markdown: String,
+    api: async (path, options) => { requests.push([path, options]); },
+    toast: () => {}, render: () => { renders++; }, renderModal: () => {}, idempotency: () => "request",
+    loadBootstrap: async () => { bootstrap++; }, time: String });
+  assert.equal(await ui.submit({ target: { id: "mcp-registry-form" } }), true);
+  assert.deepEqual(requests, [["/mcp/register-directory", { method: "POST", body: { directory: "/example/tools" } }]]);
+  assert.equal(state.mcpDirectory, "");
+  assert.equal(bootstrap, 1);
+  assert.equal(renders, 1);
+});
+
 test("all execution views use host observations instead of model status values", () => {
   for (const [state, label] of Object.entries({ SUCCEEDED: "已完成", RUNNING: "执行中", SKIPPED: "已跳过", FAILED: "失败", CANCELLED: "已取消", WAITING: "等待中" })) {
     assert.equal(statusLabel({ state, result: { output: { status: "failed" } } }), label);
   }
   const delivery = { state: "FAILED", execution_state: "SUCCEEDED" };
   assert.equal(executionState(delivery), "SUCCEEDED");
-  assert.equal(statusLabel(delivery), "已完成");
+  assert.equal(statusLabel(delivery), "交付未通过");
+  assert.equal(statusLabel(executionState(delivery)), "已完成");
   const html = executionTrace({ runs: [{ ...delivery, id: "run", attempt: 1 }] });
   assert.match(html, /已完成/);
+  assert.match(html, /交付未通过/);
   assert.doesNotMatch(html, /失败/);
 });
 

@@ -39,6 +39,11 @@ class GraphForkTests(unittest.IsolatedAsyncioTestCase):
                 await rt.tasks.continue_result(task.id, "repair")
                 result = await rt.tasks.result(task.id, timeout=5)
                 self.assertEqual(result.output, {"count": 2, "covered_items": ["section"]})
+                self.assertFalse(adapter.boundaries)
+                latest_run = (await rt.tasks.get(task.id)).runs[-1]
+                recovered = await adapter.probe(latest_run.adapter_run_ref)
+                self.assertEqual(recovered.state, "COMPLETED")
+                self.assertEqual(recovered.boundary.result.output["count"], 2)
                 self.assertTrue((await rt.tasks.continue_result(task.id, "repair")).reused)
 
     async def test_embedded_fork_copies_only_safe_state_and_model_saves_preserve_adapter(self):
@@ -142,3 +147,7 @@ class GraphForkTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.output["log"], ["first", "child"])
                 self.assertEqual(result.output["count"], 2)
                 self.assertFalse(rt.adapters["graph"].controls)
+                async with asyncio.timeout(5):
+                    while rt.active:
+                        await asyncio.sleep(.01)
+                self.assertFalse(rt.adapters["graph"].finished)

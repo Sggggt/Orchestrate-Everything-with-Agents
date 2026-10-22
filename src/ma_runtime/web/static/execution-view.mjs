@@ -1,5 +1,5 @@
 const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-import { statusLabel } from "./execution-status.mjs";
+import { executionState, statusLabel } from "./execution-status.mjs";
 const row = (label, value) => `<div class="kv"><span>${escape(label)}</span><strong>${escape(value)}</strong></div>`;
 const failure = error => error ? `<p class="execution-error">${escape(error.safe_message || error.code)}</p>` : "";
 
@@ -42,5 +42,5 @@ export function executionTrace(trace, receipts = {}, loading = new Set()) {
   const forRun = id => stages.filter(item => item.run_id === id && !requests.has(item.attributes?.parent_stage_id)).map(stage).join("") +
     tools.filter(call => call.run_id === id && !requests.has(call.parent_stage_id)).map(tool).join("");
   const runs = trace.runs || [];
-  return `<div class="execution-trace">${row("排队", duration(trace.queued_ms))}${runs.map(run => `<section class="execution-run">${row(`第 ${run.attempt} 次执行`, `${statusLabel(run)} · ${duration(run.duration_ms)}`)}${failure(run.error)}${run.timings?.preparation_ms != null ? row("准备", duration(run.timings.preparation_ms)) : ""}${forRun(run.id)}${run.timings?.validation_ms != null ? row("交付检查", duration(run.timings.validation_ms)) : ""}${run.timings?.commit_work_ms != null ? row("入库处理", duration(run.timings.commit_work_ms)) : ""}</section>`).join("")}${forRun(undefined)}${trace.tools_has_more ? '<button class="text-link" data-action="trace-tools">加载更多工具记录</button>' : ""}</div>`;
+  return `<div class="execution-trace">${row("排队", duration(trace.queued_ms))}${runs.map(run => `<section class="execution-run">${row(`第 ${run.attempt} 次执行`, `${statusLabel(executionState(run))} · ${duration(run.duration_ms)}`)}${run.state && run.state !== executionState(run) ? row("交付结果", statusLabel(run)) : ""}${failure(run.error)}${run.timings?.preparation_ms != null ? row("准备", duration(run.timings.preparation_ms)) : ""}${forRun(run.id)}${run.timings?.validation_ms != null ? row("交付检查", duration(run.timings.validation_ms)) : ""}${run.timings?.commit_work_ms != null ? row("入库处理", duration(run.timings.commit_work_ms)) : ""}</section>`).join("")}${forRun(undefined)}${trace.tools_has_more ? '<button class="text-link" data-action="trace-tools">加载更多工具记录</button>' : ""}</div>`;
 }

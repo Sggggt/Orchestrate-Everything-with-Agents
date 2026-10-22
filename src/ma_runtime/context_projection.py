@@ -88,21 +88,27 @@ class ContextStore:
         return reference
 
     def check_origin(self, context, origin):
+        if origin.startswith("tool:"):
+            context.check_tool(origin[5:])
+        self.check_origin_for_agent(context.request.agent_id, origin, context.request)
+
+    def check_origin_for_agent(self, agent_id, origin, snapshot=None):
         if not origin.startswith("tool:"):
             return
         name = origin[5:]
-        context.check_tool(name)
-        current = self.rt.agent_configs.get(context.request.agent_id)
+        current = self.rt.agent_configs.get(agent_id)
         if name in WORKBENCH_TOOLS:
             grant = current.workbench if current else None
-            require(grant and name in grant.tools and name in (context.request.workbench or {}).get("tools", ()),
+            require(grant and name in grant.tools and (snapshot is None or name in (snapshot.workbench or {}).get("tools", ())),
                     "PERMISSION_DENIED", "The source tool is no longer granted")
             environment = self.rt.environments.versions.get(grant.environment_id)
             require(environment and environment["config"].enabled, "PERMISSION_DENIED", "The source environment is unavailable")
         elif name.startswith("mcp:"):
             _, server_id, tool = name.split(":", 2)
             server = self.rt.mcp.configs.get(server_id)
-            bindings = [context.request.mcp_bindings, current.mcp_bindings if current else ()]
+            bindings = [current.mcp_bindings if current else ()]
+            if snapshot:
+                bindings.append(snapshot.mcp_bindings)
             require(server and server.enabled and (server.allowed_tools is None or tool in server.allowed_tools)
                     and all(any(binding.server_id == server_id and (binding.tools is None or tool in binding.tools)
                                 for binding in group) for group in bindings),
@@ -110,8 +116,15 @@ class ContextStore:
         else:
             from .execution_policy import PLATFORM_TOOLS, LIFECYCLE_TOOLS
             if name not in PLATFORM_TOOLS | LIFECYCLE_TOOLS:
-                require(name in self.rt.tools.providers and context.request.agent_id in self.rt.tools.allowed.get(name, ()),
+                require(name in self.rt.tools.providers and agent_id in self.rt.tools.allowed.get(name, ()),
                         "PERMISSION_DENIED", "The source tool is no longer granted")
+
+    async def merge(self, spec):
+        """Merge explicitly selected evidence at fixed source and target revisions."""
+        return await self.rt.context_merges.merge(spec)
+
+    async def get_merge(self, merge_id):
+        return await self.rt.context_merges.get(merge_id)
 
     async def read(self, reference, project_id, offset=0, limit=8192):
         return await self._read(reference, project_id, offset, limit)
@@ -126,10 +139,37 @@ class ContextStore:
     async def _read(self, reference, project_id, offset, limit, *, context=None):
         require(isinstance(offset, int) and offset >= 0 and isinstance(limit, int) and 256 <= limit <= 16384,
                 "INVALID_REQUEST", "Use a nonnegative byte offset and a limit of 256..16384 bytes")
+        if reference.startswith("merge:"):
+            def manifest(db):
+                from .services import need, resolve_project
+                resolve_project(db, project_id)
+                merge = need(db, "context_merges", reference[6:])
+                thread = need(db, "threads", merge.thread_id)
+                require(need(db, "sessions", thread.session_id).project_id == project_id, "PROJECT_MISMATCH", "Merge belongs to another project")
+                if context:
+                    task, _ = self.rt.check_run(db, context.request.run_id)
+                    require(one(db, "SELECT 1 FROM task_context_heads WHERE task_id=? AND merge_id=?", (task.id, merge.id)),
+                            "PERMISSION_DENIED", "Merge was not assigned to this task")
+                    for item in json.loads(merge.evidence_json):
+                        self.rt.context_merges.validate_evidence(db, item, project_id, context.request.agent_id)
+                        if item["kind"] == "context":
+                            source = one(db, "SELECT origin FROM context_sources WHERE reference=?", (item["reference"],))
+                            self.check_origin(context, source.origin)
+                return self.rt.context_merges.view(merge), merge.manifest_hash
+            value, digest = await self.rt.store.call(manifest)
+            encoded = json_dump(value).encode("utf-8")
+            return read_chunk(reference, encoded[offset:offset + limit], offset, len(encoded), digest)
         def scope(db):
             from .services import resolve_project
             resolve_project(db, project_id)
             source = one(db, "SELECT c.*,a.size FROM context_sources c JOIN artifacts a ON a.id=c.reference WHERE c.reference=? AND a.state='READY'", (reference,))
+            if source is None and context:
+                self.rt.check_run(db, context.request.run_id)
+                source = one(db, "SELECT a.sha256 AS source_hash,a.size,s.project_id,'' AS origin,'' AS parent_reference "
+                    "FROM task_artifact_access x JOIN artifacts a ON a.id=x.artifact_id JOIN sessions s ON s.id=a.session_id "
+                    "WHERE x.task_id=? AND a.id=? AND a.state='READY'", (context.request.task_id, reference))
+                require(source and source.project_id == project_id, "PERMISSION_DENIED", "Artifact was not assigned to this task")
+                return source
             require(source and source.project_id == project_id, "PROJECT_MISMATCH", "Context reference is unavailable in this project")
             if context:
                 task, _ = self.rt.check_run(db, context.request.run_id)
@@ -145,15 +185,7 @@ class ContextStore:
             with path.open("rb") as stream:
                 stream.seek(offset)
                 data = stream.read(limit)
-            decoder = codecs.getincrementaldecoder("utf-8")("strict")
-            try:
-                text = decoder.decode(data, final=offset + len(data) >= source.size)
-            except UnicodeError:
-                raise RuntimeFault("INVALID_REQUEST", "Use the returned next_offset for UTF-8 source reads") from None
-            consumed = len(data) - len(decoder.getstate()[0])
-            return {"reference": reference, "text": text, "offset": offset,
-                    "next_offset": offset + consumed if offset + consumed < source.size else None,
-                    "size": source.size, "sha256": source.source_hash,
+            return {**read_chunk(reference, data, offset, source.size, source.source_hash),
                     **({"previous_reference": source.parent_reference} if source.parent_reference else {})}
         return await asyncio.to_thread(load)
 
@@ -198,6 +230,17 @@ class ContextStore:
         if isinstance(value, list) and len(value) <= 128:
             return [await entry(item) for item in value]
         return await entry(value)
+
+
+def read_chunk(reference, data, offset, size, digest):
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        text = decoder.decode(data, final=offset + len(data) >= size)
+    except UnicodeError:
+        raise RuntimeFault("INVALID_REQUEST", "Read UTF-8 text using the returned next_offset") from None
+    consumed = len(data) - len(decoder.getstate()[0])
+    return {"reference": reference, "text": text, "offset": offset,
+            "next_offset": offset + consumed if offset + consumed < size else None, "size": size, "sha256": digest}
 
 
 def estimated_tokens(value):

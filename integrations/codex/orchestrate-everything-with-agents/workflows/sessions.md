@@ -13,7 +13,9 @@
 - `threads.turn {thread_id, content, idempotency_key}`：提交新一轮任务，平台从 thread 推导 session / agent。
 - `threads.fork {thread_id, checkpoint_id, idempotency_key}`：从指定已提交结果分支；也可用 message_id，二者只选一个。省略选择器取最新保存点，同键重试固定原保存点；先记下返回线程 ID。需执行端支持，LangGraph 仅支持显式启用的已完成安全状态。分支共享历史前缀，只继承保存点当时的输入和证据。
 
-当前已知 session 中查全部 thread 可按需用 `sessions.snapshot`，只消费结果的 threads 字段；不要常规拉取所有任务、消息、产物和长对话。
+按 session/Agent 用 `threads.instances` 分页查实例，`threads.ownership` 区分最初工作流来源和当前任务归属。活动 feed 和已读由 threads.activity / mark_read 管理；通知可见/已读不等于消息被执行端应用。
+
+需要隔离写目录时，在安全无执行状态调用 `threads.prepare_workdir`；默认受管目录，kind=git 时显式 commit 创建独立 worktree。用 threads.workdir 查看状态；它不等于代码合并。证据合并用 contexts.merge 固定源版本与目标 expected_revision，显式处理事实冲突，不能覆盖旧历史。
 
 关闭会话用 `sessions.close {session_id, mode:"drain"}`，等待已接收工作处理完；用户明确要求取消时使用 mode=cancel。关闭不删除历史，不停止其他会话或整个宿主。
 

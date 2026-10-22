@@ -2,14 +2,9 @@
 
 import asyncio
 import json
-from typing import Literal, Protocol
-
-from pydantic import Field
 
 from .errors import RuntimeFault, require
 from .models import (
-    Model,
-    ResourceRequirement,
     TaskSpec,
     content_hash,
     json_dump,
@@ -17,23 +12,7 @@ from .models import (
     now_ms,
 )
 from .store import emit, one
-
-
-class ToolSpec(Model):
-    name: str
-    input_schema: dict = Field(default_factory=lambda: {"type": "object"})
-    output_schema: dict = Field(default_factory=lambda: {"type": "object"})
-    resources: tuple[ResourceRequirement, ...] = ()
-    side_effects: Literal["NONE", "LOCAL", "EXTERNAL"] = "NONE"
-    timeout_seconds: float = Field(default=60, gt=0, le=3600)
-    supports_idempotency: bool = False
-    supports_probe: bool = False
-
-
-class ToolProvider(Protocol):
-    def describe(self) -> ToolSpec: ...
-    async def invoke(self, request: dict) -> dict: ...
-    async def reconcile(self, operation_ref: dict) -> dict: ...
+from .tool_contracts import ToolSpec, ToolProvider
 
 
 class ToolGateway:
@@ -150,6 +129,7 @@ class ToolGateway:
 
             def intent(db):
                 self.runtime.check_run(db, caller_run_id)
+                self.runtime.budgets.tool(db, active.request, identity, identifier)
                 db.execute(
                     "INSERT INTO tool_calls(id,session_id,run_id,tool_name,idempotency_key,request_hash,state,request_json,resources_json,created_at,updated_at,parent_stage_id) VALUES(?,?,?,?,?,?,'INTENT',?,?,?,?,?)",
                     (
@@ -176,7 +156,11 @@ class ToolGateway:
                     payload={"tool_call_id": identity, "tool_name": name},
                 )
 
-            await self.runtime.store.call(intent, transaction=True)
+            try:
+                await self.runtime.store.call(intent, transaction=True)
+            except RuntimeFault as exc:
+                self.runtime.budgets.reject(active.context, exc)
+                raise
 
             def dispatch(db):
                 self.runtime.check_run(db, caller_run_id)
@@ -205,6 +189,11 @@ class ToolGateway:
 
                 def complete(db):
                     self.runtime.check_run(db, caller_run_id)
+                    if not result.get("isError") and not result.get("truncated") and identifier != "publish_artifact":
+                        # MCP receipt IDs and transport metadata do not make a
+                        # repeated business result new evidence.
+                        evidence = {key: result[key] for key in ("content", "structuredContent") if key in result} if identifier.startswith("mcp:") else result
+                        self.runtime.budgets.progress(db, task.id, identifier, evidence)
                     if not result.get("isError") and (task_spec.tool_policy.required or task_spec.tool_policy.mode == "required"):
                         record(db, task.id, run.id, "tool", identifier)
                     db.execute(
@@ -224,7 +213,8 @@ class ToolGateway:
                 await self.runtime.store.call(complete, transaction=True)
                 return result
             except BaseException as exc:
-                uncertain = spec.side_effects != "NONE"
+                not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
+                uncertain = spec.side_effects != "NONE" and not not_dispatched
                 state = "UNCERTAIN" if uncertain else "FAILED"
                 if not self.runtime.store.failed and not self.runtime.store.closed:
                     await self.runtime.store.call(
@@ -233,7 +223,7 @@ class ToolGateway:
                             (
                                 state,
                                 json_dump(
-                                    {
+                                    exc.as_dict() if isinstance(exc, RuntimeFault) and not uncertain else {
                                         "code": (
                                             "OUTCOME_UNCERTAIN"
                                             if uncertain
@@ -253,6 +243,8 @@ class ToolGateway:
                         "Dispatched tool action requires reconciliation",
                     ) from None
                 if isinstance(exc, asyncio.CancelledError):
+                    raise
+                if isinstance(exc, RuntimeFault):
                     raise
                 raise RuntimeFault("TOOL_FAILED", "Tool invocation failed") from None
         finally:

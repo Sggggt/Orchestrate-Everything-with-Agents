@@ -1,5 +1,5 @@
 export async function api(path, options = {}) {
-  const headers = { ...options.headers };
+  const headers = { "X-OEA-View-Version": "1.1", ...options.headers };
   if (
     options.body &&
     typeof options.body !== "string" &&
@@ -14,6 +14,7 @@ export async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(value.error?.safe_message || "本地服务请求失败");
     error.code = value.error?.code;
+    error.details = value.error?.details || {};
     throw error;
   }
   return value;

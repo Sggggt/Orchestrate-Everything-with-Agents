@@ -32,11 +32,25 @@ class Fixture:
                         "api_key": "caller-key",
                     },
                 )
+            content = request.payload.get("input", "test")
+            if request.payload.get("large_model_input_chars"):
+                content = "x" * request.payload["large_model_input_chars"]
             reply = await context.llm.complete(
-                [{"role": "user", "content": request.payload.get("input", "test")}],
+                [{"role": "user", "content": content}],
                 emit_progress=True,
                 allow_incomplete=request.payload.get("allow_incomplete", False),
             )
+            if request.payload.get("python_failure"):
+                raise ValueError("Untrusted adapter detail must not become the public error")
+            if request.payload.get("repeat_read"):
+                catalog = await context.list_tools()
+                alias = next(name for name, identity in catalog["identifiers"].items() if identity == "mcp:fixture:echo")
+                for index in range(2):
+                    text = f"evidence-{index}" if request.payload["repeat_read"] == "distinct" else "same evidence"
+                    if request.payload["repeat_read"] == "truncated":
+                        text *= 2048
+                    await context.invoke_tool(alias, {"text": text}, f"{request.task_id}:read:{index}")
+                    reply = await context.llm.complete([{"role": "user", "content": "test"}])
             output = {
                 "text": reply.text,
                 "model": reply.model,

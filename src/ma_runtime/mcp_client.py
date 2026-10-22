@@ -27,7 +27,7 @@ class MCPConnection:
         self.config = config.model_copy(deep=True)
         self.credentials = credentials
         self.default_cwd = str(default_cwd) if default_cwd else None
-        self.queue = asyncio.Queue()
+        self.queue = asyncio.Queue(maxsize=128)
         self.slots = asyncio.Semaphore(config.max_concurrency)
         self.task = None
         self.ready = None
@@ -39,6 +39,10 @@ class MCPConnection:
         self.closing = False
         self.closed = False
         self.error = None
+        self.pins = 0
+        self.initialized = False
+        self.initialization_lock = asyncio.Lock()
+        self.resource_owner = ""
 
     async def start(self):
         if self.task is None:
@@ -223,13 +227,18 @@ class MCPConnection:
 
     async def request(self, method, params=None):
         await self.start()
+        require(self.active < 128, "MCP_QUEUE_FULL", "MCP connection has reached its bounded pending-request limit",
+                retryable=True, details={"dispatched": False})
         future = asyncio.get_running_loop().create_future()
         self.pending.add(future)
         self.active += 1
         self.last_used = time.monotonic()
-        await self.queue.put((future, method, params or {}))
         try:
+            self.queue.put_nowait((future, method, params or {}))
             return await future
+        except asyncio.QueueFull:
+            raise RuntimeFault("MCP_QUEUE_FULL", "MCP connection request queue is full", retryable=True,
+                               details={"dispatched": False}) from None
         finally:
             self.active -= 1
             self.last_used = time.monotonic()

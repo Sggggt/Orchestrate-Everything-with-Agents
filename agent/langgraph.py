@@ -31,6 +31,13 @@ def graph_wait(condition):
     return interrupt({"oea_wait": wait.model_dump(mode="json")})
 
 
+def _checkpoint_head(config):
+    # An input checkpoint selects the starting state. After invocation, read
+    # the new head in the same graph thread and namespace, not that old state.
+    return {**config, "configurable": {key: value for key, value in config.get("configurable", {}).items()
+                                      if key != "checkpoint_id"}}
+
+
 async def managed_tool_node(state, runtime):
     """Execute persisted OpenAI function calls sequentially through RunContext."""
     from ma_runtime.workspace import tool_messages
@@ -214,13 +221,16 @@ class LangGraphAgent:
                 self.invocations.pop(request.run_id, None)
             saved_config = config
             if self.checkpointed:
-                snapshot = await self.graph.aget_state(config)
+                snapshot = await self.graph.aget_state(_checkpoint_head(config))
                 saved_config = snapshot.config
             event = self.boundary(values, saved_config, request.task_id)
             self.boundaries[request.run_id] = event
             yield event
         finally:
             self.running.pop(request.run_id, None)
+
+    def discard_committed_boundary(self, run_id):
+        self.boundaries.pop(run_id, None)
 
     async def cancel(self, run_ref):
         pending = self.running.get(run_ref.get("run_id"))
@@ -240,7 +250,7 @@ class LangGraphAgent:
                 evidence="Graph invocation returned a boundary",
             )
         if self.checkpointed and run_ref.get("graph_config"):
-            snapshot = await self.graph.aget_state(run_ref["graph_config"])
+            snapshot = await self.graph.aget_state(_checkpoint_head(run_ref["graph_config"]))
             metadata = snapshot.metadata or {}
             if metadata.get("runtime_run_id") == run_id and not snapshot.next:
                 event = self.boundary(

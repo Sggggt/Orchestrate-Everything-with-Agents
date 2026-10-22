@@ -16,7 +16,7 @@ import jsonschema
 
 from .errors import RuntimeFault, require
 from .mcp_client import MCPConnection
-from .models import MCPServerConfig, content_hash, json_dump, new_id, now_ms
+from .models import MCPServerConfig, QuantityRequirement, content_hash, json_dump, new_id, now_ms
 from .store import one, rows
 from .tools import ToolSpec
 from .paths import safe_child
@@ -73,7 +73,10 @@ class MCPRegistry:
         self.errors = {}
         self.lock = asyncio.Lock()
         self.result_cache = OrderedDict()
+        self.result_cache_bytes = 0
         self.closing = False
+        from .mcp_resources import MCPResources
+        self.capacity = MCPResources(self)
 
     async def open(self):
         for row in await self.rt.store.call(
@@ -97,7 +100,17 @@ class MCPRegistry:
             ),
             transaction=True,
         )
+        await self.capacity.open()
         self.refresh_providers()
+
+    async def configure_policy(self, server_id, policy):
+        return await self.capacity.configure(server_id, policy)
+
+    async def policy(self, server_id):
+        return await self.capacity.inspect(server_id)
+
+    async def reconcile_capacity(self, call_id, *, confirmed_stopped, evidence):
+        return await self.capacity.reconcile(call_id, confirmed_stopped=confirmed_stopped, evidence=evidence)
 
     def _config(self, server_id):
         config = self.configs.get(server_id)
@@ -218,6 +231,8 @@ class MCPRegistry:
     ):
         self.rt.admit()
         config = MCPServerConfig.model_validate(config).model_copy(deep=True)
+        require(self.capacity.policy(config.id).reserved_connections < config.max_connections
+                if config.id in self.configs else True, "INVALID_REQUEST", "Connection limit must exceed its configured reservation")
         require(
             not config.url or not self._is_own_gateway(config.url),
             "INVALID_REQUEST",
@@ -257,11 +272,14 @@ class MCPRegistry:
                 c for (sid, _), c in self.connections.items() if sid == config.id
             ]
             require(
-                not any(c.active for c in clients),
+                not any(c.active or c.pins for c in clients) and not any(
+                    owner.startswith("mcp:connection:" + config.id + ":") for owner in self.capacity.uncertain_connections),
                 "RESOURCE_BUSY",
                 "Wait for active MCP calls before changing this server",
             )
             await asyncio.gather(*(c.aclose() for c in clients))
+            for client in clients:
+                self.rt.resources.release(client.resource_owner)
             self.connections = {
                 k: v for k, v in self.connections.items() if k[0] != config.id
             }
@@ -315,6 +333,8 @@ class MCPRegistry:
     async def delete(self, server_id):
         self.rt.admit()
         self._config(server_id)
+        require(not any(owner.startswith("mcp:connection:" + server_id + ":") for owner in self.capacity.uncertain_connections),
+                "RESOURCE_BUSY", "Reconcile unresolved MCP occupancy before deleting its server")
         require(
             not any(
                 any(b.server_id == server_id for b in a.mcp_bindings)
@@ -337,6 +357,7 @@ class MCPRegistry:
             self.configs.pop(server_id, None)
             self.catalogs.pop(server_id, None)
             self.errors.pop(server_id, None)
+            self.capacity.policies.pop(server_id, None)
             self.refresh_providers()
         return {"deleted": True}
 
@@ -347,11 +368,13 @@ class MCPRegistry:
                 c for (sid, _), c in self.connections.items() if sid == server_id
             ]
             require(
-                not any(c.active for c in clients),
+                not any(c.active or c.pins for c in clients),
                 "RESOURCE_BUSY",
                 "MCP calls are still running",
             )
             await asyncio.gather(*(c.aclose() for c in clients))
+            for client in clients:
+                self.rt.resources.release(client.resource_owner)
             self.connections = {
                 k: c for k, c in self.connections.items() if k[0] != server_id
             }
@@ -373,47 +396,55 @@ class MCPRegistry:
         config = self._config(server_id)
         require(config.enabled, "MCP_DISABLED", "This MCP server is disabled")
         key = (server_id, "shared" if config.session_scope == "shared" else consumer)
-        async with self.lock:
-            for existing_key, client in tuple(self.connections.items()):
-                if client.closed:
-                    await client.aclose()
-                    self.connections.pop(existing_key, None)
-            client = self.connections.get(key)
-            if client is None:
-                require(
-                    sum(sid == server_id for sid, _ in self.connections)
-                    < config.max_connections,
-                    "MCP_CAPACITY",
-                    "MCP consumer connection limit reached; disconnect idle consumers or increase the limit",
-                )
-                credentials = {
-                    group: {
-                        name: self.rt.vault.get(ref) for name, ref in values.items()
-                    }
-                    for group, values in self.credentials.get(server_id, {}).items()
-                }
-                workspace = safe_child(
-                    self.rt.root,
-                    f"mcp-workspaces/{server_id}/{hashlib.sha256(key[1].encode()).hexdigest()[:16]}",
-                )
-                workspace.mkdir(parents=True, exist_ok=True)
-                client = MCPConnection(config, credentials, default_cwd=workspace)
-                self.connections[key] = client
+        _, connection_key, owner = self.capacity.define(config, consumer)
+        require(owner not in self.capacity.uncertain_connections or (key in self.connections and not self.connections[key].closed),
+                "OUTCOME_UNCERTAIN", "Previous calls on this consumer require stop confirmation before rebuilding its connection")
+        try:
+            async with asyncio.timeout(config.startup_timeout_seconds):
+                while True:
+                    self.rt.resources.changed.clear()
+                    async with self.lock:
+                        require(self._config(server_id) == config and config.enabled, "MCP_CONFIG_CHANGED", "MCP configuration changed during connection admission")
+                        await self.capacity.reclaim(server_id)
+                        client = self.connections.get(key)
+                        if client is not None:
+                            client.pins += 1
+                            break
+                        claim = (QuantityRequirement(key=connection_key),)
+                        if not self.rt.resources.can_acquire(owner, (), claim):
+                            await self.capacity.reclaim(server_id, pressure=True)
+                        if self.rt.resources.acquire(owner, (), claim):
+                            credentials = {group: {name: self.rt.vault.get(ref) for name, ref in values.items()}
+                                           for group, values in self.credentials.get(server_id, {}).items()}
+                            workspace = safe_child(self.rt.root, f"mcp-workspaces/{server_id}/{hashlib.sha256(key[1].encode()).hexdigest()[:16]}")
+                            workspace.mkdir(parents=True, exist_ok=True)
+                            client = MCPConnection(config, credentials, default_cwd=workspace)
+                            client.resource_owner = owner
+                            client.pins = 1
+                            self.connections[key] = client
+                            break
+                    await self.rt.resources.changed.wait()
+        except TimeoutError:
+            raise RuntimeFault("MCP_CAPACITY", "MCP connection capacity did not become available within the bounded wait",
+                               retryable=True, details={"dispatched": False}) from None
         try:
             await client.start()
             self.errors.pop(server_id, None)
         except RuntimeFault as exc:
             self.errors[server_id] = exc.as_dict()
             raise
+        finally:
+            client.pins -= 1
+            self.rt.resources.changed.set()
         return client
 
     async def connect(self, server_id, consumer_id="console"):
         consumer = self._consumer(consumer_id)
-        client = await self._connection(server_id, consumer)
-        await self._discover(server_id, client)
+        async with self.capacity.borrow(server_id, consumer) as client:
+            await self._discover(server_id, client)
         return await self.get(server_id)
 
-    async def _discover(self, server_id, client):
+    async def _discover(self, server_id, client, *, publish=True):
         collected, cursor, seen = [], None, set()
         if client.info.get("capabilities", {}).get("tools") is not None:
             for _ in range(32):
@@ -462,6 +493,10 @@ class MCPRegistry:
             "MCP_CATALOG_LIMIT",
             "MCP tool catalog exceeds 2 MiB",
         )
+        client.catalog = catalog
+        client.schema_fingerprint = content_hash(collected)
+        if not publish:
+            return catalog
         async with self.lock:
             require(
                 self.configs.get(server_id) == client.config,
@@ -491,6 +526,41 @@ class MCPRegistry:
                 if config.allowed_tools is None or t["name"] in config.allowed_tools
             ],
         }
+
+    def tool_summary(self, server_id, tool):
+        from .models import content_hash
+        schema = tool.get("inputSchema") or {"type": "object"}
+        size = len(json_dump(schema).encode("utf-8"))
+        catalog = self.catalogs.get(server_id, {})
+        return {"name": tool["name"], "identifier": f"mcp:{server_id}:{tool['name']}",
+                "description": tool.get("description", "")[:600],
+                "protocol_version": catalog.get("protocolVersion"), "discovered_at": catalog.get("discovered_at"),
+                "fingerprint": content_hash({"protocol_version": catalog.get("protocolVersion"), "tool": tool}),
+                "schema_bytes": size, "schema_tokens_estimate": (size + 2) // 3}
+
+    async def catalog(self, server_id, cursor=None, limit=25):
+        config = self._config(server_id)
+        catalog = self.catalogs.get(server_id, {})
+        limit = max(1, min(int(limit), 100))
+        tools = sorted((t for t in catalog.get("tools", []) if (not cursor or t["name"] > cursor)
+                        and (config.allowed_tools is None or t["name"] in config.allowed_tools)), key=lambda t: t["name"])[:limit + 1]
+        return {"server_id": server_id, "enabled": config.enabled, "source": "cached" if catalog.get("discovered_at") else "unknown",
+                "items": [self.tool_summary(server_id, t) for t in tools[:limit]],
+                "next_cursor": tools[limit - 1]["name"] if len(tools) > limit else None}
+
+    async def tool(self, server_id, tool_name, expected_fingerprint=None):
+        config = self._config(server_id)
+        require(config.enabled and (config.allowed_tools is None or tool_name in config.allowed_tools),
+                "PERMISSION_DENIED", "Tool is disabled or unavailable")
+        catalog = self.catalogs.get(server_id, {})
+        require(catalog.get("discovered_at"), "MCP_CATALOG_UNAVAILABLE", "Discover this server before reading a tool schema")
+        tool = next((t for t in catalog.get("tools", []) if t["name"] == tool_name), None)
+        require(tool is not None, "NOT_FOUND", "Tool is absent from the cached catalog")
+        summary = self.tool_summary(server_id, tool)
+        require(expected_fingerprint is None or expected_fingerprint == summary["fingerprint"],
+                "REVISION_CONFLICT", "Tool schema changed; read its current directory entry")
+        return {**summary, "tool": tool, "validation": {"local_json_schema": "valid_at_discovery",
+                "oea_model_input": "depends_on_selected_catalog_and_context", "provider_tool_support": "unknown", "upstream_execution": "not_probed"}}
 
     def refresh_providers(self):
         for name, provider in tuple(self.rt.tools.providers.items()):
@@ -542,17 +612,11 @@ class MCPRegistry:
             if policy.mode == "none" or (policy.allowed is not None and not any(name.startswith(f"mcp:{sid}:") for name in policy.allowed)):
                 continue
             try:
-                client = await self._connection(sid, "thread:" + task.thread_id)
-                if not getattr(client, "profile_announced", False):
-                    instructions.append(
-                        {
-                            "server_id": sid,
-                            "instructions": "This is a new MCP connection. Previous project, browser or session selections are not guaranteed to exist. Establish the required state using the granted discovery/selection tools before operating.",
-                        }
-                    )
-                    client.profile_announced = True
+                require(self._config(sid).enabled, "MCP_DISABLED", "Required MCP server is disabled")
+                for initial in self.capacity.policy(sid).initialization:
+                    await self.authorize_run(run_id, sid, initial.tool_name)
                 if not self.catalogs.get(sid, {}).get("discovered_at"):
-                    await self._discover(sid, client)
+                    await self.connect(sid, "catalog")
                 requested = {name.split(":", 2)[2] for name in (policy.allowed or ()) + policy.required
                              if name.startswith(f"mcp:{sid}:")}
                 require(requested <= {tool["name"] for tool in self.catalogs[sid].get("tools", [])},
@@ -610,6 +674,11 @@ class MCPRegistry:
     async def call_for_run(
         self, run_id, server_id, tool_name, arguments, idempotency_key
     ):
+        task = await self.authorize_run(run_id, server_id, tool_name)
+        return await self._call(server_id, tool_name, arguments, "thread:" + task.thread_id,
+                                idempotency_key, run_id=run_id)
+
+    async def authorize_run(self, run_id, server_id, tool_name):
         task, run = await self.rt.store.call(lambda db: self.rt.check_run(db, run_id))
         from .models import TaskSpec
         from .execution_policy import mcp_name
@@ -637,14 +706,7 @@ class MCPRegistry:
             "PERMISSION_DENIED",
             "This Agent's MCP tool access has been revoked",
         )
-        return await self._call(
-            server_id,
-            tool_name,
-            arguments,
-            "thread:" + task.thread_id,
-            idempotency_key,
-            run_id=run_id,
-        )
+        return task
 
     async def call(
         self,
@@ -668,21 +730,48 @@ class MCPRegistry:
         )
 
     async def _call(self, server_id, tool_name, arguments, consumer, key, run_id=None):
+        require(isinstance(arguments, dict) and len(json_dump(arguments).encode()) <= 262144,
+                "INVALID_REQUEST", "MCP arguments must be a JSON object within 256 KiB")
+        require(isinstance(key, str) and 0 < len(key) <= 256, "INVALID_REQUEST", "A bounded idempotency key is required")
+        digest = content_hash({"tool": tool_name, "arguments": arguments})
+        previous = await self.rt.store.call(lambda db: one(db,
+            "SELECT * FROM mcp_calls WHERE server_id=? AND consumer_id=? AND idempotency_key=?", (server_id, consumer, key)))
+        if previous:
+            require(previous.request_hash == digest, "IDEMPOTENCY_CONFLICT", "MCP idempotency key was used with different arguments")
+            return self._replay(previous)
         config = self._config(server_id)
-        require(
-            isinstance(arguments, dict)
-            and len(json_dump(arguments).encode()) <= 262144,
-            "INVALID_REQUEST",
-            "MCP arguments must be a JSON object within 256 KiB",
-        )
-        require(
-            isinstance(key, str) and 0 < len(key) <= 256,
-            "INVALID_REQUEST",
-            "A bounded idempotency key is required",
-        )
-        client = await self._connection(server_id, consumer)
+        service, _, connection = self.capacity.define(config, consumer)
+        quantities = (QuantityRequirement(key=service), QuantityRequirement(key=connection))
+        call_id = new_id("mcp_call")
+        dispatch_state = {"started": False}
+        try:
+            async with self.capacity.borrow(server_id, consumer) as client:
+                async with self.rt.resources.phase(call_id, quantities, timeout=config.timeout_seconds):
+                    return await self._invoke(client, call_id, quantities, server_id, tool_name, arguments, consumer, key, run_id, dispatch_state)
+        except RuntimeFault as exc:
+            if not dispatch_state["started"]:
+                exc.details["dispatched"] = False
+            raise
+
+    def _replay(self, previous):
+        if previous.id in self.result_cache:
+            return {**self.result_cache[previous.id][0], "reused": True}
+        if previous.result_json:
+            return {**json.loads(previous.result_json), "reused": True}
+        code = ("MCP_RESULT_NOT_RETAINED" if previous.state in {"SUCCEEDED", "FAILED"} else
+                "OUTCOME_UNCERTAIN" if previous.state == "UNCERTAIN" else "MCP_CALL_IN_PROGRESS")
+        raise RuntimeFault(code, "This MCP invocation was already accepted; it will not be repeated automatically",
+                           details={"call_id": previous.id, "state": previous.state})
+
+    async def _invoke(self, client, call_id, quantities, server_id, tool_name, arguments, consumer, key, run_id, dispatch_state):
+        config = self._config(server_id)
+        require(config == client.config and config.enabled, "MCP_CONFIG_CHANGED", "MCP configuration changed before dispatch")
+        if run_id:
+            await self.authorize_run(run_id, server_id, tool_name)
         if not self.catalogs.get(server_id, {}).get("discovered_at"):
             await self._discover(server_id, client)
+        elif not hasattr(client, "catalog"):
+            await self._discover(server_id, client, publish=False)
         tool = next(
             (
                 t
@@ -696,6 +785,13 @@ class MCPRegistry:
             "NOT_FOUND",
             "Tool is not in this MCP server's discovered catalog",
         )
+        actual = next((item for item in client.catalog.get("tools", []) if item["name"] == tool_name), None)
+        require(actual and content_hash(actual) == content_hash(tool), "MCP_SCHEMA_CHANGED",
+                "This connection's tool schema differs from the discovered snapshot; refresh the catalog before a new call",
+                details={"dispatched": False})
+        require(client.info.get("protocolVersion") == self.catalogs[server_id].get("protocolVersion"),
+                "MCP_PROTOCOL_CHANGED", "Actual MCP handshake differs from the discovered protocol version",
+                details={"dispatched": False})
         require(
             config.allowed_tools is None or tool_name in config.allowed_tools,
             "PERMISSION_DENIED",
@@ -712,7 +808,7 @@ class MCPRegistry:
                 details={"field": ".".join(map(str, exc.absolute_path))},
             ) from None
         digest = content_hash({"tool": tool_name, "arguments": arguments})
-        call_id = new_id("mcp_call")
+        await self.capacity.initialize(client, run_id)
 
         def claim(db):
             previous = one(
@@ -740,30 +836,20 @@ class MCPRegistry:
                     now_ms(),
                 ),
             )
+            db.execute("INSERT INTO mcp_call_resources(call_id,connection_owner,quantities_json,state) VALUES(?,?,?,'HELD')",
+                       (call_id, client.resource_owner, json_dump(quantities)))
             return None
 
         previous = await self.rt.store.call(claim, transaction=True)
+        dispatch_state["started"] = True
         if previous:
-            if previous.id in self.result_cache:
-                return {**self.result_cache[previous.id], "reused": True}
-            if previous.result_json:
-                return {**json.loads(previous.result_json), "reused": True}
-            code = (
-                "MCP_RESULT_NOT_RETAINED"
-                if previous.state in {"SUCCEEDED", "FAILED"}
-                else "OUTCOME_UNCERTAIN"
-                if previous.state == "UNCERTAIN"
-                else "MCP_CALL_IN_PROGRESS"
-            )
-            raise RuntimeFault(
-                code,
-                "This MCP invocation was already accepted; it will not be repeated automatically",
-                details={"call_id": previous.id, "state": previous.state},
-            )
+            return self._replay(previous)
+        reply_received = False
         try:
             result = await client.request(
                 "tools/call", {"name": tool_name, "arguments": arguments}
             )
+            reply_received = True
             result = self.rt.vault.redact(result)
             result = {
                 **result,
@@ -775,8 +861,8 @@ class MCPRegistry:
             }
             result = self.bounded_result(result, config.max_output_bytes)
             call_state = "FAILED" if result.get("isError") else "SUCCEEDED"
-            await self.rt.store.call(
-                lambda db: db.execute(
+            def completed(db):
+                db.execute(
                     "UPDATE mcp_calls SET state=?,result_json=?,ended_at=? WHERE id=?",
                     (
                         call_state,
@@ -784,20 +870,20 @@ class MCPRegistry:
                         now_ms(),
                         call_id,
                     ),
-                ),
-                transaction=True,
-            )
-            self.result_cache[call_id] = result
-            while (
-                len(self.result_cache) > 64
-                or sum(len(json_dump(v).encode()) for v in self.result_cache.values())
-                > 16777216
-            ):
-                self.result_cache.popitem(last=False)
+                )
+                db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,))
+            await self.rt.store.call(completed, transaction=True)
+            size = len(json_dump(result).encode())
+            self.result_cache[call_id] = (result, size)
+            self.result_cache_bytes += size
+            while len(self.result_cache) > 64 or self.result_cache_bytes > 16777216:
+                _, (_, removed) = self.result_cache.popitem(last=False)
+                self.result_cache_bytes -= removed
             return result
         except BaseException as exc:
             readonly = tool.get("annotations", {}).get("readOnlyHint") is True
-            state = "FAILED" if readonly else "UNCERTAIN"
+            not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
+            state = "FAILED" if readonly or not_dispatched else "UNCERTAIN"
             error = (
                 exc.as_dict()
                 if isinstance(exc, RuntimeFault)
@@ -816,9 +902,13 @@ class MCPRegistry:
                     ),
                     transaction=True,
                 )
+                if not reply_received and not not_dispatched:
+                    await self.capacity.isolate(call_id, client)
+                else:
+                    await self.rt.store.call(lambda db: db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,)), transaction=True)
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            if not readonly:
+            if not readonly and not not_dispatched:
                 raise RuntimeFault(
                     "OUTCOME_UNCERTAIN",
                     "MCP tool outcome is uncertain; verify the upstream action before retrying",
@@ -856,14 +946,51 @@ class MCPRegistry:
             "PERMISSION_DENIED",
             "This MCP server is not exposed to external clients",
         )
-        client = await self._connection(server_id, self._consumer(consumer_id))
-        value = self.rt.vault.redact(await client.request(method, params))
-        require(
-            len(json_dump(value).encode()) <= config.max_output_bytes,
-            "MCP_OUTPUT_LIMIT",
-            "MCP response exceeds its output limit",
-        )
-        return {**value, "untrusted_tool_result": True}
+        consumer = self._consumer(consumer_id)
+        service, _, connection = self.capacity.define(config, consumer)
+        quantities = (QuantityRequirement(key=service), QuantityRequirement(key=connection))
+        call_id = new_id("mcp_read")
+        async with self.capacity.borrow(server_id, consumer) as client:
+            async with self.rt.resources.phase(call_id, quantities, timeout=config.timeout_seconds):
+                current = self._config(server_id)
+                require(current == config and current.expose_to_codex and current.enabled,
+                        "MCP_CONFIG_CHANGED", "MCP configuration changed before dispatch")
+                if self.capacity.policy(server_id).initialization and not client.initialized:
+                    await self._discover(server_id, client, publish=not self.catalogs.get(server_id, {}).get("discovered_at"))
+                    await self.capacity.initialize(client, None)
+                def intent(db):
+                    db.execute("INSERT INTO mcp_calls(id,server_id,consumer_id,tool_name,idempotency_key,request_hash,state,started_at) VALUES(?,?,?,?,?,?,'DISPATCHED',?)",
+                               (call_id, server_id, consumer, method, call_id, content_hash(params), now_ms()))
+                    db.execute("INSERT INTO mcp_call_resources(call_id,connection_owner,quantities_json,state) VALUES(?,?,?,'HELD')",
+                               (call_id, client.resource_owner, json_dump(quantities)))
+                await self.rt.store.call(intent, transaction=True)
+                reply_received = False
+                try:
+                    value = await client.request(method, params)
+                    reply_received = True
+                    value = self.rt.vault.redact(value)
+                    require(len(json_dump(value).encode()) <= config.max_output_bytes,
+                            "MCP_OUTPUT_LIMIT", "MCP response exceeds its output limit")
+                except BaseException as exc:
+                    not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
+                    error = exc.as_dict() if isinstance(exc, RuntimeFault) else {
+                        "code": "MCP_CANCELLED" if isinstance(exc, asyncio.CancelledError) else "MCP_REQUEST_FAILED",
+                        "safe_message": "MCP read ended without a response"}
+                    def failed(db):
+                        db.execute("UPDATE mcp_calls SET state='FAILED',error_json=?,ended_at=? WHERE id=?", (json_dump(error), now_ms(), call_id))
+                        if reply_received or not_dispatched:
+                            db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,))
+                    await self.rt.store.call(failed, transaction=True)
+                    if not reply_received and not not_dispatched:
+                        await self.capacity.isolate(call_id, client)
+                    if isinstance(exc, RuntimeFault):
+                        exc.details["call_id"] = call_id
+                    raise
+                def completed(db):
+                    db.execute("UPDATE mcp_calls SET state='SUCCEEDED',ended_at=? WHERE id=?", (now_ms(), call_id))
+                    db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,))
+                await self.rt.store.call(completed, transaction=True)
+                return {**value, "untrusted_tool_result": True}
 
     async def resources(self, server_id, consumer_id="codex", cursor=None):
         return await self._external_request(

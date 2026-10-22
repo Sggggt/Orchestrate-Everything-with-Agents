@@ -69,8 +69,8 @@ function Show-Workspace([string]$Url) {
     Write-Host "Workspace: $Url"
     Write-Host "Data:      $maDataRoot"
     if (-not $NoBrowser) {
-        try { Start-Process -FilePath "$Url/#mcp" }
-        catch { Write-Warning "Could not open the browser. Open $Url/#mcp manually." }
+        try { Start-Process -FilePath "$Url/#workspace" }
+        catch { Write-Warning "Could not open the browser. Open $Url/#workspace manually." }
     }
 }
 

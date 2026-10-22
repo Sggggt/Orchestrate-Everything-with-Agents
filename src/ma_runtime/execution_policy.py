@@ -5,7 +5,7 @@ from .models import ResultPolicy, TaskSpec, UsePolicy, content_hash, now_ms
 from .store import rows
 
 PLATFORM_TOOLS = frozenset({"list_threads", "send_message", "submit_task", "spawn_instances", "put_file", "put_bytes"})
-LIFECYCLE_TOOLS = frozenset({"wait_for_tasks", "wait_for_message", "wait_for_input", "report_issue", "operations", "read_context"})
+LIFECYCLE_TOOLS = frozenset({"wait_for_tasks", "wait_for_message", "wait_for_input", "report_issue", "operations", "read_context", "read_history"})
 
 
 def request_hash(spec):
@@ -66,6 +66,32 @@ def validate_policies(runtime, spec):
 
 def record(db, task_id, run_id, kind, name):
     db.execute("INSERT OR IGNORE INTO execution_evidence VALUES(?,?,?,?,?)", (task_id, kind, name, run_id, now_ms()))
+
+
+async def prepare_required_tools(context):
+    """Check mandatory dependencies before any adapter or model is invoked."""
+    policy = context.request.tool_policy
+    pending = set(policy.required) - context.used_tools
+    needs_any = policy.mode == "required" and not context.used_tools
+    if not pending and not needs_any:
+        return
+    runtime = context._runtime
+    validate_policies(runtime, context.request)
+    config = runtime.agent_configs.get(context.request.agent_id)
+    native = set(PLATFORM_TOOLS)
+    if config and not config.collaboration:
+        native -= {"list_threads", "send_message", "submit_task", "spawn_instances"}
+    native.update(tool["function"]["name"] for tool in runtime.workbench.catalog(context.request))
+    native = {name for name in native if policy.permits(name)}
+    required_mcp = {name for name in pending if name.startswith("mcp:")}
+    if not required_mcp and (not needs_any or native):
+        return
+    catalog = await context.list_tools()
+    available = set(catalog["identifiers"].values())
+    missing = sorted(required_mcp - available)
+    require(not missing and (not needs_any or native or available), "EXECUTION_REQUIREMENT_UNMET",
+            "Required tools are unavailable before execution",
+            details={"stage": "preparation", "missing": missing, "unavailable": catalog["unavailable"]})
 
 
 def model_tools(context, tools):

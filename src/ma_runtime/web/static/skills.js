@@ -19,7 +19,7 @@ export function createSkillIntegration({ state, escape, icon, markdown, api, toa
     render();
   }
   async function action(name, element) {
-    if (!name.startsWith("registry-skill-") && name !== "mcp-directory-register") return false;
+    if (!name.startsWith("registry-skill-")) return false;
     const id = element.dataset.id || state.skillDetail?.id;
     if (name === "registry-skill-select") await select(id);
     if (name === "registry-skill-back") { state.skillDetail = null; render(); }
@@ -39,11 +39,6 @@ export function createSkillIntegration({ state, escape, icon, markdown, api, toa
     if (name === "registry-skill-more") {
       const next = await api(`/skills?cursor=${encodeURIComponent(state.skillRegistry.cursor)}&limit=200`);
       state.skillRegistry = { ...next, items: [...state.skillRegistry.items, ...next.items] }; render();
-    }
-    if (name === "mcp-directory-register") {
-      const directory = document.querySelector("#mcp-directory").value.trim();
-      if (!directory) throw new Error("填写 MCP 目录路径");
-      await api("/mcp/register-directory", { method: "POST", body: { directory } }); await loadBootstrap(); render(); toast("MCP 目录已注册");
     }
     return true;
   }

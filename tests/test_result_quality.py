@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.llm import LLMApiAgent
 from ma_runtime import (AdapterEvent, AgentConfig, AgentDescriptor, ProbeResult, ResultPolicy,
@@ -59,6 +60,16 @@ class CompletionAgent(LLMApiAgent):
         yield {"calls": [], "text": "", "finish_reason": "stop", **self.response}
 
 
+class PartialFailureAgent(ResultAgent):
+    def describe(self):
+        return super().describe().model_copy(update={"supports_probe": False})
+
+    async def execute(self, request, context):
+        context.partial_model_result = TaskResult(output={"text": "Retained evidence"})
+        raise RuntimeFault("REVIEW_INTERRUPTED", "Review stopped before its boundary")
+        yield  # Keep the adapter's asynchronous event-stream contract.
+
+
 class ResultQualityTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="oea-result-quality-")
@@ -89,6 +100,22 @@ class ResultQualityTests(unittest.IsolatedAsyncioTestCase):
         await self.rt.agents.configure(config)
         self.rt.adapters[config.id] = CompletionAgent(config, response)
         return await self.submit({"input": "Return the requested result"}, policy, config.id)
+
+    async def test_committed_native_boundaries_do_not_accumulate_across_waves(self):
+        config = AgentConfig(id="model", name="Model", kind="llm", base_url="http://model.invalid/v1", model="test")
+        await self.rt.agents.configure(config)
+        adapter = CompletionAgent(config, {"text": "Retained evidence"})
+        self.rt.adapters[config.id] = adapter
+        first = None
+        for _ in range(3):
+            for _ in range(8):
+                task = await self.submit({"input": "Review the evidence"}, agent_id=config.id)
+                first = first or task.id
+            self.assertEqual(len(adapter.boundaries), 0)
+        self.assertEqual((await self.rt.tasks.result(first)).output["text"], "Retained evidence")
+        with patch.object(self.rt, "commit_boundary", side_effect=RuntimeFault("COMMIT_UNAVAILABLE", "Commit not confirmed")):
+            task = await self.submit({"input": "Keep the unconfirmed boundary"}, agent_id=config.id)
+        self.assertIn(task.runs[-1].id, adapter.boundaries)
 
     async def test_empty_and_truncated_model_results_fail_without_losing_delivery(self):
         for response, code in [({"text": "  "}, "EMPTY_OUTPUT"),
@@ -182,6 +209,56 @@ class ResultQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.state, "UNCERTAIN")
         self.assertIsNone(state.runs[0].boundary_receipt)
         self.assertEqual((await self.rt.threads.get(thread.id)).owner_task_id, task.id)
+
+    async def uncertain_partial(self):
+        self.rt.adapters["worker"] = PartialFailureAgent()
+        thread = await self.rt.threads.create(self.session.id, "worker")
+        task = await self.rt.tasks.submit({"session_id": self.session.id, "thread_id": thread.id,
+            "agent_id": "worker", "idempotency_key": "partial", "result_policy": {"kind": "text"}})
+        with self.assertRaises(RuntimeFault) as failure:
+            await self.rt.tasks.result(task.id, timeout=5)
+        self.assertEqual(failure.exception.code, "OUTCOME_UNCERTAIN")
+        return await self.rt.tasks.get(task.id)
+
+    async def test_failed_reconciliation_preserves_partial_result_and_error(self):
+        before = await self.uncertain_partial()
+        await self.rt.aclose()
+        self.rt = await Runtime.open(self.root / "state", adapters={"worker": PartialFailureAgent()}).__aenter__()
+        recovered = await self.rt.tasks.get(before.id)
+        self.assertEqual(recovered.error, before.error)
+        self.assertEqual(recovered.result, before.result)
+        evidence = "Fixture execution ended; it performed no external operations"
+        after = await self.rt.tasks.reconcile(before.id, {"resolution": "FAILED", "evidence": evidence,
+            "confirmed_stopped": True, "external_actions_confirmed": True})
+        self.assertEqual(after.state, "FAILED")
+        self.assertEqual(after.result, before.result)
+        self.assertEqual(after.error, before.error)
+        self.assertEqual(after.runs[0].error["code"], before.runs[0].error["code"])
+        self.assertEqual(after.runs[0].error["evidence"], evidence)
+        self.assertFalse(self.rt.uncertain_slots)
+        await self.rt.aclose()
+        self.rt = await Runtime.open(self.root / "state", adapters={"worker": self.worker}).__aenter__()
+        saved = await self.rt.tasks.get(before.id)
+        self.assertEqual(saved.result, before.result)
+        self.assertEqual(saved.error, before.error)
+
+    async def test_successful_reconciliation_still_checks_delivery(self):
+        before = await self.uncertain_partial()
+        resolution = {"resolution": "SUCCEEDED", "evidence": "Fixture execution and effects were inspected",
+            "confirmed_stopped": True, "external_actions_confirmed": True, "result": {"output": {}}}
+        with self.assertRaises(RuntimeFault) as failure:
+            await self.rt.tasks.reconcile(before.id, resolution)
+        self.assertEqual(failure.exception.code, "EMPTY_OUTPUT")
+        unchanged = await self.rt.tasks.get(before.id)
+        self.assertEqual(unchanged.state, "UNCERTAIN")
+        self.assertEqual(unchanged.result, before.result)
+        self.assertTrue(self.rt.uncertain_slots)
+        resolution["result"] = {"output": {"text": "Verified result"}}
+        after = await self.rt.tasks.reconcile(before.id, resolution)
+        self.assertEqual(after.state, "SUCCEEDED")
+        self.assertEqual(after.result.metadata["acceptance"]["state"], "PASSED")
+        self.assertEqual(after.runs[0].error["code"], before.runs[0].error["code"])
+        self.assertFalse(self.rt.uncertain_slots)
 
     async def test_workflow_failure_blocks_downstream_and_keeps_result_requirements(self):
         from ma_runtime import WorkflowBuilder

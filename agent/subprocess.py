@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 
 from ma_runtime.errors import RuntimeFault, require
 from ma_runtime.models import (
@@ -16,6 +17,8 @@ from ma_runtime.models import (
     LLMRequest,
     ProbeResult,
     json_dump,
+    new_id,
+    MAX_AGENT_FRAME_BYTES,
 )
 
 from .process_tree import OwnedProcessTree
@@ -34,7 +37,7 @@ class JsonlAgent:
         self.running = {}
         self.finished = {}
         self.controls = {}
-        self.max_frame = 1024 * 1024
+        self.max_frame = MAX_AGENT_FRAME_BYTES
 
     def describe(self):
         return self.descriptor
@@ -109,6 +112,7 @@ class JsonlAgent:
             raise
         self.running[request.run_id] = (process, tree)
         stderr = asyncio.create_task(self._drain_stderr(process.stderr))
+        channel = None
         try:
             ref = {
                 "run_id": request.run_id,
@@ -145,6 +149,13 @@ class JsonlAgent:
                     "UNSUPPORTED_CAPABILITY",
                     "Subprocess lacks configured capability",
                 )
+            if description.get("extensions", {}).get("oea.channel") == "1.0":
+                channel = await context._runtime.channels.bind(request.run_id, request.thread_id,
+                    new_id("connection"), capabilities=("generation", "inbox", "receipts", "reconnect"))
+                await self._send(process, {"jsonrpc": "2.0", "id": "host:channel", "method": "agent.channel", "params": channel})
+                acknowledgement = await self._read(process)
+                require(acknowledgement.get("id") == "host:channel" and acknowledgement.get("result", {}).get("generation") == channel["generation"],
+                        "ADAPTER_PROTOCOL_ERROR", "Subprocess did not acknowledge its channel generation")
             await self._send(
                 process,
                 {
@@ -186,138 +197,169 @@ class JsonlAgent:
                     "PERMISSION_DENIED",
                     "Subprocess callback has an invalid run identity",
                 )
-                if method == "agent.event":
-                    local_seq = int(params["local_seq"])
-                    require(
-                        local_seq > last_seq,
-                        "ADAPTER_PROTOCOL_ERROR",
-                        "Subprocess event sequence did not increase",
-                    )
-                    last_seq = local_seq
-                    event = AdapterEvent.model_validate(params["event"])
-                    require(
-                        event.type in {"progress", "usage", "log"},
-                        "ADAPTER_PROTOCOL_ERROR",
-                        "Final boundaries require commit RPC",
-                    )
-                    yield event.model_copy(update={"local_seq": local_seq})
-                    continue
                 identity = frame.get("id")
-                require(
-                    isinstance(identity, (str, int))
-                    and not isinstance(identity, bool)
-                    and not str(identity).startswith("host:"),
-                    "ADAPTER_PROTOCOL_ERROR",
-                    "Reverse RPC requires a non-host request ID",
-                )
-                try:
-                    if method == "runtime.commit_boundary":
-                        seq = int(params["local_seq"])
+                if method != "agent.event":
+                    require(isinstance(identity, (str, int)) and not isinstance(identity, bool)
+                            and not str(identity).startswith("host:"), "ADAPTER_PROTOCOL_ERROR",
+                            "Reverse RPC requires a non-host request ID")
+                if channel is not None:
+                    supplied = params.get("channel", {})
+                    require(isinstance(supplied, dict) and supplied.get("run_id") == request.run_id and supplied.get("thread_id") == request.thread_id,
+                            "PERMISSION_DENIED", "Subprocess channel belongs to another execution")
+                    if method == "runtime.channel.reconnect":
+                        try:
+                            channel = await context._runtime.channels.bind(request.run_id, request.thread_id,
+                                params.get("connection_id"), capabilities=channel["capabilities"],
+                                expected_generation=params.get("expected_generation"))
+                            await self._send(process, {"jsonrpc": "2.0", "id": identity, "result": channel})
+                        except RuntimeFault as exc:
+                            await self._send(process, {"jsonrpc": "2.0", "id": identity,
+                                "error": {"code": -32000, "message": exc.safe_message, "data": exc.as_dict()}})
+                        continue
+                    if supplied.get("generation") != channel["generation"]:
+                        if method != "agent.event":
+                            fault = RuntimeFault("STALE_CHANNEL", "This connection no longer owns the logical channel")
+                            await self._send(process, {"jsonrpc": "2.0", "id": identity,
+                                "error": {"code": -32000, "message": fault.safe_message, "data": fault.as_dict()}})
+                        continue
+                with context._runtime.channels.use(params.get("channel")) if channel else nullcontext():
+                    if method == "agent.event":
+                        local_seq = int(params["local_seq"])
                         require(
-                            seq > last_seq,
+                            local_seq > last_seq,
                             "ADAPTER_PROTOCOL_ERROR",
-                            "Boundary sequence did not increase",
+                            "Subprocess event sequence did not increase",
                         )
-                        event = AdapterEvent.model_validate(params["event"]).model_copy(
-                            update={"local_seq": seq}
+                        last_seq = local_seq
+                        event = AdapterEvent.model_validate(params["event"])
+                        require(
+                            event.type in {"progress", "usage", "log"},
+                            "ADAPTER_PROTOCOL_ERROR",
+                            "Final boundaries require commit RPC",
                         )
-                        value = await context.commit_boundary(event, seq)
+                        yield event.model_copy(update={"local_seq": local_seq})
+                        continue
+                    try:
+                        if method == "runtime.commit_boundary":
+                            seq = int(params["local_seq"])
+                            require(
+                                seq > last_seq,
+                                "ADAPTER_PROTOCOL_ERROR",
+                                "Boundary sequence did not increase",
+                            )
+                            event = AdapterEvent.model_validate(params["event"]).model_copy(
+                                update={"local_seq": seq}
+                            )
+                            value = await context.commit_boundary(event, seq)
+                            await self._send(
+                                process, {"jsonrpc": "2.0", "id": identity, "result": value}
+                            )
+                            self.finished[request.run_id] = event
+                            yield event
+                            return
+                        if method == "runtime.tasks.submit":
+                            value = await context.submit_task(params["spec"])
+                        elif method == "runtime.instances.spawn":
+                            value = await context.spawn_instances(params["spec"])
+                        elif method == "runtime.llm.info":
+                            value = await context.llm.info()
+                        elif method == "runtime.llm.complete":
+                            from pydantic import ValidationError
+
+                            try:
+                                model_request = LLMRequest.model_validate(params["request"])
+                            except (ValidationError, KeyError):
+                                raise RuntimeFault(
+                                    "INVALID_REQUEST", "Invalid model request"
+                                ) from None
+                            value = await context.llm.complete(
+                                model_request.messages,
+                                tools=model_request.tools,
+                                include_instructions=model_request.include_instructions,
+                                allow_incomplete=model_request.allow_incomplete,
+                                emit_progress=model_request.emit_progress,
+                                tool_choice=model_request.tool_choice,
+                            )
+                        elif method == "runtime.operations.report":
+                            value = await context.report_issue(params["summary"], params["idempotency_key"],
+                                details=params.get("details", ""), wait=params.get("wait", False))
+                        elif method == "runtime.operations.call":
+                            value = await context.operations(params["action"], params.get("params"))
+                        elif method == "runtime.tools.list":
+                            value = await context.list_tools()
+                        elif method == "runtime.context.read":
+                            value = await context.read_context(params["reference"], params.get("offset", 0), params.get("limit", 8192))
+                        elif method == "runtime.context.project":
+                            value = await context.project_context(params["value"])
+                        elif method == "runtime.skills.list":
+                            value = await context.list_skills()
+                        elif method == "runtime.skills.read":
+                            value = await context.read_skill(
+                                params["skill_id"], params.get("path", "SKILL.md")
+                            )
+                        elif method == "runtime.threads.list":
+                            value = await context.list_threads()
+                        elif method == "runtime.run_ref.set":
+                            await context.set_run_ref(params["ref"])
+                            value = {"saved": True}
+                        elif method == "runtime.artifacts.put_bytes":
+                            try:
+                                data = base64.b64decode(params["base64"], validate=True)
+                            except (ValueError, TypeError):
+                                raise RuntimeFault(
+                                    "INVALID_REQUEST", "Artifact content must be base64"
+                                ) from None
+                            value = await context.put_bytes(
+                                params["name"], data, metadata=params.get("metadata")
+                            )
+                        elif method == "runtime.channel.inbox":
+                            require(channel is not None, "UNSUPPORTED_CAPABILITY", "This child did not negotiate channel support")
+                            value = await context._runtime.channels.inbox(channel, after_position=params.get("after_position", 0), limit=params.get("limit", 32))
+                        elif method == "runtime.channel.ack":
+                            require(channel is not None, "UNSUPPORTED_CAPABILITY", "This child did not negotiate channel support")
+                            value = await context._runtime.channels.acknowledge(channel, params["positions"])
+                        elif method == "runtime.messages.reject":
+                            value = await context.reject_message(params["message_id"], params["reason"], params["idempotency_key"])
+                        elif method == "runtime.messages.send":
+                            value = await context.send_message(params["spec"])
+                        elif method == "runtime.tools.invoke":
+                            value = await context.invoke_tool(
+                                params["name"],
+                                params["arguments"],
+                                params["idempotency_key"],
+                                model_call_id=params.get("model_call_id"), tool_call_id=params.get("tool_call_id"),
+                            )
+                        else:
+                            raise RuntimeFault(
+                                "PERMISSION_DENIED",
+                                "Subprocess callback is not in its granted scope",
+                            )
                         await self._send(
                             process, {"jsonrpc": "2.0", "id": identity, "result": value}
                         )
-                        self.finished[request.run_id] = event
-                        yield event
-                        return
-                    if method == "runtime.tasks.submit":
-                        value = await context.submit_task(params["spec"])
-                    elif method == "runtime.instances.spawn":
-                        value = await context.spawn_instances(params["spec"])
-                    elif method == "runtime.llm.info":
-                        value = await context.llm.info()
-                    elif method == "runtime.llm.complete":
-                        from pydantic import ValidationError
-
-                        try:
-                            model_request = LLMRequest.model_validate(params["request"])
-                        except (ValidationError, KeyError):
-                            raise RuntimeFault(
-                                "INVALID_REQUEST", "Invalid model request"
-                            ) from None
-                        value = await context.llm.complete(
-                            model_request.messages,
-                            tools=model_request.tools,
-                            include_instructions=model_request.include_instructions,
-                            allow_incomplete=model_request.allow_incomplete,
-                            emit_progress=model_request.emit_progress,
-                            tool_choice=model_request.tool_choice,
-                        )
-                    elif method == "runtime.operations.report":
-                        value = await context.report_issue(params["summary"], params["idempotency_key"],
-                            details=params.get("details", ""), wait=params.get("wait", False))
-                    elif method == "runtime.operations.call":
-                        value = await context.operations(params["action"], params.get("params"))
-                    elif method == "runtime.tools.list":
-                        value = await context.list_tools()
-                    elif method == "runtime.context.read":
-                        value = await context.read_context(params["reference"], params.get("offset", 0), params.get("limit", 8192))
-                    elif method == "runtime.context.project":
-                        value = await context.project_context(params["value"])
-                    elif method == "runtime.skills.list":
-                        value = await context.list_skills()
-                    elif method == "runtime.skills.read":
-                        value = await context.read_skill(
-                            params["skill_id"], params.get("path", "SKILL.md")
-                        )
-                    elif method == "runtime.threads.list":
-                        value = await context.list_threads()
-                    elif method == "runtime.run_ref.set":
-                        await context.set_run_ref(params["ref"])
-                        value = {"saved": True}
-                    elif method == "runtime.artifacts.put_bytes":
-                        try:
-                            data = base64.b64decode(params["base64"], validate=True)
-                        except (ValueError, TypeError):
-                            raise RuntimeFault(
-                                "INVALID_REQUEST", "Artifact content must be base64"
-                            ) from None
-                        value = await context.put_bytes(
-                            params["name"], data, metadata=params.get("metadata")
-                        )
-                    elif method == "runtime.messages.send":
-                        value = await context.send_message(params["spec"])
-                    elif method == "runtime.tools.invoke":
-                        value = await context.invoke_tool(
-                            params["name"],
-                            params["arguments"],
-                            params["idempotency_key"],
-                            model_call_id=params.get("model_call_id"), tool_call_id=params.get("tool_call_id"),
-                        )
-                    else:
-                        raise RuntimeFault(
-                            "PERMISSION_DENIED",
-                            "Subprocess callback is not in its granted scope",
-                        )
-                    await self._send(
-                        process, {"jsonrpc": "2.0", "id": identity, "result": value}
-                    )
-                except RuntimeFault as exc:
-                    await self._send(
-                        process,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": identity,
-                            "error": {
-                                "code": -32000,
-                                "message": exc.safe_message,
-                                "data": exc.as_dict(),
+                    except RuntimeFault as exc:
+                        await self._send(
+                            process,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": identity,
+                                "error": {
+                                    "code": -32000,
+                                    "message": exc.safe_message,
+                                    "data": exc.as_dict(),
+                                },
                             },
-                        },
-                    )
+                        )
         finally:
             await tree.stop()
             tree.close()
             await stderr
             self.running.pop(request.run_id, None)
+            if channel is not None:
+                await context._runtime.channels.disconnect(channel)
+
+    def discard_committed_boundary(self, run_id):
+        self.finished.pop(run_id, None)
 
     async def cancel(self, run_ref):
         item = self.running.get(run_ref.get("run_id"))

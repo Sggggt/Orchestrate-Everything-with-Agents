@@ -27,6 +27,27 @@ FIXTURE = Path(__file__).parent / "fixtures/model_agent.py"
 
 
 class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_capacity_is_shared_and_only_held_during_requests(self):
+        from ma_runtime.models import content_hash
+        config = self.config(kind="llm", command=(), llm_required=False, max_concurrency=2)
+        await self.rt.agents.configure(config)
+        key = "model:" + content_hash({"base_url": config.base_url, "model": config.model})[:24]
+        await self.rt.resources.configure({"key": key, "limit": 1, "unit": "request"})
+        first = await self.submit({"input": "hold first node"})
+        await asyncio.wait_for(self.started.wait(), 5)
+        second = await self.submit({"input": "second"})
+        async with asyncio.timeout(5):
+            while not self.rt.resources.phase_waiters:
+                await asyncio.sleep(.01)
+        self.assertEqual(len(self.captured), 1)
+        self.assertEqual(sum(self.rt.resources.quantities[key].values()), 1)
+        self.assertEqual(len(self.rt.active), 2)
+        self.release.set()
+        await self.rt.tasks.result(first.id, timeout=10)
+        await self.rt.tasks.result(second.id, timeout=10)
+        self.assertEqual(len(self.captured), 2)
+        self.assertNotIn(key, self.rt.resources.quantities)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ma-model-config-")
         self.root = Path(self.temp.name)
@@ -48,6 +69,9 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.started.set()
             content = body["messages"][-1].get("content", "")
+            source_steps = next((int(message["content"].partition(":")[2]) for message in body["messages"]
+                if message.get("role") == "user" and isinstance(message.get("content"), str)
+                and message["content"].startswith("read steps: ")), None)
             reasoning_summary = (body["messages"][0].get("content", "").startswith("Summarize previous work")
                                  and "reasoning-heavy-summary-case" in content)
             output_cap = body.get("max_tokens", body.get("max_completion_tokens", 4096))
@@ -57,6 +81,9 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
                 if message.get("role") == "tool" and message.get("tool_call_id") == "context-source"), None)
             if content == "http failure":
                 return JSONResponse({"error": "Provider unavailable"}, status_code=503)
+            if content == "parameter failure":
+                return JSONResponse({"error": {"code": "invalid_parameter", "type": "invalid_request_error",
+                    "param": "reasoning_effort", "message": "Unsupported reasoning effort; credential " + auth}}, status_code=400)
 
             async def stream():
                 if content == "hold first node":
@@ -88,6 +115,16 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
                     delta = {"tool_calls": [{"index": 0, "id": "context-source", "type": "function", "function": {
                         "name": "read_context", "arguments": json.dumps({"reference": context_request, "limit": 512})}}]}
                     finish = "tool_calls"
+                if source_steps is not None:
+                    completed = sum(message.get("role") == "tool" for message in body["messages"])
+                    if completed < source_steps:
+                        alias = next(tool["function"]["name"] for tool in body["tools"]
+                                     if tool["function"]["name"].startswith("mcp_fixture_echo_"))
+                        delta = {"tool_calls": [{"index": 0, "id": f"source-{completed}", "type": "function", "function": {
+                            "name": alias, "arguments": json.dumps({"text": str(completed)})}}]}
+                        finish = "tool_calls"
+                    else:
+                        delta, finish = {"content": "Source reading complete"}, "stop"
                 yield (
                     "data: "
                     + json.dumps(
@@ -106,12 +143,12 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
                     + json.dumps(
                         {
                             "choices": [{"delta": {}, "finish_reason": finish}],
-                            "usage": {
+                            **({} if content == "missing usage" else {"usage": {
                                 "prompt_tokens": 2,
                                 "completion_tokens": used_output,
                                 "total_tokens": 2 + used_output,
                                 **({"completion_tokens_details": {"reasoning_tokens": used_output - (20 if text else 0)}} if reasoning_summary else {}),
-                            },
+                            }}),
                         }
                     )
                     + "\n\n"
@@ -186,6 +223,27 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         )
         return task
 
+    async def test_large_context_crosses_stdio_without_bypassing_token_budget(self):
+        from ma_runtime.models import LLMRequest, MAX_MODEL_REQUEST_BYTES
+        from ma_runtime.errors import RuntimeFault
+        await self.rt.agents.configure(self.config(context_budget_tokens=524288, context_window_tokens=1048576))
+        task = await self.submit({"large_model_input_chars": 1500000})
+        await self.rt.tasks.result(task.id, timeout=20)
+        self.assertEqual(len(self.captured), 1)
+        self.assertEqual(len(self.captured[0]["body"]["messages"][-1]["content"]), 1500000)
+        trace = await self.rt.tasks.trace(task.id)
+        completed = next(item for item in trace["items"] if item["stage"] == "model" and item["state"] == "SUCCEEDED")
+        self.assertGreaterEqual(completed["attributes"]["context"]["input_tokens"], 500000)
+        self.assertEqual(completed["attributes"]["context"]["budget_tokens"], 524288)
+        await self.rt.agents.configure(self.config(context_budget_tokens=48000))
+        denied = await self.submit({"large_model_input_chars": 1500000})
+        with self.assertRaises(RuntimeFault):
+            await self.rt.tasks.result(denied.id, timeout=20)
+        self.assertEqual((await self.rt.tasks.get(denied.id)).error["code"], "MODEL_CONTEXT_BUDGET")
+        self.assertEqual(len(self.captured), 1)
+        with self.assertRaises(ValueError):
+            LLMRequest(messages=[{"role": "user", "content": "x" * MAX_MODEL_REQUEST_BYTES}])
+
     async def test_process_uses_ui_saved_model_and_keeps_credentials_in_host(self):
         await self.rt.agents.configure(
             self.config(), api_key="fixture-private-credential"
@@ -201,6 +259,7 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(body["temperature"], 0.2)
         self.assertEqual(body["max_tokens"], 80)
+        self.assertNotIn("reasoning_effort", body)
         self.assertIn("Keep the Agent's rules.", body["messages"][0]["content"])
         self.assertIn("Be specific.", body["messages"][0]["content"])
         self.assertNotIn("api_key", result.output["info"])
@@ -213,12 +272,25 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
             json_dump(await self.rt.agents.describe("model-worker")),
         )
 
+    async def test_process_exception_has_safe_category_and_retains_model_result(self):
+        from ma_runtime.errors import RuntimeFault
+        await self.rt.agents.configure(self.config())
+        task = await self.submit({"python_failure": True})
+        with self.assertRaises(RuntimeFault):
+            await self.rt.tasks.result(task.id, timeout=15)
+        saved = await self.rt.tasks.get(task.id)
+        self.assertEqual(saved.state, "FAILED")
+        self.assertEqual(saved.error["code"], "ADAPTER_FAILED")
+        self.assertEqual(saved.error["details"]["exception_type"], "ValueError")
+        self.assertEqual(saved.result.output["text"], "first-model:v1")
+        self.assertNotIn("Untrusted adapter detail", json_dump(saved.error))
+
     async def test_model_changes_apply_to_new_runs_and_not_running_nodes(self):
-        await self.rt.agents.configure(self.config(), api_key="old-fixture-key")
+        await self.rt.agents.configure(self.config(reasoning_effort="low"), api_key="old-fixture-key")
         task = await self.submit({"input": "hold first node", "twice": True})
         await asyncio.wait_for(self.started.wait(), 10)
         await self.rt.agents.configure(
-            self.config(base_url=self.base + "/v2", model="next-model"),
+            self.config(base_url=self.base + "/v2", model="next-model", reasoning_effort="none"),
             api_key="new-fixture-key",
         )
         self.release.set()
@@ -228,6 +300,7 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         second = await self.rt.tasks.result(next_task.id, timeout=15)
         self.assertEqual(second.output["model"], "next-model")
         self.assertEqual([c["version"] for c in self.captured], ["v1", "v1", "v2"])
+        self.assertEqual([c["body"]["reasoning_effort"] for c in self.captured], ["low", "low", "none"])
         self.assertEqual(
             [c["authorization"] for c in self.captured],
             [
@@ -236,6 +309,24 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
                 "Bearer new-fixture-key",
             ],
         )
+
+    async def test_native_and_process_reasoning_control_share_transport_and_observation_settings(self):
+        from ma_runtime.llm import model_fingerprint
+        from ma_runtime.models import content_hash
+        original = self.config()
+        self.assertNotIn("reasoning_effort", original.model_dump(mode="json"))
+        self.assertEqual(model_fingerprint(original), content_hash({key: getattr(original, key) for key in (
+            "base_url", "model", "temperature", "max_output_tokens", "token_parameter", "context_window_tokens", "context_budget_tokens", "timeout_seconds")}))
+        for native in (False, True):
+            config = self.config(reasoning_effort="none", **({"kind": "llm", "command": (), "llm_required": False} if native else {}))
+            await self.rt.agents.configure(config)
+            task = await self.submit()
+            await self.rt.tasks.result(task.id, timeout=15)
+            self.assertEqual(self.captured[-1]["body"]["reasoning_effort"], "none")
+            trace = await self.rt.tasks.trace(task.id)
+            model = next(stage for stage in trace["items"] if stage["stage"] == "model")
+            self.assertEqual(model["attributes"]["reasoning_effort"], "none")
+            self.assertEqual(model["attributes"]["model_fingerprint"], model_fingerprint(config))
 
     async def test_missing_configuration_waits_and_http_save_releases_task(self):
         config = self.config(base_url="", model="")
@@ -373,8 +464,33 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(value.error["code"], "OUTPUT_TRUNCATED")
             self.assertEqual(value.result.metadata["model_completion"]["usage"]["total_tokens"], 5)
             self.assertEqual(bool(value.result.output["text"]), content == "partial limit")
+            self.assertEqual(value.execution_state, "SUCCEEDED")
+            self.assertIn("交付检查未通过", value.result.summary_markdown)
+            presentation = await self.rt.tasks.get(task.id, presentation=True)
+            self.assertIn("交付检查未通过", presentation["result"]["summary_markdown"])
+            conversation = await self.rt.threads.conversation(value.thread_id, presentation=True)
+            self.assertIn("交付检查未通过", conversation.items[-1].content)
+            instances = await self.rt.threads.instances(value.session_id)
+            self.assertIn("交付检查未通过", instances.items[0]["summary_markdown"])
+            self.assertEqual(instances.items[0]["execution_state"], "SUCCEEDED")
+            activity = await self.rt.threads.activity(value.thread_id)
+            self.assertIn("交付检查未通过", activity.items[0]["summary_markdown"])
             trace = await self.rt.tasks.trace(task.id)
             self.assertEqual(trace["items"][-1]["state"], "INCOMPLETE")
+
+    async def test_provider_parameter_error_retains_safe_fields_without_credentials(self):
+        from ma_runtime.errors import RuntimeFault
+        await self.rt.agents.configure(self.config(kind="llm", command=(), llm_required=False), api_key="fixture-diagnostic-secret")
+        task = await self.submit({"input": "parameter failure"})
+        with self.assertRaises(RuntimeFault):
+            await self.rt.tasks.result(task.id, timeout=10)
+        saved = await self.rt.tasks.get(task.id)
+        self.assertEqual(saved.error["code"], "MODEL_HTTP_ERROR")
+        self.assertEqual(saved.error["details"]["provider_param"], "reasoning_effort")
+        self.assertEqual(saved.error["details"]["provider_code"], "invalid_parameter")
+        self.assertIn("[redacted]", saved.error["details"]["provider_message"])
+        self.assertNotIn("fixture-diagnostic-secret", json_dump(saved))
+        self.assertNotIn("fixture-diagnostic-secret", json_dump(await self.rt.tasks.trace(task.id)))
 
     async def test_provider_http_failure_and_response_timeout_remain_distinct(self):
         from ma_runtime.errors import RuntimeFault
@@ -475,6 +591,10 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["attributes"]["max_output_tokens"] == 4096 for item in summaries))
         self.assertTrue(all(item["attributes"]["usage"]["completion_tokens_details"]["reasoning_tokens"] > 3000 for item in summaries))
         self.assertEqual(len(self.captured), 12 + len(summaries))
+        charged = [entry for entry in (await self.rt.budgets.entries((await self.rt.budgets.for_task(task.id))["id"]))["items"]
+                   if entry["kind"] == "model"]
+        final_stages = [item for item in (await self.rt.tasks.trace(task.id))["items"] if item["stage"] in {"model", "summary"} and item["state"] == "SUCCEEDED"]
+        self.assertEqual({entry["id"] for entry in charged}, {stage["id"] for stage in final_stages})
         for request in self.captured:
             self.assertLessEqual(estimated_tokens(request["body"]["messages"]) + estimated_tokens(request["body"].get("tools", [])), 2500)
 
@@ -563,6 +683,9 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(final.runs), 2)
         self.assertEqual(final.continuation["calls_used"], 1)
         self.assertEqual(final.continuation["runs_used"], 1)
+        cumulative = await self.rt.budgets.for_task(task.id)
+        self.assertEqual(cumulative["usage"]["model_calls"], 2)
+        self.assertEqual(cumulative["usage"]["output_tokens"], 6)
         with self.assertRaises(RuntimeFault) as conflict:
             await self.rt.tasks.continue_result(task.id, "continue", "Different guidance")
         self.assertEqual(conflict.exception.code, "IDEMPOTENCY_CONFLICT")

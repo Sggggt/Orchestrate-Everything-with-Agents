@@ -28,6 +28,26 @@ class _Namespace:
         return await self.client.call(f"{self.namespace}.{method}", params)
 
 
+class ResourceClient(_Namespace):
+    async def inspect(self):
+        return await self.call("inspect")
+
+    async def configure(self, config):
+        return await self.call("configure", config=config)
+
+    async def preflight(self, quantities=(), resources=()):
+        return await self.call("preflight", quantities=quantities, resources=resources)
+
+    async def request(self, spec):
+        return await self.call("request", spec=spec)
+
+    async def get(self, lease_id):
+        return await self.call("get", lease_id=lease_id)
+
+    async def release_lease(self, lease_id, *, confirmed_stopped=False, evidence=""):
+        return await self.call("release_lease", lease_id=lease_id, confirmed_stopped=confirmed_stopped, evidence=evidence)
+
+
 class AgentClient(_Namespace):
     async def capabilities(self, agent_id):
         return await self.call("capabilities", agent_id=agent_id)
@@ -82,7 +102,32 @@ class AgentClient(_Namespace):
         return await self.call("skill_delete", agent_id=agent_id, skill_id=skill_id)
 
 
+class AdmissionClient(_Namespace):
+    async def describe(self, agent_id):
+        return await self.call("describe", agent_id=agent_id)
+
+    async def candidates(self, project_id, **filters):
+        return await self.call("candidates", project_id=project_id, **filters)
+
+    async def check(self, spec, *, budget_id=None):
+        return await self.call("check", spec=spec, budget_id=budget_id)
+
+
 class MCPClient(_Namespace):
+    async def catalog(self, server_id, *, cursor=None, limit=25):
+        return await super().call("catalog", server_id=server_id, cursor=cursor, limit=limit)
+
+    async def tool(self, server_id, tool_name, *, expected_fingerprint=None):
+        return await super().call("tool", server_id=server_id, tool_name=tool_name, expected_fingerprint=expected_fingerprint)
+    async def configure_policy(self, server_id, policy):
+        return await super().call("configure_policy", server_id=server_id, policy=policy)
+
+    async def policy(self, server_id):
+        return await super().call("policy", server_id=server_id)
+
+    async def reconcile_capacity(self, call_id, *, confirmed_stopped, evidence):
+        return await super().call("reconcile_capacity", call_id=call_id, confirmed_stopped=confirmed_stopped, evidence=evidence)
+
     async def register_directory(self, directory):
         return await self.call("register_directory", directory=str(directory))
     """Control the platform-owned MCP clients, shared with Agents and Codex."""
@@ -302,6 +347,27 @@ class ThreadClient(_Namespace):
     async def get(self, thread_id):
         return await self.call("get", thread_id=thread_id)
 
+    async def ownership(self, thread_id):
+        return await self.call("ownership", thread_id=thread_id)
+
+    async def instances(self, session_id, *, agent_id=None, cursor=None, limit=25):
+        return await self.call("instances", session_id=session_id, agent_id=agent_id, cursor=cursor, limit=limit)
+
+    async def activity(self, thread_id, *, cursor=None, limit=50):
+        return await self.call("activity", thread_id=thread_id, cursor=cursor, limit=limit)
+
+    async def mark_read(self, thread_id, positions):
+        return await self.call("mark_read", thread_id=thread_id, positions=list(positions))
+
+    async def history(self, thread_id, *, checkpoint_id=None, cursor=None, limit=50):
+        return await self.call("history", thread_id=thread_id, checkpoint_id=checkpoint_id, cursor=cursor, limit=limit)
+
+    async def prepare_workdir(self, thread_id, idempotency_key, *, kind="managed", commit=None):
+        return await self.call("prepare_workdir", thread_id=thread_id, idempotency_key=idempotency_key, kind=kind, commit=commit)
+
+    async def workdir(self, thread_id):
+        return await self.call("workdir", thread_id=thread_id)
+
     async def fork(self, thread_id, title=None, **options):
         return await self.call("fork", thread_id=thread_id, title=title, **options)
 
@@ -310,8 +376,8 @@ class ThreadClient(_Namespace):
 
 
 class TaskClient(_Namespace):
-    async def submit(self, spec: TaskSpec | dict):
-        return await self.call("submit", spec=TaskSpec.model_validate(spec))
+    async def submit(self, spec: TaskSpec | dict, *, budget_id=None):
+        return await self.call("submit", spec=TaskSpec.model_validate(spec), **({"budget_id": budget_id} if budget_id is not None else {}))
 
     async def get(self, task_id, *, presentation=False):
         return await self.call("get", task_id=task_id, presentation=presentation)
@@ -341,8 +407,8 @@ class TaskClient(_Namespace):
 
 
 class InstanceClient(_Namespace):
-    async def spawn(self, spec: InstanceBatchSpec | dict):
-        return await self.call("spawn", spec=InstanceBatchSpec.model_validate(spec))
+    async def spawn(self, spec: InstanceBatchSpec | dict, *, budget_id=None):
+        return await self.call("spawn", spec=InstanceBatchSpec.model_validate(spec), **({"budget_id": budget_id} if budget_id is not None else {}))
 
     async def get(self, batch_id, *, include_outputs=False):
         return await self.call("get", batch_id=batch_id, include_outputs=include_outputs)
@@ -357,7 +423,32 @@ class InstanceClient(_Namespace):
         return await self.call("cancel", batch_id=batch_id)
 
 
+class A2AClient(_Namespace):
+    async def capabilities(self):
+        return await self.call("capabilities")
+
+    async def send(self, session_id, message, *, mode="message", version="1.0.1"):
+        return await self.call("send", session_id=session_id, message=message, mode=mode, version=version)
+
+    async def get_task(self, task_id):
+        return await self.call("get_task", task_id=task_id)
+
+
+class ChannelClient(_Namespace):
+    async def get(self, thread_id):
+        return await self.call("get", thread_id=thread_id)
+
+
 class MessageClient(_Namespace):
+    async def delivery(self, message_id):
+        return await self.call("delivery", message_id=message_id)
+
+    async def reject(self, message_id, reason, idempotency_key):
+        return await self.call("reject", message_id=message_id, reason=reason, idempotency_key=idempotency_key)
+
+    async def expire(self, message_id, expires_at_ms, reason, idempotency_key):
+        return await self.call("expire", message_id=message_id, expires_at_ms=expires_at_ms, reason=reason, idempotency_key=idempotency_key)
+
     async def send(self, spec: MessageSpec | dict):
         return await self.call("send", spec=MessageSpec.model_validate(spec))
 
@@ -391,15 +482,27 @@ class WorkflowClient(_Namespace):
     async def node_types(self):
         return await self.call("node_types")
 
-    async def run(self, workflow_id, inputs, idempotency_key, *, expected_revision=None):
+    async def run(self, workflow_id, inputs, idempotency_key, *, expected_revision=None, session_id=None, budget_id=None):
         return await self.call("run", workflow_id=workflow_id, inputs=inputs,
-                               idempotency_key=idempotency_key, expected_revision=expected_revision)
+                               idempotency_key=idempotency_key, expected_revision=expected_revision,
+                               **({"session_id": session_id} if session_id is not None else {}),
+                               **({"budget_id": budget_id} if budget_id is not None else {}))
 
     async def get_run(self, run_id):
         return await self.call("get_run", run_id=run_id)
 
+    async def repair(self, source_run_id, idempotency_key, *, inputs=None, expected_revision=None, rerun_nodes=()):
+        return await self.call("repair", source_run_id=source_run_id, idempotency_key=idempotency_key,
+                               inputs=inputs, expected_revision=expected_revision, rerun_nodes=list(rerun_nodes))
+
+    async def get_repair(self, run_id):
+        return await self.call("get_repair", run_id=run_id)
+
     async def runs(self, workflow_id, **options):
         return await self.call("runs", workflow_id=workflow_id, **options)
+
+    async def activity(self, project_id):
+        return await self.call("activity", project_id=project_id)
 
     async def result(self, run_id, *, timeout=0):
         return await self.call("result", run_id=run_id, timeout=timeout)
@@ -444,12 +547,37 @@ class WorkbenchClient(_Namespace):
 
 
 class ContextClient(_Namespace):
+    async def merge(self, spec):
+        from .models import ContextMergeSpec
+        return await self.call("merge", spec=ContextMergeSpec.model_validate(spec))
+
+    async def get_merge(self, merge_id):
+        return await self.call("get_merge", merge_id=merge_id)
+
     async def read(self, reference, project_id, *, offset=0, limit=8192):
         return await self.call("read", reference=reference, project_id=project_id, offset=offset, limit=limit)
 
 
+class BudgetClient(_Namespace):
+    async def create(self, session_id, policy, idempotency_key):
+        return await self.call("create", session_id=session_id, policy=policy, idempotency_key=idempotency_key)
+
+    async def get(self, budget_id):
+        return await self.call("get", budget_id=budget_id)
+
+    async def amend(self, budget_id, policy, expected_policy_hash, idempotency_key, reason):
+        return await self.call("amend", budget_id=budget_id, policy=policy,
+                               expected_policy_hash=expected_policy_hash, idempotency_key=idempotency_key, reason=reason)
+
+    async def for_task(self, task_id):
+        return await self.call("for_task", task_id=task_id)
+
+    async def entries(self, budget_id, **options):
+        return await self.call("entries", budget_id=budget_id, **options)
+
+
 class PlatformClient:
-    def __init__(self, base_url, token, *, timeout=180, transport=None):
+    def __init__(self, base_url, token, *, timeout=180, transport=None, view_version="1.1"):
         target = urlsplit(base_url)
         require(
             target.scheme == "http"
@@ -464,7 +592,7 @@ class PlatformClient:
         self.http = httpx.AsyncClient(
             trust_env=False,
             base_url=base_url.rstrip("/"),
-            headers={"Authorization": "Bearer " + token},
+            headers={"Authorization": "Bearer " + token, "X-OEA-View-Version": view_version},
             timeout=timeout,
             follow_redirects=False,
             transport=transport,
@@ -478,6 +606,11 @@ class PlatformClient:
         self.environments = EnvironmentClient(self, "environments")
         self.workbench = WorkbenchClient(self, "workbench")
         self.contexts = ContextClient(self, "contexts")
+        self.resources = ResourceClient(self, "resources")
+        self.budgets = BudgetClient(self, "budgets")
+        self.admission = AdmissionClient(self, "admission")
+        self.channels = ChannelClient(self, "channels")
+        self.a2a = A2AClient(self, "a2a")
         self.sessions, self.threads = (
             SessionClient(self, "sessions"),
             ThreadClient(self, "threads"),

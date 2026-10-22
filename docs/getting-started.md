@@ -37,7 +37,11 @@ Documents open as rendered Markdown; choose **编辑** to change an Agent's inst
 
 For local process Agents, **本机运行方式** shows which program handles tasks. Choose **修改启动设置** to select a Python script, Python module, Node.js script, or executable. Entry files must implement the OEA Agent protocol; the Python SDK provides its standard transport. Existing startup options are preserved; developer options stay under **其他启动选项（高级）**. Finish with **保存配置**. Local MCP services use the same startup editor and save with **保存服务**.
 
-The workspace is designed for desktop browsers. Use the project and session selectors in the sidebar; their adjacent menus contain creation, settings and deletion actions. The bound folder is shown in project settings.
+The workspace is designed for desktop browsers, and the Windows launcher opens the **工作台**. Use the project and session selectors in the sidebar; their adjacent menus contain creation, settings and deletion actions. The bound folder is shown in project settings.
+
+Agent indicators in the overview and sidebar show current availability and activity. A failed past task stays beside its conversation messages and in execution details. Idle instances remain selectable in the instance picker. Conversation updates preserve your reading position, follow new content when you are near the bottom, and show thinking feedback before the first response text arrives.
+
+The MCP page accepts a directory containing `mcp.json` through its registration form, like the Skill directory form. The terminal icon in the upper right opens SDK and Codex connection instructions.
 
 The **工作产物** page groups files by source Agent; **最近产物** on the overview shows the latest files with their source. Uploads, external submissions and legacy files without recorded provenance appear separately. Work artifacts can be opened from the overview or artifact list in a read-only original-text dialog, with copy and download actions. Markdown, HTML and code remain source text in this view. The browser previews up to 1 MiB of UTF-8 or BOM-marked UTF-16 text; larger files show a notice, and unsupported formats remain downloadable.
 

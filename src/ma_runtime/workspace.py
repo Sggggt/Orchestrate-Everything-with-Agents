@@ -60,7 +60,7 @@ class Workspace:
             require(not project.is_relative_to(self.runtime.root) and not self.runtime.root.is_relative_to(project),
                     "PERMISSION_DENIED", "Project mapping cannot expose platform state")
             mounts.append(("/project", Path(self.scope["project_folder"]),
-                writable and self.scope["environment"]["project_write"]))
+                writable and self.scope["environment"]["project_write"] and not self.scope.get("project_read_only", False)))
         mounts += [(guest, Path(host), False) for guest, host in self.scope["environment"]["resources"].items()]
         return mounts
 

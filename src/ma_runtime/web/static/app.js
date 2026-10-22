@@ -6,9 +6,10 @@ import { artifactDownload, artifactSource, groupArtifacts, readArtifactPreview }
 import { createWorkflowUI } from "/assets/workflows.js";
 import { createAgentStatusIndex } from "/assets/agent-status.mjs";
 import { messageItems, matchesMessageFilter } from "/assets/message-feed.mjs";
+import { instanceGroups, instanceInUse, conversationItems, mergeHistoryPage } from "/assets/instance-view.mjs";
 import { api } from "/assets/api.mjs";
 import { canContinue, executionTrace } from "/assets/execution-view.mjs";
-import { executionState, statusLabel } from "/assets/execution-status.mjs";
+import { executionState, outcomeState, statusLabel, matchesTaskFilter } from "/assets/execution-status.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value = "") =>
@@ -26,7 +27,7 @@ const paths = {
   agents:
     "M8 8a4 4 0 1 0 8 0a4 4 0 0 0-8 0 M4 21v-2a8 8 0 0 1 16 0v2 M3 8H1 M23 8h-2",
   settings:
-    "M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8 M12 2v3 M12 19v3 M2 12h3 M19 12h3 M5 5l2 2 M17 17l2 2 M5 19l2-2 M17 7l2-2",
+    "M10 2h4l.5 3 2 1.2 2.8-1 2 3.4-2.3 2v2.8l2.3 2-2 3.4-2.8-1-2 1.2-.5 3h-4l-.5-3-2-1.2-2.8 1-2-3.4 2.3-2v-2.8l-2.3-2 2-3.4 2.8 1 2-1.2Z M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8",
   chat: "M21 11a8 8 0 0 1-8 8H6l-4 3V11a8 8 0 0 1 8-8h3a8 8 0 0 1 8 8 M7 9h9 M7 13h6",
   arrow: "M5 12h14 M14 7l5 5-5 5",
   plus: "M12 5v14 M5 12h14",
@@ -60,7 +61,7 @@ const paths = {
 const icon = (name) =>
   `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name] || paths.agents}"/></svg>`;
 const badge = value => {
-  const observed = executionState(value);
+  const observed = outcomeState(value);
   return `<span class="badge ${escape(observed)}">${escape(statusLabel(value))}</span>`;
 };
 const state = {
@@ -79,6 +80,7 @@ const state = {
   selectedThread: null,
   openTabs: [],
   conversations: new Map(),
+  activities: new Map(),
   streams: new Map(),
   drafts: new Map(),
   events: [],
@@ -102,6 +104,7 @@ const state = {
   mcpTab: "connection",
   mcpCalls: [],
   mcpQuery: "",
+  mcpDirectory: "",
   mcpPending: null,
   mcpSaving: false,
   mcpDirty: false,
@@ -119,9 +122,6 @@ const state = {
   testingModelId: null,
   modelTestResult: null,
   inspectorOpen: false,
-  taskFilter: "all",
-  taskView: "list",
-  taskQuery: "",
   messageFilter: "all",
   artifactQuery: "",
 };
@@ -163,46 +163,76 @@ const latestTask = (id) =>
 const taskTitle = (task) =>
   compactTitle(task.title || task.spec?.payload?.input || task.spec?.metadata?.stage || "协作任务");
 
-const messageReads = new Map();
-const messageReadKey = (sessionId) => "ma-read-messages-" + sessionId;
-function readMessageIds(sessionId) {
-  if (!messageReads.has(sessionId)) {
-    let ids = [];
-    try {
-      const saved = JSON.parse(localStorage.getItem(messageReadKey(sessionId)) || "[]");
-      if (Array.isArray(saved)) ids = saved.filter((id) => typeof id === "string").slice(-1000);
-    } catch {}
-    messageReads.set(sessionId, new Set(ids));
-  }
-  return messageReads.get(sessionId);
+const unreadMessageCount = () => (state.snapshot.thread_activity || []).reduce((sum, item) => sum + item.unread_count, 0);
+const rpc = (method, params) => api("/rpc", { method: "POST", body: { method, params } }).then(value => value.result);
+const groups = () => instanceGroups(state.agents, state.snapshot);
+const instanceUnread = count => count > 0 ? `<span class="instance-unread" aria-label="${count} 条未读消息" title="${count} 条未读消息">${count}</span>` : "";
+function instanceCounts(group) {
+  const active = group.instances.filter(instanceInUse).length;
+  return `<span class="instance-status-counts"><span>${group.instances.length} 个实例</span>${active ? `<span>${active} 个使用中</span>` : ""}</span>`;
 }
-function hasUnreadMessages() {
-  if (!state.session) return false;
-  const read = readMessageIds(state.session.id);
-  return sessionMessages.some((message) => !read.has(message.id));
+function sidebarInstances() {
+  return groups().filter(group => group.instances.length).map(group => {
+    const a = group.agent, selected = group.instances.some(item => item.thread_id === state.selectedThread);
+    return `<button class="thread-link ${selected && state.route === "workspace" ? "active" : ""} ${group.instances.length > 1 ? "is-stacked" : ""}"
+      data-action="agent-chat" data-id="${escape(a.id)}" data-agent-key="sidebar:${escape(a.id)}" data-focus="sidebar-agent-${escape(a.id)}">
+      ${agentStatusDot(agentStates.forAgent(a.id))}${avatar(a.id)}<span class="thread-name">${escape(a.name)}${instanceCounts(group)}</span>${instanceUnread(group.unread_count)}</button>`;
+  }).join("") || '<div class="thread-placeholder">选择 Agent，开始第一段对话。</div>';
 }
-function markVisibleMessagesRead() {
-  if (!state.session || state.route !== "workspace" || state.mode !== "messages" ||
-      state.selectedThread || state.modal || document.visibilityState !== "visible") return;
-  const read = readMessageIds(state.session.id);
-  let changed = false;
-  for (const message of sessionMessages) {
-    if (matchesMessageFilter(message, state.messageFilter) && !read.has(message.id)) {
-      read.add(message.id);
-      changed = true;
+let activityObserver = null, readTimer = null;
+const pendingReads = new Map();
+function observeVisibleActivity() {
+  activityObserver?.disconnect();
+  if (state.modal || document.visibilityState !== "visible" || state.route !== "workspace") return;
+  activityObserver = new IntersectionObserver(entries => {
+    if (state.modal || document.visibilityState !== "visible") return;
+    for (const entry of entries) {
+      if (!entry.isIntersecting || entry.intersectionRect.height < Math.min(32, entry.boundingClientRect.height)) continue;
+      const { activityThread: threadId, activityPosition: position } = entry.target.dataset;
+      const positions = pendingReads.get(threadId) || new Set();
+      positions.add(Number(position));
+      pendingReads.set(threadId, positions);
+      activityObserver.unobserve(entry.target);
     }
-  }
-  if (!changed) return;
-  const ids = [...read].slice(-1000);
-  messageReads.set(state.session.id, new Set(ids));
-  try { localStorage.setItem(messageReadKey(state.session.id), JSON.stringify(ids)); } catch {}
+    clearTimeout(readTimer);
+    if (pendingReads.size) readTimer = setTimeout(flushVisibleReads, 150);
+  }, { threshold: [0, 0.5, 1] });
+  document.querySelectorAll('[data-activity-position][data-activity-unread="true"]').forEach(element => activityObserver.observe(element));
 }
-const unreadMessageDot = () => hasUnreadMessages()
-  ? '<span class="message-unread-dot" aria-hidden="true"></span><span class="sr-only">有新协作消息</span>' : "";
+async function flushVisibleReads() {
+  const epoch = state.sessionEpoch;
+  for (const [threadId, positions] of [...pendingReads]) {
+    pendingReads.delete(threadId);
+    const listed = [...positions];
+    try {
+      for (let offset = 0; offset < listed.length; offset += 100) {
+        const receipt = await rpc("threads.mark_read", { thread_id: threadId, positions: listed.slice(offset, offset + 100) });
+        if (epoch !== state.sessionEpoch) continue;
+        for (const item of state.activities.get(threadId)?.items || []) if (receipt.positions.includes(item.position)) item.read = true;
+        for (const item of Object.values(state.snapshot.message_activity || {})) if (receipt.positions.includes(item.position)) item.read = true;
+        const summary = state.snapshot.thread_activity?.find(item => item.thread_id === threadId);
+        if (summary) summary.unread_count = receipt.unread_count;
+      }
+    } catch (error) { toast("未能保存已读状态：" + error.message, true); }
+  }
+  if (epoch === state.sessionEpoch) render();
+}
+const activityAttributes = item => item ? `data-activity-thread="${escape(item.thread_id)}" data-activity-position="${item.position}" data-activity-unread="${!item.read}"` : "";
+function animateActivityMoves(previous) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  for (const element of document.querySelectorAll("[data-agent-key]")) {
+    const old = previous.get(element.dataset.agentKey), current = element.getBoundingClientRect();
+    if (old && (Math.abs(old.top - current.top) > 1 || Math.abs(old.left - current.left) > 1))
+      element.animate([{ transform: `translate(${old.left - current.left}px,${old.top - current.top}px)` }, { transform: "none" }], { duration: 220, easing: "ease-out" });
+  }
+}
+const unreadMessageBadge = () => {
+  const count = unreadMessageCount();
+  return count > 0 ? `<span class="message-unread-badge" aria-label="${count} 条未读消息" title="${count} 条未读消息">${count}</span>` : "";
+};
 function workspaceSections() {
   return [
     ["overview", "grid", "总览", 0],
-    ["tasks", "flow", "任务", state.snapshot.tasks.length],
     ["messages", "mail", "协作消息", sessionMessages.length],
     ["artifacts", "folder", "工作产物", state.snapshot.artifacts.length],
   ];
@@ -222,9 +252,10 @@ const integrationUI = createIntegrationUI({
   loadBootstrap,
   time,
 });
-const workflowUI = createWorkflowUI({ state, escape, icon, badge, markdown, api, toast, render, idempotency, time });
-const agentStatusDot = (status) => `<span class="dot status-${status.tone}" title="${escape(status.label)}" role="img" aria-label="${escape(status.label)}"></span>`;
-const agentStatusBadge = (status) => `<span class="badge agent-state status-${status.tone}" title="当前会话 · ${escape(status.label)}">${escape(status.label)}</span>`;
+const workflowUI = createWorkflowUI({ state, escape, icon, badge, markdown, api, toast, render, idempotency, time,
+  ensureSession: async identity => { await loadBootstrap(); await selectSession(identity); } });
+const agentStatusDot = (status) => `<span class="dot status-${status.tone}" title="${escape(status.hint || status.label)}" role="img" aria-label="${escape(status.label)}"></span>`;
+const agentStatusBadge = (status) => `<span class="badge agent-state status-${status.tone}" title="${escape(status.hint || status.label)}">${escape(status.label)}</span>`;
 
 function toast(message, error = false) {
   const target = $("#toast");
@@ -244,17 +275,15 @@ function empty(title, description, action = "", label = "") {
 }
 function focusMemory() {
   const focused = document.activeElement;
+  const chat = $(".conversation"), top = chat?.getBoundingClientRect().top;
+  const anchor = chat && [...chat.querySelectorAll("[data-entry-id]")].find(element => element.getBoundingClientRect().bottom > top);
   return {
     key: focused?.dataset.focus || focused?.id,
     start: focused?.selectionStart,
     end: focused?.selectionEnd,
-    chat: $(".conversation")?.scrollTop,
-    chatBottom: $(".conversation")
-      ? $(".conversation").scrollHeight -
-          $(".conversation").scrollTop -
-          $(".conversation").clientHeight <
-        100
-      : true,
+    chat: chat && { threadId: chat.dataset.threadId, top: chat.scrollTop,
+      bottom: chat.scrollHeight - chat.scrollTop - chat.clientHeight < 100,
+      anchor: anchor?.dataset.entryId, offset: anchor ? anchor.getBoundingClientRect().top - top : 0 },
     page: $(".page-body")?.scrollTop,
   };
 }
@@ -263,18 +292,24 @@ function render() {
   if (workflowUI.isInteracting()) return;
   agentStates = createAgentStatusIndex(state.agents, state.snapshot, state.connection);
   sessionMessages = messageItems(state.snapshot);
-  markVisibleMessagesRead();
   const focus = focusMemory();
   const view = [state.route, state.project?.id, state.session?.id, state.mode,
     state.selectedThread, state.settingsId, state.settingsTab, state.mcpId,
     state.mcpTab, state.skillDetail?.id, state.skillFile].join("|");
   const viewChanged = view !== renderedView;
+  const previousPositions = new Map([...document.querySelectorAll("[data-agent-key]")].map(element => [element.dataset.agentKey, element.getBoundingClientRect()]));
+  const composerInput = !viewChanged ? $("#chat-input") : null;
   renderedView = view;
   const openMenus = new Set(viewChanged ? [] : [...document.querySelectorAll(".context-menu[open]")].map(menu => menu.dataset.context));
   const routeHash = "#" + state.route;
   if (location.hash !== routeHash) history.replaceState(null, "", routeHash);
   if (state.modal && !$("#modal-root").firstElementChild) rememberModalOrigin();
   $("#app").innerHTML = shell();
+  if (composerInput && $("#chat-input")) {
+    composerInput.disabled = $("#chat-input").disabled;
+    composerInput.value = state.drafts.get(state.selectedThread) || "";
+    $("#chat-input").replaceWith(composerInput);
+  }
   document.querySelectorAll(".context-menu").forEach(menu => { menu.open = openMenus.has(menu.dataset.context); });
   renderModal();
   workflowUI.mount();
@@ -297,10 +332,16 @@ function render() {
     }
   }
   if ($(".page-body")) $(".page-body").scrollTop = viewChanged ? 0 : focus.page || 0;
-  if ($(".conversation"))
-    $(".conversation").scrollTop = focus.chatBottom
-      ? $(".conversation").scrollHeight
-      : focus.chat || 0;
+  const chat = $(".conversation");
+  if (chat) {
+    const previous = focus.chat;
+    if (!previous || previous.threadId !== chat.dataset.threadId || previous.bottom) chat.scrollTop = chat.scrollHeight;
+    else {
+      const anchor = [...chat.querySelectorAll("[data-entry-id]")].find(element => element.dataset.entryId === previous.anchor);
+      chat.scrollTop = anchor ? chat.scrollTop + anchor.getBoundingClientRect().top - chat.getBoundingClientRect().top - previous.offset : previous.top;
+    }
+  }
+  requestAnimationFrame(() => { animateActivityMoves(previousPositions); observeVisibleActivity(); });
 }
 function shell() {
   const nav = workspaceSections();
@@ -325,20 +366,20 @@ function shell() {
       ${sessionSwitcher()}
       <button class="search-launcher" data-action="command">${icon("search")}<span>搜索或快速跳转</span><kbd>Ctrl K</kbd></button>
       <div class="section-label">工作区 <span>WORKSPACE</span></div>
-      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>工作台</span>${unreadMessageDot()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 工具</span><span class="nav-tag">${state.mcpServers.length}</span></button><button class="side-nav ${state.route === "skills" ? "active" : ""}" data-action="route" data-route="skills" ${state.route === "skills" ? 'aria-current="page"' : ""}>${icon("book")}<span>Skills</span><span class="nav-tag">${state.skillRegistry.items.length}</span></button></nav>
+      <nav class="side-navigation" aria-label="功能导航"><button class="side-nav ${state.route === "workspace" ? "active" : ""}" data-action="mode" data-mode="overview" ${state.route === "workspace" ? 'aria-current="page"' : ""}>${icon("grid")}<span>工作台</span>${unreadMessageBadge()}</button><button class="side-nav ${state.route === "workflows" ? "active" : ""}" data-action="route" data-route="workflows" ${state.route === "workflows" ? 'aria-current="page"' : ""}>${icon("flow")}<span>工作流</span></button><button class="side-nav ${state.route === "agents" ? "active" : ""}" data-action="route" data-route="agents" ${state.route === "agents" ? 'aria-current="page"' : ""}>${icon("agents")}<span>Agent</span><span class="nav-tag">${state.agents.filter((a) => a.kind !== "external").length}</span></button><button class="side-nav ${state.route === "mcp" ? "active" : ""}" data-action="route" data-route="mcp" ${state.route === "mcp" ? 'aria-current="page"' : ""}>${icon("plug")}<span>MCP 工具</span><span class="nav-tag">${state.mcpServers.length}</span></button><button class="side-nav ${state.route === "skills" ? "active" : ""}" data-action="route" data-route="skills" ${state.route === "skills" ? 'aria-current="page"' : ""}>${icon("book")}<span>Skills</span><span class="nav-tag">${state.skillRegistry.items.length}</span></button></nav>
       <div class="section-label">独立对话 <button class="icon-btn" data-action="open-agent" aria-label="打开 Agent 对话" title="打开 Agent 对话">${icon("plus")}</button></div>
-      <div class="thread-list">${state.snapshot.threads.map((t) => `<button class="thread-link ${state.route === "workspace" && state.selectedThread === t.id ? "active" : ""}" data-action="select-thread" data-id="${escape(t.id)}" title="${escape(t.title)}">${avatar(t.agent_id)}<span class="thread-name">${escape(t.title)}</span>${agentStatusDot(agentStates.forThread(t))}</button>`).join("") || '<div class="thread-placeholder">创建会话后，选择 Agent 开始工作。<button data-action="open-agent">开始第一段对话 ' + icon("arrow") + "</button></div>"}</div>
+      <div class="thread-list">${sidebarInstances()}</div>
       <div class="sidebar-footer"><button class="side-nav" data-action="open-trash">${icon("trash")}<span>回收站</span></button><button class="side-nav ${state.route === "settings" ? "active" : ""}" data-action="route" data-route="settings">${icon("settings")}<span>设置与配置</span></button><div class="local-status"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span>本地工作区<span>LOCAL</span></div></div>
     </aside>
     <main class="main" id="main-content" tabindex="-1"><header class="topbar"><div class="breadcrumb"><span class="breadcrumb-root">${escape(state.project?.name || "工作区")}</span>${icon("chevron")}<strong>${escape(label || "会话总览")}</strong>${state.session ? `<span class="breadcrumb-divider"></span><span class="breadcrumb-session">${escape(state.session.title)}</span>` : ""}</div><div class="top-actions"><div class="connection"><span class="dot ${state.connection === "online" ? "online" : "offline"}"></span><span class="connection-text">${state.connection === "online" ? "本地连接正常" : state.connection === "connecting" ? "正在连接" : "正在重新连接"}</span></div><button class="icon-btn top-search" data-action="command" aria-label="搜索与快捷操作" title="搜索与快捷操作 · Ctrl K">${icon("search")}</button><span class="topbar-divider"></span><button class="btn" data-action="new-session">${icon("plus")}<span>新建会话</span></button></div></header>
       ${state.connection === "offline" ? '<div class="connection-banner">与本地服务的连接中断，正在重连。已接收的任务会继续执行。<button class="text-link" data-action="reconnect">重新连接</button></div>' : ""}
       ${state.route === "workspace" ? tabbar() : ""}
-      <div class="page-body">${state.route === "workflows" ? workflowUI.page() : state.route === "mcp" ? integrationUI.mcpPage() : state.route === "skills" ? integrationUI.skillPage() : state.route === "settings" ? settings() : state.route === "agents" ? agentsPage() : !state.session ? welcome() : state.selectedThread ? chat() : state.mode === "tasks" ? tasksPage() : state.mode === "messages" ? messagesPage() : state.mode === "artifacts" ? artifactsPage() : overview()}</div>
+      <div class="page-body">${state.route === "workflows" ? workflowUI.page() : state.route === "mcp" ? integrationUI.mcpPage() : state.route === "skills" ? integrationUI.skillPage() : state.route === "settings" ? settings() : state.route === "agents" ? agentsPage() : !state.session ? welcome() : state.selectedThread ? chat() : state.mode === "messages" ? messagesPage() : state.mode === "artifacts" ? artifactsPage() : overview()}</div>
     </main></div>`;
 }
 function tabbar() {
   return `<nav class="tabbar" aria-label="总览与协作标签页">${workspaceSections().map(([mode, symbol, title, count]) =>
-    `<button class="browser-tab workspace-tab ${!state.selectedThread && state.mode === mode ? "active" : ""}" data-action="mode" data-mode="${mode}" data-focus="workspace-tab-${mode}" ${!state.selectedThread && state.mode === mode ? 'aria-current="page"' : ""} ${!state.session && mode !== "overview" ? "disabled" : ""}>${icon(symbol)}<span class="tab-name">${title}</span>${count ? `<span class="tab-count">${count}</span>` : ""}${mode === "messages" ? unreadMessageDot() : ""}</button>`).join("")}${state.openTabs.length ? '<span class="tab-separator" aria-hidden="true"></span>' : ""}${state.openTabs
+    `<button class="browser-tab workspace-tab ${!state.selectedThread && state.mode === mode ? "active" : ""}" data-action="mode" data-mode="${mode}" data-focus="workspace-tab-${mode}" ${!state.selectedThread && state.mode === mode ? 'aria-current="page"' : ""} ${!state.session && mode !== "overview" ? "disabled" : ""}>${icon(symbol)}<span class="tab-name">${title}</span>${count ? `<span class="tab-count">${count}</span>` : ""}</button>`).join("")}${state.openTabs.length ? '<span class="tab-separator" aria-hidden="true"></span>' : ""}${state.openTabs
     .map((id) => thread(id))
     .filter(Boolean)
     .map(
@@ -368,16 +409,20 @@ function welcome() {
   return `<section class="overview"><div class="page-heading"><div><h1>从一个目标开始</h1><p>准备 Agent，创建会话，再把工作交给它。每一步进展都可查看。</p></div></div>${nextStep()}<div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div></section>`;
 }
 function agentCards() {
-  return state.agents.filter(a => a.kind !== "external").map(a => {
-    const ready = a.enabled && (!requiresModel(a) || modelConfigured(a));
+  return groups().map(group => {
+    const a = group.agent, ready = a.enabled && (!requiresModel(a) || modelConfigured(a));
     const description = a.system_prompt || a.agent_md || (a.kind === "mock" ? "本机协议验证，不调用模型。" : a.kind === "process" ? "由本机执行程序处理任务。" : "独立上下文，使用已授权的工具执行任务。");
-    return `<article class="agent-card tone-${agentIndex(a.id)}"><div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name" title="${escape(a.name)}">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.model || (a.kind === "mock" ? "本机验证执行端" : a.kind === "process" ? "本机程序" : "等待配置模型"))}</div></div>${agentStatusBadge(agentStates.forAgent(a.id))}</div><div class="agent-description">${markdown(description.slice(0, 120))}</div>${integrationUI.agentDocumentLinks(a)}<div class="agent-card-detail"><button class="text-link" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general">配置</button><button class="btn small ${ready ? "" : "primary"}" data-action="${ready ? "agent-chat" : "configure-agent"}" data-id="${escape(a.id)}" data-tab="general">${ready ? "开始对话" : "完成配置"}${icon("arrow")}</button></div></article>`;
+    const recent = group.instances[0];
+    return `<article class="agent-card tone-${agentIndex(a.id)} ${group.instances.length > 1 ? "is-stacked" : ""}" data-agent-key="overview:${escape(a.id)}">
+      <div class="agent-card-head">${avatar(a.id, true)}<div class="agent-card-identity"><h3 class="agent-card-name" title="${escape(a.name)}">${escape(a.name)}</h3><div class="agent-card-model">${escape(a.model || (a.kind === "mock" ? "本机验证执行端" : a.kind === "process" ? "本机程序" : "等待配置模型"))}</div></div>${agentStatusBadge(agentStates.forAgent(a.id))}${instanceUnread(group.unread_count)}</div>
+      ${instanceCounts(group)}<div class="agent-description ${recent?.summary_markdown ? "agent-message-preview" : ""}">${markdown(recent?.summary_markdown || description.slice(0, 120))}</div>${integrationUI.agentDocumentLinks(a)}
+      <div class="agent-card-detail"><button class="icon-btn" data-action="configure-agent" data-id="${escape(a.id)}" data-tab="general" title="配置 ${escape(a.name)}" aria-label="配置 ${escape(a.name)}">${icon("settings")}</button><button class="btn small ${ready ? "" : "primary"}" data-action="${ready ? "agent-chat" : "configure-agent"}" data-id="${escape(a.id)}" data-focus="overview-agent-${escape(a.id)}" data-tab="general">${ready ? group.instances.length > 1 ? "选择实例" : "打开对话" : "完成配置"}${icon("arrow")}</button></div></article>`;
   }).join("") || empty("还没有 Agent", "添加 Agent 后，就能为它配置模型、工作指令与工具。", "add-agent", "添加 Agent");
 }
 function overview() {
   const tasks = state.snapshot.tasks;
   const attention = tasks.filter(t => matchesTaskFilter(t, "attention"));
-  return `<section class="overview"><div class="page-heading"><div><h1>今天，推进什么？</h1><p>先明确目标，再选择 Agent。执行进度和成果会保存在此会话。</p></div><button class="btn" data-action="workflow">${icon("flow")}安排依赖任务</button></div><div class="workspace-brief">${nextStep()}<div class="workspace-summary"><span><strong>${readyAgents().length}</strong> 个可用 Agent</span><span class="summary-running"><strong>${tasks.filter(t => t.state === "RUNNING").length}</strong> 项执行中</span><span class="summary-attention"><strong>${attention.length}</strong> 项需要关注</span><span class="summary-done"><strong>${tasks.filter(t => executionState(t) === "SUCCEEDED").length}</strong> 项已完成</span></div></div><div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div><div class="workspace-history"><section class="recent-tasks"><div class="section-heading"><h2>最近任务</h2><button class="text-link" data-action="mode" data-mode="tasks">查看全部 ${icon("arrow")}</button></div>${tasks.length ? `<div class="activity-list">${tasks.slice(0, 5).map(t => `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || "Agent")}</small></span>${badge(t)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`).join("")}</div>` : empty("发起第一项工作", "打开 Agent 对话，写下目标和期望的交付内容。", "open-agent", "开始对话")}</section><section class="session-updates">${attention.length ? `<div class="section-heading"><h2>需要你处理</h2><button class="text-link" data-action="task-filter-link" data-filter="attention">查看全部 ${icon("arrow")}</button></div><div class="attention-list">${attention.slice(0, 4).map(t => `<button class="attention-item ${executionState(t)}" data-action="task-detail" data-id="${escape(t.id)}"><div><strong>${escape(taskTitle(t))}</strong><small>${t.state === "WAITING" ? t.wait?.kind === "input" ? "提供输入，继续执行" : "等待协作，可查看进度" : "查看状态说明并核对结果"}</small></div>${badge(t)}${icon("arrow")}</button>`).join("")}</div>` : ""}${recentArtifacts()}</section></div></section>`;
+  return `<section class="overview"><div class="page-heading"><div><h1>今天，推进什么？</h1><p>先明确目标，再选择 Agent。执行进度和成果会保存在此会话。</p></div><button class="btn" data-action="workflow">${icon("flow")}安排依赖任务</button></div><div class="workspace-brief">${nextStep()}<div class="workspace-summary"><span><strong>${readyAgents().length}</strong> 个可用 Agent</span><span class="summary-running"><strong>${tasks.filter(t => t.state === "RUNNING").length}</strong> 项执行中</span><span class="summary-attention"><strong>${attention.length}</strong> 项需要关注</span><span class="summary-done"><strong>${tasks.filter(t => matchesTaskFilter(t, "done")).length}</strong> 项已完成</span></div></div><div class="section-heading"><h2>你的 Agent</h2><div class="section-actions">${workGuide()}<button class="text-link" data-action="route" data-route="agents">管理 Agent ${icon("arrow")}</button></div></div><div class="agent-grid">${agentCards()}</div><div class="workspace-history"><section class="recent-tasks"><div class="section-heading"><h2>最近任务</h2></div>${tasks.length ? `<div class="activity-list">${tasks.slice(0, 5).map(t => `<button class="activity-row" data-action="task-detail" data-id="${escape(t.id)}">${avatar(t.spec?.agent_id)}<span class="activity-name">${escape(taskTitle(t))}<small>${escape(agent(t.spec?.agent_id)?.name || "Agent")}</small></span>${badge(t)}<time>${time(t.created_at)}</time>${icon("chevron")}</button>`).join("")}</div>` : empty("发起第一项工作", "打开 Agent 对话，写下目标和期望的交付内容。", "open-agent", "开始对话")}</section><section class="session-updates">${attention.length ? `<div class="section-heading"><h2>需要你处理</h2></div><div class="attention-list">${attention.slice(0, 4).map(t => `<button class="attention-item ${outcomeState(t)}" data-action="task-detail" data-id="${escape(t.id)}"><div><strong>${escape(taskTitle(t))}</strong><small>${t.state === "WAITING" ? t.wait?.kind === "input" ? "提供输入，继续执行" : "等待协作，可查看进度" : "查看状态说明并核对结果"}</small></div>${badge(t)}${icon("arrow")}</button>`).join("")}</div>` : ""}${recentArtifacts()}</section></div></section>`;
 }
 function chat() {
   const t = thread(state.selectedThread);
@@ -385,18 +430,17 @@ function chat() {
   const a = agent(t.agent_id),
     tasks = threadTasks(t.id),
     current = latestTask(t.id);
-  const conversation = state.conversations.get(t.id),
-    live = [...state.streams.values()].filter((s) => s.thread_id === t.id);
+  const conversation = state.conversations.get(t.id);
   const pending = state.snapshot.messages.filter(
     (m) => m.target_thread_id === t.id && m.state === "PENDING",
   );
   return `<div class="chat-layout ${state.inspectorOpen ? "show-inspector" : ""}"><section class="chat-panel"><header class="chat-header">${avatar(t.agent_id, true)}<div><h2>${escape(t.title)}</h2><p>${escape(a?.model || (a?.kind === "mock" ? "Mock · 本地执行" : "独立执行端"))} · 上下文版本 ${t.revision}</p></div><div class="chat-header-actions"><button class="icon-btn" data-action="toggle-inspector" title="执行详情" aria-label="切换执行详情" aria-expanded="${state.inspectorOpen}">${icon("panel")}</button><button class="btn small" data-action="compose-message">${icon("mail")}协作消息</button><button class="icon-btn" data-action="fork" data-id="${escape(t.id)}" title="从最近保存的进度创建分支" aria-label="创建对话分支" ${!t.latest_checkpoint_id || !t.adapter_snapshot?.supports_fork ? "disabled" : ""}>${icon("branch")}</button></div></header>
-    <div class="conversation" aria-label="对话记录">${conversation?.has_more ? '<button class="btn small load-more" data-action="older">加载更早的消息</button>' : ""}${!conversation ? '<div class="loading-inline">正在读取对话记录…</div>' : conversation.items.length ? conversation.items.map((entry) => message(entry, t)).join("") : empty("这是一个独立的对话", "向这个 agent 描述目标，或启动待应用的协作消息。")}
-      <div id="live-messages">${live.map((stream) => streamMessage(stream, t)).join("")}</div>
+    <div class="conversation" data-thread-id="${escape(t.id)}" aria-label="对话记录">${conversation?.has_more || state.activities.get(t.id)?.has_more ? '<button class="btn small load-more" data-action="older">加载更早的消息</button>' : ""}${!conversation ? '<div class="loading-inline">正在读取对话记录…</div>' : conversationItems(conversation, state.activities.get(t.id)).length ? conversationItems(conversation, state.activities.get(t.id)).map(entry => entry.notice ? threadNotice(entry.activity) : message(entry, t)).join("") : empty("这是一个独立的对话", "向这个 agent 描述目标，或启动待应用的协作消息。")}
+      <div id="live-messages">${liveMessages(t)}</div>
       ${current?.state === "WAITING" ? `<div class="storage-note">${icon("clock")}<div>任务已暂停并保存进度，可在补充信息后继续。${current.wait?.kind === "input" ? '<button class="text-link" data-action="task-detail" data-id="' + escape(current.id) + '">提供输入并恢复 →</button>' : current.wait?.kind === "message" ? "等待协作消息到达。" : "等待子任务完成。"}</div></div>` : ""}
       ${current?.state === "UNCERTAIN" ? `<div class="storage-note">${icon("shield")}<div>执行结果需要核对，相关上下文和资源保持隔离。<button class="text-link" data-action="task-detail" data-id="${escape(current.id)}">查看待核对任务 →</button></div></div>` : ""}
     </div><div class="composer-area"><form id="composer" class="composer"><textarea id="chat-input" data-focus="chat-input" aria-label="发送给 ${escape(t.title)} 的消息" placeholder="向 ${escape(a?.name || t.title)} 发送指令…" rows="2" ${state.session.state !== "OPEN" ? "disabled" : ""}>${escape(state.drafts.get(t.id) || "")}</textarea><div class="composer-footer"><div class="composer-tools"><button type="button" class="icon-btn" data-action="upload" title="添加工作产物" aria-label="上传产物">${icon("clip")}</button><span>${pending.length ? `${pending.length} 条协作消息待应用` : "Enter 发送 · Shift + Enter 换行"}</span>${pending.length ? '<button type="button" class="text-link" data-action="process-messages">处理消息</button>' : ""}</div>${current?.state === "RUNNING" ? `<button type="button" class="btn small" data-action="cancel-task" data-id="${escape(current.id)}">停止当前任务</button>` : ""}<button type="submit" class="btn primary" ${state.busy || state.session.state !== "OPEN" ? "disabled" : ""}>发送 ${icon("send")}</button></div></form><div class="composer-note">${tasks.some((t) => t.state === "RUNNING") ? "执行期间的新指令会排队，在下一次调用时读取。" : "关闭分页后，任务和对话仍会保留。"}</div></div></section>
-    <aside class="inspector" aria-label="执行详情"><button class="icon-btn inspector-close" data-action="toggle-inspector" aria-label="关闭执行详情">${icon("close")}</button><div class="inspector-section"><h3>${icon("flow")}执行上下文</h3><div class="kv"><span>当前状态</span>${current ? badge(current.state) : "<strong>准备就绪</strong>"}</div><div class="kv"><span>上下文版本</span><strong>${t.revision}</strong></div><div class="kv"><span>待应用消息</span><strong>${pending.length}</strong></div><div class="kv"><span>对话标识</span><code title="${escape(t.id)}">${escape(t.id)}</code></div><div class="kv"><span>执行端</span><strong>${escape(a?.kind || "custom")}</strong></div></div>
+    <aside class="inspector" aria-label="执行详情"><button class="icon-btn inspector-close" data-action="toggle-inspector" aria-label="关闭执行详情">${icon("close")}</button><div class="inspector-section"><h3>${icon("flow")}执行上下文</h3><div class="kv"><span>当前状态</span>${current ? badge(current) : "<strong>准备就绪</strong>"}</div><div class="kv"><span>上下文版本</span><strong>${t.revision}</strong></div><div class="kv"><span>待应用消息</span><strong>${pending.length}</strong></div><div class="kv"><span>对话标识</span><code title="${escape(t.id)}">${escape(t.id)}</code></div><div class="kv"><span>执行端</span><strong>${escape(a?.kind || "custom")}</strong></div></div>
       <div class="inspector-section"><h3>${icon("clock")}任务记录</h3>${
         tasks
           .slice(0, 8)
@@ -420,12 +464,31 @@ function chat() {
       }</div>
     </aside></div>`;
 }
+function threadNotice(item) {
+  const report = item.kind === "report";
+  const label = report ? item.wait_for_guidance && !item.reply_message_id ? "等待指导" : item.reply_message_id ? "已回复指导" : "Agent 报告"
+    : ({ PENDING: "待应用", DELIVERED: "已入箱", OFFERED: "已提供执行端", APPLIED: "已应用", REJECTED: "已拒绝", EXPIRED: "已过期" }[item.delivery_stage] || "协作消息");
+  return `<article class="message activity-notice" data-entry-id="${escape(item.source_id)}" ${activityAttributes(item)}>${icon(report ? "activity" : "mail")}
+    <div class="message-content"><div class="message-meta"><strong>${label}</strong><time>${time(item.created_at)}</time></div>
+    <div class="message-text">${markdown(item.summary_markdown)}</div>
+    ${item.task_id ? `<button class="text-link" data-action="task-detail" data-id="${escape(item.task_id)}">查看执行详情</button>` : ""}</div></article>`;
+}
 function message(entry, t) {
   const user = entry.role === "user";
-  return `<article class="message ${user ? "user" : ""}">${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong>${!user && entry.execution_state ? badge(entry.execution_state) : ""}<time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}${!user && entry.task_id ? `<button class="text-link message-execution" data-action="task-detail" data-id="${escape(entry.task_id)}">${entry.metadata?.acceptance?.state === "FAILED" ? "结果未完整交付 · 查看原因" : "执行详情"}</button>` : ""}${!user && entry.metadata?.checkpoint_id && t.adapter_snapshot?.supports_fork ? `<button class="text-link message-execution" data-action="fork" data-id="${escape(entry.thread_id)}" data-checkpoint="${escape(entry.metadata.checkpoint_id)}">从此处分支</button>` : ""}</div></article>`;
+  const task = state.snapshot.tasks.find(task => task.id === entry.task_id);
+  const observed = entry.execution_state ? entry : task;
+  return `<article class="message ${user ? "user" : ""}" data-entry-id="${escape(entry.id)}" ${activityAttributes(entry.activity)}>${user ? '<span class="agent-mini">你</span>' : avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${user ? "你" : escape(agent(t.agent_id)?.name || t.title)}</strong>${observed ? badge(observed) : ""}<time>${time(entry.created_at)}</time></div><div class="message-text">${markdown(entry.content)}</div>${(entry.metadata?.artifact_ids || []).map((id) => `<a class="attachment-link" href="/api/artifacts/${encodeURIComponent(id)}/download">${icon("file")}下载产物</a>`).join("")}${!user && entry.task_id ? `<button class="text-link message-execution" data-action="task-detail" data-id="${escape(entry.task_id)}">${entry.metadata?.acceptance?.state === "FAILED" ? "结果未完整交付 · 查看原因" : "执行详情"}</button>` : ""}${!user && entry.metadata?.checkpoint_id && t.adapter_snapshot?.supports_fork ? `<button class="text-link message-execution" data-action="fork" data-id="${escape(entry.thread_id)}" data-checkpoint="${escape(entry.metadata.checkpoint_id)}">从此处分支</button>` : ""}</div></article>`;
+}
+function liveMessages(t) {
+  const live = [...state.streams.values()].filter(stream => stream.thread_id === t.id);
+  if (live.length) return live.map(stream => streamMessage(stream, t)).join("");
+  const tasks = threadTasks(t.id);
+  if (tasks.some(task => task.state === "RUNNING")) return streamMessage({ text: "", tool: "" }, t);
+  if (tasks.some(task => task.state === "QUEUED")) return '<div class="loading-inline" role="status">指令已收到，等待执行…</div>';
+  return "";
 }
 function streamMessage(stream, t) {
-  return `<article class="message streaming">${avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${escape(agent(t.agent_id)?.name || t.title)}</strong><span>${escape(statusLabel("RUNNING"))}</span></div><div class="message-text">${markdown(stream.text)}</div><div class="stream-label"><span class="typing-dots"><i></i><i></i><i></i></span>${escape(stream.tool || "正在输出")}</div></div></article>`;
+  return `<article class="message streaming ${stream.text ? "" : "thinking"}">${avatar(t.agent_id)}<div class="message-content"><div class="message-meta"><strong>${escape(agent(t.agent_id)?.name || t.title)}</strong><span>${escape(statusLabel("RUNNING"))}</span></div>${stream.text ? `<div class="message-text">${markdown(stream.text)}</div>` : ""}<div class="stream-label" role="status"><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>${escape(stream.tool || (stream.text ? "正在输出" : "正在思考…"))}</div></div></article>`;
 }
 function eventLabel(event) {
   if (["task.completed", "task.failed", "task.cancelled", "task.skipped", "task.suspended", "task.uncertain"].includes(event.type)) {
@@ -444,69 +507,11 @@ function eventLabel(event) {
     }[event.type] || event.type
   );
 }
-function matchesTaskFilter(task, filter) {
-  const observed = executionState(task);
-  if (filter === "active") return ["RUNNING", "QUEUED"].includes(observed);
-  if (filter === "attention")
-    return ["FAILED", "UNCERTAIN", "WAITING"].includes(observed) || task.result?.metadata?.acceptance?.state === "FAILED";
-  if (filter === "done") return observed === "SUCCEEDED";
-  return true;
-}
-function taskResults() {
-  const query = state.taskQuery.trim().toLocaleLowerCase();
-  const tasks = state.snapshot.tasks.filter(
-    (t) =>
-      matchesTaskFilter(t, state.taskFilter) &&
-      `${taskTitle(t)} ${agent(t.spec?.agent_id)?.name || ""} ${t.id}`
-        .toLocaleLowerCase()
-        .includes(query),
-  );
-  if (!tasks.length)
-    return empty(
-      state.snapshot.tasks.length
-        ? "没有匹配的任务"
-        : "把一个目标，拆成可以协作的步骤",
-      state.snapshot.tasks.length
-        ? "试试其他关键词，或切换状态筛选。"
-        : "打开 Agent 对话提交任务，或为多个 Agent 创建有依赖的工作流。",
-      state.snapshot.tasks.length ? "reset-task-filter" : "open-agent",
-      state.snapshot.tasks.length ? "重置筛选" : "打开 Agent",
-    );
-  if (state.taskView === "board") {
-    return `<div class="task-board">${[
-      ["准备执行", ["QUEUED"], "queued"],
-      ["进行中", ["RUNNING", "WAITING"], "running"],
-      ["已完成", ["SUCCEEDED"], "completed"],
-      ["其他状态", ["FAILED", "UNCERTAIN", "CANCELLED", "SKIPPED"], "other"],
-    ]
-      .map(([title, states, tone]) => {
-        const items = tasks.filter((t) => states.includes(executionState(t)));
-        return `<section class="board-column ${tone}"><h2><span class="dot"></span>${title}<span>${items.length}</span></h2>${items.map((t) => `<button class="board-task" data-action="task-detail" data-id="${escape(t.id)}">${badge(t)}<h3>${escape(taskTitle(t))}</h3><span class="board-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span><span class="board-task-foot"><span>${t.spec?.depends_on?.length ? t.spec.depends_on.length + " 项依赖" : "独立任务"}</span><time>${time(t.created_at)}</time></span></button>`).join("") || '<div class="board-empty">暂无任务</div>'}</section>`;
-      })
-      .join("")}</div>`;
-  }
-  return `<div class="table-wrap"><table class="table"><thead><tr><th>任务名称</th><th>执行 Agent</th><th>状态</th><th>依赖</th><th>创建时间</th><th><span class="sr-only">操作</span></th></tr></thead><tbody>${tasks.map((t) => `<tr><td class="input-preview"><button class="task-title-button" data-action="task-detail" data-id="${escape(t.id)}" title="${escape(taskTitle(t))}">${escape(taskTitle(t))}</button></td><td><span class="table-agent">${avatar(t.spec?.agent_id)}${escape(agent(t.spec?.agent_id)?.name || t.spec?.agent_id)}</span></td><td>${badge(t)}</td><td>${t.spec?.depends_on?.length ? `<span class="dependency-count">${icon("branch")}${t.spec.depends_on.length}</span>` : '<span class="muted">—</span>'}</td><td><time>${time(t.created_at)}</time></td><td><button class="icon-btn" data-action="task-detail" data-id="${escape(t.id)}" aria-label="查看任务：${escape(taskTitle(t))}">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div>`;
-}
-function tasksPage() {
-  return `<section class="panel-page"><div class="page-heading"><div><p class="eyebrow">WORK, IN MOTION</p><h1>任务与依赖<span class="heading-dot">.</span></h1><p>从一个指令到一套流程，清楚看见每一步进展。</p></div><button class="btn primary" data-action="workflow">${icon("plus")}安排任务</button></div><div class="filter-toolbar"><div class="filter-tabs" aria-label="任务状态筛选">${[
-    ["all", "全部任务"],
-    ["active", "执行与排队"],
-    ["attention", "需要关注"],
-    ["done", "已完成"],
-  ]
-    .map(
-      ([filter, text]) =>
-        `<button class="filter-tab ${state.taskFilter === filter ? "active" : ""}" data-action="task-filter" data-filter="${filter}" aria-pressed="${state.taskFilter === filter}">${text}<span>${state.snapshot.tasks.filter((t) => matchesTaskFilter(t, filter)).length}</span></button>`,
-    )
-    .join(
-      "",
-    )}</div><div class="filter-tools"><label class="inline-search">${icon("search")}<input id="task-search" data-focus="task-search" value="${escape(state.taskQuery)}" placeholder="搜索任务…" aria-label="搜索任务"></label><div class="view-switch" aria-label="任务视图"><button data-action="task-view" data-view="list" class="${state.taskView === "list" ? "active" : ""}" aria-label="列表视图" aria-pressed="${state.taskView === "list"}">${icon("list")}</button><button data-action="task-view" data-view="board" class="${state.taskView === "board" ? "active" : ""}" aria-label="看板视图" aria-pressed="${state.taskView === "board"}">${icon("board")}</button></div></div></div><div id="task-results">${taskResults()}</div>
-    <div class="section-heading"><h2>资源与隔离 <span class="subtitle">保障协作中的有序访问</span></h2><button class="btn small" data-action="resources">${icon("refresh")}刷新</button></div>${state.resources.length ? state.resources.map((r) => `<div class="message-card"><strong>${escape(r.key)}</strong>${r.holders.map((h) => `<p>${escape(h.mode)} · ${h.isolated ? "待核对隔离" : "占用中"} · ${escape(h.owner)}</p>`).join("")}</div>`).join("") : '<div class="resource-clear">' + icon("shield") + '<div><strong>当前没有额外资源占用</strong><p>任务声明的共享或独占资源会显示在这里。</p></div><span class="badge">可用</span></div>'}</section>`;
-}
+
 function messageCard(m, compact = false) {
   const report = m.kind === "report", source = report || m.envelope?.source_run_id ? thread(m.source_thread_id) : null,
     taskId = report ? m.task_id : m.envelope?.source_task_id;
-  return `<article class="message-card ${compact ? "feedback-card" : ""}"><div class="message-route">${source ? avatar(source.agent_id) : icon("terminal")}<strong>${escape(source?.title || "外部协调者")}</strong>${report ? `<span class="message-kind">Agent 报告</span>` : `${icon("arrow")}<strong>${escape(thread(m.target_thread_id)?.title || m.target_thread_id)}</strong>`}${badge(m.state)}</div><div class="message-text markdown">${markdown(m.summary_markdown)}</div><footer><span>${time(m.created_at)}${report ? " · 报告摘要" : ` · ${escape(m.target_port)} · ${escape(m.envelope?.message_type || "")}`}</span><div class="message-actions">${taskId ? `<button class="text-link" data-action="task-detail" data-id="${escape(taskId)}">查看任务 ${icon("arrow")}</button>` : ""}${!compact && !report && m.state === "PENDING" ? `<button class="text-link" data-action="process-target" data-id="${escape(m.target_thread_id)}">启动接收任务 ${icon("arrow")}</button>` : ""}</div></footer></article>`;
+  return `<article class="message-card ${compact ? "feedback-card" : ""}" ${activityAttributes(state.snapshot.message_activity?.[m.id])}><div class="message-route">${source ? avatar(source.agent_id) : icon("terminal")}<strong>${escape(source?.title || "外部协调者")}</strong>${report ? `<span class="message-kind">Agent 报告</span>` : `${icon("arrow")}<strong>${escape(thread(m.target_thread_id)?.title || m.target_thread_id)}</strong>`}${badge(m.state)}</div><div class="message-text markdown">${markdown(m.summary_markdown)}</div><footer><span>${time(m.created_at)}${report ? " · 报告摘要" : ` · ${escape(m.target_port)} · ${escape(m.envelope?.message_type || "")}`}</span><div class="message-actions">${taskId ? `<button class="text-link" data-action="task-detail" data-id="${escape(taskId)}">查看任务 ${icon("arrow")}</button>` : ""}${!compact && !report && m.state === "PENDING" ? `<button class="text-link" data-action="process-target" data-id="${escape(m.target_thread_id)}">启动接收任务 ${icon("arrow")}</button>` : ""}</div></footer></article>`;
 }
 function artifactSourceLabel(item) {
   const source = artifactSource(item, state.agents);
@@ -575,6 +580,7 @@ function ensureSettings() {
           api_key: "",
           system_prompt: "",
           temperature: null,
+          reasoning_effort: null,
           max_output_tokens: 4096,
           token_parameter: "max_completion_tokens",
           max_concurrency: 4,
@@ -607,7 +613,7 @@ function modelSetupNotice(d) {
 function agentGeneral(d) {
   return `<section class="form-section"><h3>基本信息</h3><div class="form-grid">${field("显示名称", "name", d.name, { placeholder: "为这个 agent 命名" })}${field("Agent ID", "id", d.id, { readonly: !!state.settingsId, placeholder: "小写字母、数字和连字符" })}<label class="field">执行方式<select data-setting="kind" data-focus="setting-kind"><option value="llm" ${d.kind === "llm" ? "selected" : ""}>模型 API（兼容 OpenAI）</option><option value="mock" ${d.kind === "mock" ? "selected" : ""}>本机协议验证（无模型）</option><option value="process" ${d.kind === "process" ? "selected" : ""}>本机 Agent 程序</option></select></label>${field("并发上限", "max_concurrency", d.max_concurrency, { type: "number", hint: "同一对话每次只执行一个任务。" })}</div></section>
     ${d.kind === "process" ? `<section class="form-section"><h3>模型接入</h3><label class="toggle-row"><span>使用平台统一模型<small>此执行端需要模型推理时开启；纯文件处理或计算可以关闭。</small></span><input type="checkbox" data-setting="llm_required" data-focus="setting-llm_required" ${d.llm_required ? "checked" : ""}></label></section>` : ""}
-    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API 地址", "base_url", d.base_url, { placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}</div><details class="form-advanced"><summary>模型高级参数</summary><div class="form-grid">${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("模型上下文上限（可选）", "context_window_tokens", d.context_window_tokens, { type: "number", placeholder: "未知时留空", hint: "按模型规格填写；留空时使用保守预算，历史内容由平台自动管理。" })}${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></details></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
+    ${requiresModel(d) ? `<section class="form-section"><h3>模型 API</h3>${modelSetupNotice(d)}<div class="form-grid">${field("API 地址", "base_url", d.base_url, { placeholder: "https://…/v1", hint: "平台在此地址后附加 /chat/completions。" })}${field("模型名称", "model", d.model, { placeholder: "填写供应商支持的模型 ID" })}${field("API 密钥", "api_key", d.api_key, { type: "password", full: true, placeholder: d.has_api_key ? "已设置 · 留空保留已有密钥" : "仅写入本机加密存储", hint: "密钥不会返回浏览器，不保存在对话、事件或源码中。" })}</div><details class="form-advanced"><summary>模型高级参数</summary><div class="form-grid">${field("温度（可选）", "temperature", d.temperature, { type: "number", placeholder: "不指定，由供应商决定" })}${field("最大输出 token", "max_output_tokens", d.max_output_tokens, { type: "number" })}<label class="field">推理强度（可选）<select data-setting="reasoning_effort" data-focus="setting-reasoning_effort">${[["", "供应商默认"], ["none", "关闭"], ["minimal", "极低"], ["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "很高"], ["max", "最大"]].map(([value, label]) => `<option value="${value}" ${(d.reasoning_effort ?? "") === value ? "selected" : ""}>${label}</option>`).join("")}</select><small>仅用于支持 reasoning_effort 的接口；未知时留空。</small></label><label class="field">输出上限参数<select data-setting="token_parameter" data-focus="setting-token_parameter"><option value="max_completion_tokens" ${d.token_parameter === "max_completion_tokens" ? "selected" : ""}>max_completion_tokens</option><option value="max_tokens" ${d.token_parameter === "max_tokens" ? "selected" : ""}>max_tokens</option></select><small>按供应商接口要求选择。</small></label>${field("模型上下文上限（可选）", "context_window_tokens", d.context_window_tokens, { type: "number", placeholder: "未知时留空", hint: "按模型规格填写；留空时使用保守预算，历史内容由平台自动管理。" })}${field("API 超时（秒）", "timeout_seconds", d.timeout_seconds, { type: "number" })}</div></details></section>` : `<div class="storage-note">${icon("shield")}<div>${d.kind === "mock" ? "此执行端在本机生成确定性回复，支持消息回执、checkpoint 和挂起恢复，无需密钥。" : "进程命令由本机配置管理，平台只终止自身创建的进程树。"}</div></div>`}
     ${d.kind === "process" ? agentLaunch.panel(d) : ""}<section class="form-section"><h3>行为与协作</h3><details class="form-advanced"><summary>编辑系统指令</summary><label class="field">系统指令<textarea data-setting="system_prompt" data-focus="setting-system_prompt" placeholder="定义执行端的工作方式与输出要求。">${escape(d.system_prompt)}</textarea></label></details><div class="instruction-preview">${content(d.system_prompt || "尚未添加系统指令。可在“工作指令”中定义职责与交付要求。")}</div><label class="toggle-row"><span>启用协作工具<small>允许同空间消息、子任务提交和 checkpoint 等待。</small></span><input type="checkbox" data-setting="collaboration" ${d.collaboration ? "checked" : ""}></label><label class="toggle-row"><span>启用 Agent<small>关闭后停止新派发，保留历史记录。</small></span><input type="checkbox" data-setting="enabled" ${d.enabled ? "checked" : ""}></label></section>`;
 }
 function workbenchSettings(d) {
@@ -845,6 +851,15 @@ function renderModal() {
     content = `<div class="agent-grid">${agentCards()}</div><p>已有对话会直接打开，也可以在设置中接入新的执行端。</p>`;
     footer = '<button class="btn" data-action="add-agent">添加 Agent</button>';
   }
+  if (m.type === "instances") {
+    title = `${agent(m.agentId)?.name || "Agent"} · 选择实例`;
+    content = `<div class="instance-picker">${m.items.map(item => `<button class="instance-option ${instanceInUse(item) ? "" : "is-idle"}" data-action="select-thread" data-id="${escape(item.thread_id)}" data-focus="instance-${escape(item.thread_id)}">
+      <div class="instance-option-heading"><strong>${escape(item.goal || item.title)}</strong>${agentStatusBadge(agentStates.forThread(item))}${instanceUnread(item.unread_count)}</div>
+      <span class="instance-origin">${item.workflow_name ? `${escape(item.workflow_name)} · r${item.workflow_revision}` : "独立对话"}${item.delivery_state ? ` · 交付${({ PASSED: "已检查", FAILED: "有缺项", NOT_REQUIRED: "未要求检查" }[item.delivery_state] || "待检查")}` : ""}</span>
+      <span class="instance-preview">${markdown(item.summary_markdown || "尚无消息")}</span></button>`).join("")}</div>
+      ${m.loading ? '<p class="form-hint">正在读取实例…</p>' : m.has_more ? '<button class="btn small" data-action="more-instances">更多实例</button>' : ""}`;
+    footer = `<button class="btn" data-action="new-agent-thread" data-id="${escape(m.agentId)}">${icon("plus")}新建独立对话</button>`;
+  }
   if (m.type === "project") {
     title = m.id ? "项目设置" : "创建项目";
     content = `<label class="field">项目名称<input id="project-name" data-focus="project-name" maxlength="120"
@@ -975,7 +990,6 @@ async function loadBootstrap(projectId = state.project?.id || localStorage.getIt
     runtime: value.runtime,
   });
   if (state.project) localStorage.setItem("ma-project", state.project.id);
-  if (!state.session) state.connection = "online";
 }
 async function selectProject(id) {
   if (state.project?.id === id) return;
@@ -987,6 +1001,7 @@ async function selectProject(id) {
   state.selectedThread = null;
   state.openTabs = [];
   state.conversations.clear();
+  state.activities.clear();
   state.streams.clear();
   state.drafts.clear();
   state.turnRequests.clear();
@@ -1033,8 +1048,6 @@ async function selectSession(id) {
   state.modal = null;
   state.connection = "connecting";
   state.selectedThread = null;
-  state.taskFilter = "all";
-  state.taskQuery = "";
   state.artifactQuery = "";
   state.messageFilter = "all";
   state.resources = [];
@@ -1044,8 +1057,8 @@ async function selectSession(id) {
   state.snapshot = { threads: [], tasks: [], messages: [], artifacts: [] };
   if (!state.session) {
     state.openTabs = [];
-    state.connection = "online";
     localStorage.removeItem("ma-session");
+    connectEvents(state.sessionEpoch);
     render();
     return;
   }
@@ -1069,7 +1082,7 @@ async function selectSession(id) {
 function connectEvents(epoch) {
   eventSource?.close();
   const source = new EventSource(
-    `/api/sessions/${encodeURIComponent(state.session.id)}/events?after_seq=${state.cursor}`,
+    state.session ? `/api/sessions/${encodeURIComponent(state.session.id)}/events?after_seq=${state.cursor}` : "/api/presence",
   );
   eventSource = source;
   eventSource.onopen = async () => {
@@ -1078,7 +1091,8 @@ function connectEvents(epoch) {
       state.connection = "connecting";
       render();
       try {
-        await refreshSession();
+        if (state.session) await refreshSession();
+        else await loadBootstrap();
       } catch (error) {
         if (epoch !== state.sessionEpoch || source !== eventSource) return;
         state.connection = "offline";
@@ -1135,7 +1149,7 @@ function connectEvents(epoch) {
         text: "",
         tool: "",
       };
-      if (value.payload.delta) existing.text += value.payload.delta;
+      if (value.payload.delta) { existing.text += value.payload.delta; existing.tool = ""; }
       if (value.payload.tool) existing.tool = "调用 " + value.payload.tool;
       state.streams.set(value.run_id, existing);
       const live = $("#live-messages"),
@@ -1143,10 +1157,7 @@ function connectEvents(epoch) {
       if (live && t && value.thread_id === t.id) {
         const c = $(".conversation"),
           bottom = c.scrollHeight - c.scrollTop - c.clientHeight < 100;
-        live.innerHTML = [...state.streams.values()]
-          .filter((s) => s.thread_id === t.id)
-          .map((s) => streamMessage(s, t))
-          .join("");
+        live.innerHTML = liveMessages(t);
         if (bottom) c.scrollTop = c.scrollHeight;
       }
     }
@@ -1168,6 +1179,7 @@ async function resync() {
   state.cursor = snapshot.cursor;
   connectEvents(state.sessionEpoch);
   await refreshConversation(state.selectedThread);
+  await workflowUI.refresh();
   render();
 }
 async function reconnect() {
@@ -1176,7 +1188,10 @@ async function reconnect() {
   try {
     await loadBootstrap();
     if (state.session) await resync();
-    else render();
+    else {
+      connectEvents(state.sessionEpoch);
+      render();
+    }
   } catch (error) {
     state.connection = "offline";
     render();
@@ -1230,15 +1245,15 @@ async function refreshSession() {
 }
 async function refreshConversation(id, older = false) {
   if (!id) return;
-  const current = state.conversations.get(id),
-    query = older && current?.cursor ? `&before_seq=${current.cursor}` : "";
-  const result = await api(
-    `/threads/${id}/conversation?latest=true&limit=100${query}`,
-  );
-  if (older && current) {
-    result.items = [...result.items, ...current.items];
-  }
-  state.conversations.set(id, result);
+  const epoch = state.sessionEpoch, current = state.conversations.get(id), activity = state.activities.get(id);
+  const query = older && current?.cursor ? `&before_seq=${current.cursor}` : "";
+  const [result, feed] = await Promise.all([
+    api(`/threads/${id}/conversation?latest=true&limit=100${query}`),
+    rpc("threads.activity", { thread_id: id, limit: 100, ...(older && activity?.cursor ? { cursor: activity.cursor } : {}) }),
+  ]);
+  if (epoch !== state.sessionEpoch) return;
+  state.conversations.set(id, mergeHistoryPage(current, result, older));
+  state.activities.set(id, mergeHistoryPage(activity, feed, older, "position"));
 }
 async function selectThread(id) {
   if (!thread(id)) return;
@@ -1262,8 +1277,21 @@ async function openAgent(id, forceNew = false) {
     return;
   }
   const epoch = state.sessionEpoch;
-  const existing = state.snapshot.threads.find((t) => t.agent_id === id);
-  if (existing && !forceNew) return selectThread(existing.id);
+  const existing = state.snapshot.threads.filter(t => t.agent_id === id);
+  if (!forceNew && existing.length === 1) return selectThread(existing[0].id);
+  if (!forceNew && existing.length > 1) {
+    const modal = { type: "instances", agentId: id, items: groups().find(group => group.agent.id === id)?.instances || [], loading: true };
+    state.modal = modal;
+    renderModal();
+    try {
+      const page = await rpc("threads.instances", { session_id: state.session.id, agent_id: id });
+      if (state.modal === modal) Object.assign(modal, page);
+    } finally {
+      modal.loading = false;
+      if (state.modal === modal) renderModal();
+    }
+    return;
+  }
   const count = state.snapshot.threads.filter((t) => t.agent_id === id).length;
   const value = await api("/threads", {
     method: "POST",
@@ -1446,23 +1474,6 @@ async function action(name, element) {
     render();
     $("#command-input")?.focus();
   }
-  if (name === "task-filter" || name === "task-filter-link") {
-    state.taskFilter = element.dataset.filter;
-    if (name === "task-filter-link") {
-      state.mode = "tasks";
-      state.selectedThread = null;
-    }
-    render();
-  }
-  if (name === "reset-task-filter") {
-    state.taskFilter = "all";
-    state.taskQuery = "";
-    render();
-  }
-  if (name === "task-view") {
-    state.taskView = element.dataset.view;
-    render();
-  }
   if (name === "message-filter") {
     state.messageFilter = element.dataset.filter;
     render();
@@ -1518,6 +1529,16 @@ async function action(name, element) {
   }
   if (name === "agent-chat") await openAgent(id);
   if (name === "new-agent-thread") await openAgent(id, true);
+  if (name === "more-instances" && state.modal?.type === "instances") {
+    const modal = state.modal;
+    if (modal.loading) return;
+    modal.loading = true;
+    renderModal();
+    try {
+      const page = await rpc("threads.instances", { session_id: state.session.id, agent_id: modal.agentId, cursor: modal.cursor });
+      if (state.modal === modal) Object.assign(modal, { ...page, items: [...modal.items, ...page.items] });
+    } finally { modal.loading = false; if (state.modal === modal) renderModal(); }
+  }
   if (name === "select-thread") await selectThread(id);
   if (name === "close-tab") {
     state.openTabs = state.openTabs.filter((t) => t !== id);
@@ -1529,6 +1550,7 @@ async function action(name, element) {
     if (state.modal?.pending) return;
     state.modal = null;
     renderModal();
+    requestAnimationFrame(observeVisibleActivity);
   }
   if (name === "codex") {
     state.modal = { type: "codex" };
@@ -1551,6 +1573,7 @@ async function action(name, element) {
       api_key: "",
       system_prompt: "",
       temperature: null,
+      reasoning_effort: null,
       max_output_tokens: 4096,
       token_parameter: "max_completion_tokens",
       max_concurrency: 4,
@@ -1574,7 +1597,7 @@ async function action(name, element) {
   if (name === "test-model") {
     const d = state.settingsDraft, saved = agent(state.settingsId);
     if (!saved || state.testingModelId || state.savingSettings) return;
-    const fields = ["kind", "llm_required", "base_url", "model", "temperature", "max_output_tokens", "context_window_tokens", "context_budget_tokens", "token_parameter", "timeout_seconds"];
+    const fields = ["kind", "llm_required", "base_url", "model", "temperature", "reasoning_effort", "max_output_tokens", "context_window_tokens", "context_budget_tokens", "token_parameter", "timeout_seconds"];
     if (d.api_key || fields.some((key) => (d[key] ?? null) !== (saved[key] ?? null))) {
       toast("请先保存模型配置，再测试连接。", true);
       return;
@@ -1587,7 +1610,7 @@ async function action(name, element) {
       const result = await api(`/agents/${encodeURIComponent(saved.id)}/model-test`, {method: "POST", body: {}});
       if (stillCurrent()) state.modelTestResult = {id: saved.id, ok: true, message: `连接成功 · ${result.model} · ${result.latency_ms} ms。业务效果请另行验收。`};
     } catch (error) {
-      if (stillCurrent()) state.modelTestResult = {id: saved.id, ok: false, message: `连接未通过：${error.message}`};
+      if (stillCurrent()) state.modelTestResult = {id: saved.id, ok: false, message: `连接未通过：${error.message}${error.details?.provider_message ? " · " + error.details.provider_message : ""}`};
     } finally {
       state.testingModelId = null;
       render();
@@ -1647,12 +1670,23 @@ async function action(name, element) {
   }
   if (name === "process-messages") await sendTurn(state.selectedThread, "");
   if (name === "process-target") await sendTurn(id, "");
+  if (name === "open-task-thread") {
+    const task = await api(`/tasks/${id}`);
+    if (state.session?.id !== task.session_id) { await loadBootstrap(); await selectSession(task.session_id); }
+    await selectThread(task.thread_id);
+    return;
+  }
   if (name === "task-detail") {
     const modal = { type: "task", task: null, receipts: {}, receiptLoading: new Set() };
     state.modal = modal;
     renderModal();
     const task = await api(`/tasks/${id}`);
     if (state.modal === modal) {
+      if (state.session?.id !== task.session_id) { await loadBootstrap(); await selectSession(task.session_id); }
+      if (state.selectedThread !== task.thread_id && thread(task.thread_id)) {
+        await selectThread(task.thread_id);
+        state.modal = modal;
+      }
       modal.task = task;
       renderModal();
     }
@@ -1929,10 +1963,6 @@ document.addEventListener("input", (event) => {
     state.modal.query = e.value;
     $("#command-results").innerHTML = commandResults();
   }
-  if (e.id === "task-search") {
-    state.taskQuery = e.value;
-    $("#task-results").innerHTML = taskResults();
-  }
   if (e.id === "artifact-search") {
     state.artifactQuery = e.value;
     $("#artifact-results").innerHTML = artifactResults();
@@ -1950,6 +1980,7 @@ document.addEventListener("input", (event) => {
       ].includes(e.dataset.setting)
     )
       value = e.value === "" ? null : Number(e.value);
+    if (e.dataset.setting === "reasoning_effort") value = e.value || null;
     state.settingsDraft[e.dataset.setting] = value;
     state.modelTestResult = null;
     $(".model-test-result")?.remove();
@@ -2023,6 +2054,7 @@ document.addEventListener("submit", async (event) => {
         "mcp_bindings",
         "workbench",
         "temperature",
+        "reasoning_effort",
         "max_output_tokens",
         "context_window_tokens",
         "context_budget_tokens",
@@ -2160,8 +2192,7 @@ async function boot() {
     const target =
       state.sessions.find((s) => s.id === saved) ||
       state.sessions.find((s) => s.state === "OPEN");
-    if (target) await selectSession(target.id);
-    else render();
+    await selectSession(target?.id);
     if (state.route === "workflows") await workflowUI.load();
   } catch (error) {
     state.connection = "offline";
@@ -2187,11 +2218,5 @@ window.addEventListener("offline", () => reconnect().catch(() => {}));
 window.addEventListener("online", () => reconnect().catch(() => {}));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") render();
-});
-window.addEventListener("storage", (event) => {
-  if (state.session && event.key === messageReadKey(state.session.id)) {
-    messageReads.delete(state.session.id);
-    render();
-  }
 });
 boot();

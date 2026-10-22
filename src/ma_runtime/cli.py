@@ -86,7 +86,7 @@ async def remote_request(root, method, params):
     ) as client_http:
         response = await client_http.post(
             client["url"] + "/api/rpc",
-            headers={"Authorization": "Bearer " + token},
+            headers={"Authorization": "Bearer " + token, "X-OEA-View-Version": "1.1"},
             json={"method": method, "params": params},
         )
         data = response.json()

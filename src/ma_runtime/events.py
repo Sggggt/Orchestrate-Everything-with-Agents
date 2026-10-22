@@ -77,14 +77,16 @@ class EventHub:
         return [dict(v) for v in self.summaries.values()
                 if v["session_id"] == session_id and v["task_id"] in ids]
 
-    async def list(self, session_id: str, after_seq: int = 0, limit: int = 100):
-        await self.runtime.sessions.get(session_id)
+    async def list(self, session_id: str, after_seq: int = 0, limit: int = 100, include_project_workflows: bool = False):
+        session = await self.runtime.sessions.get(session_id)
         limit = max(1, min(int(limit), 500))
+        extra = " OR (type LIKE 'workflow.%' AND session_id IN (SELECT id FROM sessions WHERE project_id=?))" if include_project_workflows else ""
+        scope = (session_id, session.project_id) if include_project_workflows else (session_id,)
         found = await self.runtime.store.call(
             lambda db: rows(
                 db,
-                "SELECT * FROM events WHERE (session_id=? OR session_id IS NULL) AND seq>? ORDER BY seq LIMIT ?",
-                (session_id, max(0, int(after_seq)), limit + 1),
+                "SELECT * FROM events WHERE (session_id=? OR session_id IS NULL" + extra + ") AND seq>? ORDER BY seq LIMIT ?",
+                (*scope, max(0, int(after_seq)), limit + 1),
             )
         )
         more = len(found) > limit
@@ -93,7 +95,7 @@ class EventHub:
             items=items, cursor=items[-1]["seq"] if items else after_seq, has_more=more
         )
 
-    async def subscribe(self, session_id: str, after_seq: int = 0):
+    async def subscribe(self, session_id: str, after_seq: int = 0, *, include_project_workflows: bool = False):
         await self.runtime.sessions.get(session_id)
         queue = asyncio.Queue(maxsize=self.runtime.config.subscriber_buffer_size)
         state = {"session_id": session_id, "overflow": False}
@@ -113,7 +115,7 @@ class EventHub:
                 }
                 return
             while not self.runtime.closed:
-                batch = await self.list(session_id, cursor, limit=128)
+                batch = await self.list(session_id, cursor, limit=128, include_project_workflows=include_project_workflows)
                 for event in batch["items"]:
                     cursor = event["seq"]
                     yield event

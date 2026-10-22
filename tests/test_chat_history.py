@@ -75,6 +75,42 @@ class ChatHistoryTests(unittest.IsolatedAsyncioTestCase):
         new = await self.rt.store.call(lambda db: one(db, "SELECT format_version FROM checkpoints WHERE id=?", (new_id,)))
         self.assertEqual(new.format_version, "chat-messages-v2")
 
+    async def test_bounded_native_projection_keeps_complete_history_and_shared_branch_cache(self):
+        for index in range(20):
+            task = await self.rt.threads.turn(self.thread.id, f"Evidence {index}: " + "source " * 800,
+                                             str(index), context_budget_tokens=4096)
+            await self.rt.tasks.result(task.id, timeout=5)
+        self.assertLess(len(self.adapter.captured[-1]["messages"]), 8)
+        self.assertTrue(any(tool["function"]["name"] == "read_history" for tool in self.adapter.captured[-1]["tools"]))
+        point = (await self.rt.threads.get(self.thread.id)).latest_checkpoint_id
+        cursor, all_messages = None, []
+        while True:
+            page = await self.rt.threads.history(self.thread.id, checkpoint_id=point, cursor=cursor, limit=7)
+            all_messages.extend(page["messages"])
+            cursor = page["cursor"]
+            if cursor is None:
+                break
+        self.assertEqual(page["message_count"], 40)
+        self.assertEqual(len(all_messages), 40)
+        self.assertIn("Evidence 0:", all_messages[0]["content"])
+        self.assertIn("Evidence 19:", all_messages[-2]["content"])
+        branch = await self.rt.threads.fork(self.thread.id, idempotency_key="bounded-branch")
+        def load(db):
+            origin = one(db, "SELECT * FROM threads WHERE id=?", (self.thread.id,))
+            fork = one(db, "SELECT * FROM threads WHERE id=?", (branch.id,))
+            source = one(db, "SELECT * FROM checkpoints WHERE id=?", (point,))
+            target = one(db, "SELECT * FROM checkpoints WHERE id=?", (fork.latest_checkpoint_id,))
+            a = self.rt.chat_history.load(db, source, origin, max_bytes=8192)
+            b = self.rt.chat_history.load(db, target, fork, max_bytes=8192)
+            return a, b
+        original, inherited = await self.rt.store.call(load)
+        self.assertIs(original["messages"], inherited["messages"])
+        self.assertEqual(original["message_count"], 40)
+        self.assertLess(original["loaded_message_count"], 8)
+        with self.assertRaises(RuntimeFault) as fault:
+            await self.rt.threads.history(branch.id, checkpoint_id=point)
+        self.assertEqual(fault.exception.code, "PERMISSION_DENIED")
+
     async def test_forks_share_prefix_and_paginate_without_copying_rows(self):
         first = await self.turn("First evidence", "first")
         point = first.runs[-1].boundary_receipt["checkpoint_id"]

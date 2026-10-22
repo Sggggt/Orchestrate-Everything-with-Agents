@@ -10,8 +10,8 @@
 - `cancel {batch_id}` 请求取消未完成成员；检查 confirmed_stopped 与各 Task 状态。UNCERTAIN 先核对具体 task_id，再按任务流程 reconciliation；不能把未知结果当作取消成功。
 - 继续某个实例的上下文，用已有 `threads.turn`；依赖某个实例，用它的 task_id。整个批次结束状态仅汇总本次创建的任务，不包含后续对话。
 
-全局、单 Agent、适配器声明和批次预算共同生效；BATCH_LIMIT / AGENT_LIMIT 表示正常排队。新工作区默认全局 16 槽（预留 1）、内置 Agent 4 并发，已有配置不自动改写。不要为突破预算开启另一个 Runtime。
+spawn 可传显式 budget_id；成员及其允许的后续子任务共享累计用量。全局、单 Agent、适配器声明和批次预算共同生效；BATCH_LIMIT / AGENT_LIMIT 表示正常排队。新工作区默认全局 16 槽（预留 1）、内置 Agent 4 并发，已有配置不自动改写。不要为突破预算开启另一个 Runtime。
 
 执行端内部调用 `context.spawn_instances(spec)` 时只允许当前会话并受 collaboration 配置控制；记录返回的子 task ID，使用 suspended + WaitCondition 等待，释放父执行槽。子结果在恢复输入的 tasks 中返回。父任务失败或取消会请求取消其受管子批次；普通 Codex 管理调用不虚构 parent 身份。
 
-失败时读成员错误和已完成结果。等待/不确定成员沿用 Task 恢复/核对契约；安全重试失败成员会创建新 Task，原批次保留原任务证据，主 Agent 单独汇总重试结果。失败工作流修复后启动新的运行。不为修复一个成员盲目重建整个批次，也不复制所有线程历史到主 Agent。
+失败时读成员错误和已完成结果。等待/不确定成员沿用 Task 恢复/核对契约；安全重试失败成员会创建新 Task，原批次保留原任务证据，主 Agent 单独汇总重试结果。终态工作流用 workflows.repair 创建带来源的新运行，保留并核验成功成员复用。不为修复一个成员盲目重建整个批次，也不复制所有线程历史到主 Agent。

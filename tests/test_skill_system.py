@@ -124,6 +124,37 @@ class SkillSystemTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Check actual evidence.", adapter.captured[0]["messages"][0]["content"])
         self.assertIsNone(adapter.captured[0]["choice"])
 
+    async def test_unavailable_required_mcp_fails_before_model_or_process_execution(self):
+        await self.mcp()
+        adapter, thread = await self.agent(mcp_bindings=(MCPBinding(server_id="fixture"),))
+        missing = {"tools": [], "instructions": [], "identifiers": {},
+                   "unavailable": [{"server_id": "fixture", "error": {"code": "MCP_CONNECTION_FAILED"}}]}
+        with patch.object(self.rt.mcp, "schemas_for_run", AsyncMock(return_value=missing)):
+            task = await self.rt.threads.turn(thread.id, "Read", "required-unavailable",
+                                            tool_policy={"required": ["mcp:fixture:echo"]})
+            with self.assertRaises(RuntimeFault):
+                await self.rt.tasks.result(task.id, timeout=5)
+        snapshot = await self.rt.tasks.get(task.id)
+        self.assertEqual(snapshot.state, "FAILED")
+        self.assertEqual(snapshot.error["code"], "EXECUTION_REQUIREMENT_UNMET")
+        self.assertEqual(snapshot.error["stage"], "preparation")
+        self.assertEqual(adapter.captured, [])
+        self.assertFalse(self.rt.uncertain_slots)
+
+        config = AgentConfig(id="unstarted", name="Unstarted", kind="process",
+            command=(sys.executable, "-B", str(ROOT / "examples/integration_agent.py")),
+            mcp_bindings=(MCPBinding(server_id="fixture"),))
+        await self.rt.agents.configure(config)
+        target = await self.rt.threads.create(thread.session_id, config.id)
+        with patch.object(self.rt.mcp, "schemas_for_run", AsyncMock(return_value=missing)), \
+             patch.object(self.rt.adapters[config.id], "probe", AsyncMock(side_effect=AssertionError("not started"))):
+            task = await self.rt.threads.turn(target.id, "Read", "process-unavailable",
+                                            tool_policy={"required": ["mcp:fixture:echo"]})
+            with self.assertRaises(RuntimeFault):
+                await self.rt.tasks.result(task.id, timeout=5)
+        self.assertEqual((await self.rt.tasks.get(task.id)).state, "FAILED")
+        self.assertEqual(self.rt.adapters[config.id].finished, {})
+
     async def test_required_any_skill_forces_reader_and_checks_evidence(self):
         adapter, thread = await self.agent(actions=(("read_skill", {"skill_id": "review"}),))
         task = await self.rt.threads.turn(thread.id, "Review", "read-any", skill_policy={"mode": "required"})

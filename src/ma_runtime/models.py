@@ -9,12 +9,15 @@ import uuid
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 from .errors import execution_state
 
 PROTOCOL_VERSION = "1.0"
 TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED"})
+MAX_MODEL_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_AGENT_FRAME_BYTES = 16 * 1024 * 1024
 
 
 def now_ms() -> int:
@@ -75,6 +78,13 @@ class TaskHandle(Model):
     reused: bool = False
 
 
+class CommandEnvelope(Model):
+    method: str = Field(pattern=r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+    params: dict = Field(default_factory=dict)
+    correlation_id: str | None = Field(default=None, max_length=256)
+    causation_id: str | None = Field(default=None, max_length=256)
+
+
 class MessageHandle(Model):
     id: str
     state: str
@@ -105,6 +115,43 @@ class RuntimeConfig(Model):
 class ResourceRequirement(Model):
     key: str = Field(min_length=1, max_length=512)
     mode: Literal["SHARED", "EXCLUSIVE"] = "EXCLUSIVE"
+
+
+class QuantityRequirement(Model):
+    key: str = Field(min_length=1, max_length=512)
+    quantity: int = Field(default=1, ge=1, le=1000000)
+
+
+class ResourceCapacity(Model):
+    key: str = Field(min_length=1, max_length=512)
+    unit: str = Field(default="operation", min_length=1, max_length=64)
+    limit: int = Field(ge=1, le=1000000)
+    reserved: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def available(self):
+        if self.reserved >= self.limit:
+            raise ValueError("reserved must be smaller than limit")
+        return self
+
+
+class ResourceLeaseSpec(Model):
+    owner: str = Field(min_length=1, max_length=256)
+    scope: str = Field(min_length=1, max_length=256)
+    phase: str = Field(min_length=1, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=256)
+    quantities: tuple[QuantityRequirement, ...] = Field(default=(), max_length=32)
+    resources: tuple[ResourceRequirement, ...] = Field(default=(), max_length=32)
+    ttl_seconds: float = Field(default=300, gt=0, le=86400)
+
+    @model_validator(mode="after")
+    def claims(self):
+        if not self.quantities and not self.resources:
+            raise ValueError("A lease requires at least one resource")
+        for claims in (self.quantities, self.resources):
+            if len({item.key for item in claims}) != len(claims):
+                raise ValueError("Resource keys must be unique within each type")
+        return self
 
 
 class UsePolicy(Model):
@@ -162,6 +209,33 @@ class ContinuationPolicy(Model):
     max_model_calls: int = Field(default=4, ge=1, le=12)
     max_output_tokens: int = Field(default=8192, ge=128, le=131072)
     timeout_seconds: float = Field(default=120, gt=0, le=900)
+
+
+class ContextEvidence(Model):
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["context", "artifact"] = "context"
+    reference: str = Field(min_length=1, max_length=160)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ContextMergeSource(Model):
+    thread_id: str
+    revision: int = Field(ge=1)
+    checkpoint_id: str
+    evidence: tuple[ContextEvidence, ...] = Field(min_length=1, max_length=64)
+
+
+class ContextResolution(Model):
+    reference: str
+    reason: str = Field(min_length=1, max_length=4096)
+
+
+class ContextMergeSpec(Model):
+    thread_id: str
+    expected_revision: int = Field(ge=0)
+    sources: tuple[ContextMergeSource, ...] = Field(min_length=1, max_length=16)
+    resolutions: dict[str, ContextResolution] = Field(default_factory=dict, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=256)
 
 
 class TaskSpec(Model):
@@ -351,6 +425,33 @@ class MCPBinding(Model):
     tools: tuple[str, ...] | None = None
 
 
+class MCPInitialization(Model):
+    tool_name: str = Field(min_length=1, max_length=256)
+    arguments: dict = Field(default_factory=dict)
+    connection_state_only: Literal[True]
+
+    @field_validator("arguments")
+    @classmethod
+    def bounded_arguments(cls, value):
+        if len(json_dump(value).encode()) > 65536:
+            raise ValueError("Initialization arguments exceed 64 KiB")
+        return value
+
+
+class MCPResourcePolicy(Model):
+    max_service_calls: int = Field(default=1, ge=1, le=256)
+    reserved_connections: int = Field(default=0, ge=0, le=63)
+    state_mode: Literal["persistent", "stateless", "reinitialize"] = "persistent"
+    idle_seconds: float = Field(default=60, ge=0, le=86400)
+    initialization: tuple[MCPInitialization, ...] = Field(default=(), max_length=8)
+
+    @model_validator(mode="after")
+    def initialization_contract(self):
+        if (self.state_mode == "reinitialize") != bool(self.initialization):
+            raise ValueError("Only reinitialize mode requires deterministic initialization tools")
+        return self
+
+
 class MCPServerConfig(Model):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=120)
@@ -439,6 +540,7 @@ class AgentConfig(Model):
     model: str = Field(default="", max_length=256)
     system_prompt: str = Field(default="", max_length=16384)
     temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     max_output_tokens: int | None = Field(default=4096, ge=1, le=131072)
     context_window_tokens: int | None = Field(default=None, ge=1024, le=2097152)
     context_budget_tokens: int = Field(default=48000, ge=512, le=1048576)
@@ -461,6 +563,13 @@ class AgentConfig(Model):
     def bounded_instructions(cls, value):
         if len(value.encode("utf-8")) > 65536:
             raise ValueError("AGENT.md cannot exceed 64 KiB")
+        return value
+
+    @model_serializer(mode="wrap")
+    def legacy_defaults(self, handler):
+        value = handler(self)
+        if self.reasoning_effort is None:
+            value.pop("reasoning_effort", None)
         return value
 
     @model_validator(mode="after")
@@ -520,8 +629,8 @@ class LLMRequest(Model):
 
     @model_validator(mode="after")
     def bounded_model_input(self):
-        if len(json_dump(self).encode("utf-8")) > 524288:
-            raise ValueError("Model input exceeds 512 KiB")
+        if len(json_dump(self).encode("utf-8")) > MAX_MODEL_REQUEST_BYTES:
+            raise ValueError("Model input exceeds 8 MiB")
         for message in self.messages:
             if message.get("role") not in {
                 "system",
@@ -546,6 +655,18 @@ class LLMResponse(Model):
     tool_calls: list[dict] = Field(default_factory=list)
     finish_reason: str
     usage: dict = Field(default_factory=dict)
+
+
+class BudgetPolicy(Model):
+    """Cumulative limits, shared by an execution lineage; not a price estimate."""
+
+    max_model_calls: int = Field(default=128, ge=1, le=100000)
+    max_input_tokens: int = Field(default=2000000, ge=1, le=1000000000)
+    max_output_tokens: int = Field(default=262144, ge=1, le=1000000000)
+    max_tool_calls: int = Field(default=1024, ge=1, le=1000000)
+    max_elapsed_seconds: int = Field(default=86400, ge=1, le=2592000)
+    max_stalled_model_calls: int = Field(default=6, ge=1, le=128)
+    progress_tools: tuple[str, ...] = Field(default=(), max_length=128)
 
 
 class ExecutionRequest(Model):
@@ -796,6 +917,7 @@ class WorkflowViewport(WorkflowPosition):
 class WorkflowStartConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     input_schema: dict = Field(default_factory=lambda: {"type": "object"})
+    failure_policy: Literal["fail_fast", "collect_independent"] = "fail_fast"
 
 
 class WorkflowAgentConfig(BaseModel):
@@ -823,6 +945,7 @@ class WorkflowMapConfig(BaseModel):
     attempt_timeout_s: float = Field(default=900, gt=0, le=86400)
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_policy: Literal["NEVER", "SAFE_ONLY"] = "NEVER"
+    result_mode: Literal["all_succeeded", "all_settled"] = "all_succeeded"
     tool_policy: UsePolicy = Field(default_factory=UsePolicy)
     skill_policy: UsePolicy = Field(default_factory=UsePolicy)
     result_policy: ResultPolicy = Field(default_factory=ResultPolicy)
@@ -868,6 +991,12 @@ class WorkflowNode(Model):
     @model_validator(mode="after")
     def node_config(self):
         normalized = WORKFLOW_CONFIGS[self.type].model_validate(self.config).model_dump(mode="json")
+        # Old strict clients and creation receipts retain their original graph
+        # shape when the optional execution policies are not selected.
+        if self.type == "start" and normalized.get("failure_policy") == "fail_fast":
+            normalized.pop("failure_policy")
+        if self.type == "map" and normalized.get("result_mode") == "all_succeeded":
+            normalized.pop("result_mode")
         object.__setattr__(self, "config", normalized)
         return self
 

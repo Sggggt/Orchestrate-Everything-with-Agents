@@ -4,6 +4,8 @@ from .client import PlatformClient
 from .errors import RuntimeFault
 from .models import (
     AdapterEvent,
+    CommandEnvelope,
+    BudgetPolicy,
     AgentConfig,
     WorkbenchConfig,
     EnvironmentConfig,
@@ -14,6 +16,10 @@ from .models import (
     UsePolicy,
     ResultPolicy,
     ContinuationPolicy,
+    ContextEvidence,
+    ContextMergeSource,
+    ContextResolution,
+    ContextMergeSpec,
     ArtifactRef,
     CancelReceipt,
     CheckpointProposal,
@@ -23,6 +29,8 @@ from .models import (
     LLMResponse,
     MCPBinding,
     MCPServerConfig,
+    MCPResourcePolicy,
+    MCPInitialization,
     MessageHandle,
     MessageSnapshot,
     MessageSpec,
@@ -30,6 +38,9 @@ from .models import (
     ProbeResult,
     ProjectInfo,
     ResourceRequirement,
+    QuantityRequirement,
+    ResourceCapacity,
+    ResourceLeaseSpec,
     RunSnapshot,
     RuntimeConfig,
     RuntimeEvent,
@@ -52,8 +63,16 @@ from .models import (
     WorkflowNodeRun,
     WorkflowRunSnapshot,
 )
-from .runtime import Runtime
-from .workflows import WorkflowBuilder
+
+
+def __getattr__(name):
+    if name == "Runtime":
+        from .runtime import Runtime
+        return Runtime
+    if name == "WorkflowBuilder":
+        from .workflows import WorkflowBuilder
+        return WorkflowBuilder
+    raise AttributeError(name)
 
 __all__ = [
     "Runtime",
@@ -63,6 +82,9 @@ __all__ = [
     "TaskResult",
     "MessageSpec",
     "ResourceRequirement",
+    "QuantityRequirement",
+    "ResourceCapacity",
+    "ResourceLeaseSpec",
     "AgentConfig",
     "WorkbenchConfig",
     "EnvironmentConfig",
@@ -72,16 +94,24 @@ __all__ = [
     "UsePolicy",
     "ResultPolicy",
     "ContinuationPolicy",
+    "ContextEvidence",
+    "ContextMergeSource",
+    "ContextResolution",
+    "ContextMergeSpec",
     "LLMRequest",
     "LLMResponse",
     "MCPBinding",
     "MCPServerConfig",
+    "MCPResourcePolicy",
+    "MCPInitialization",
     "PlatformClient",
     "AgentDescriptor",
     "CancelReceipt",
     "ProbeResult",
     "ProjectInfo",
     "AdapterEvent",
+    "CommandEnvelope",
+    "BudgetPolicy",
     "ExecutionRequest",
     "InstanceBatchSpec",
     "CheckpointProposal",

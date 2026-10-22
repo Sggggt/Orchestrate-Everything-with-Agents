@@ -194,6 +194,8 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
             result: str
         async def replay(state, runtime):
             context = runtime.context.oea
+            if context.request.payload.get("prepare"):
+                return {"result": "prior completed turn"}
             value = await context.invoke_tool("write_file", {"path": "once.txt", "content": "once"},
                 context.request.task_id + ":stable-call")
             self.assertNotIn("isError", value)
@@ -213,6 +215,9 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
                     rt.adapters["graph"] = adapter(saver)
                     session = await rt.sessions.create()
                     thread = await rt.threads.create(session.id, "graph")
+                    first = await rt.tasks.submit({"session_id": session.id, "thread_id": thread.id,
+                        "agent_id": "graph", "payload": {"prepare": True}, "idempotency_key": "prepare"})
+                    self.assertEqual((await rt.tasks.result(first.id, timeout=5)).output["result"], "prior completed turn")
                     task = await rt.tasks.submit({"session_id": session.id, "thread_id": thread.id,
                         "agent_id": "graph", "payload": {}, "idempotency_key": "durable"})
                     for _ in range(100):

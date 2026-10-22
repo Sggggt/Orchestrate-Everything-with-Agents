@@ -11,7 +11,7 @@ platform_call(area="...", action="...", params={...})
 
 服务名是 `oea`；实际工具前缀以当前工具列表为准。guide 无 action 时只给功能索引，有 action 时只给该操作的参数与关联 schema。不要把标准模式的 platform_describe 或 runtime_call 当成当前紧凑模式工具。
 
-0.3 起提供 projects 管理、summary_markdown 展示和实时摘要；具体动作仍按 guide 查询。三个 MCP 资源分别是 `oea://tool-index`（小型动作索引）、`oea://projects`（可见项目与目录）、`oea://output-contract`（摘要/完整内容约定）。更新宿主与 MCP 桥后重新发现资源，不把旧客户端缓存当作新版本协议。
+当前桥使用 1.1 响应视图；无版本头的旧 HTTP 客户端保留 1.0 视图，无法无损投影的新工作流策略返回 VIEW_VERSION_REQUIRED。具体动作仍按 guide 查询。三个 MCP 资源分别是 `oea://tool-index`（小型动作索引）、`oea://projects`（可见项目与目录）、`oea://output-contract`（摘要/完整内容约定）。更新宿主与 MCP 桥后重新发现资源，不把旧客户端缓存当作新版本协议。
 
 guide 和 call 都返回 `ok`。`ok=true` 的小结果位于 `result`；`ok=false` 读取 `error.code / safe_message`。上游 MCP 结果可能还含 `isError=true`，不能仅看外层 ok 判断业务成功。
 
@@ -26,7 +26,7 @@ guide 和 call 都返回 `ok`。`ok=true` 的小结果位于 `result`；`ok=fals
 }}
 ```
 
-pointer 是 JSON Pointer；对象键里的 `/` 编码成 `~1`，`~` 编码成 `~0`。数组用 `/0` 等索引。`text` 是选中值的 JSON 文本片段，next_offset 为 null 才完整。列表结果可直接选 `/0`，分页结果可选 `/items/0`。查询 schemas 时需要被引用类型，才读取相应 `$defs`。
+pointer 是 JSON Pointer；对象键里的 `/` 编码成 `~1`，`~` 编码成 `~0`。数组用 `/0` 等索引。`text` 是选中值的 JSON 文本片段，next_offset 为 null 才完整。列表结果可直接选 `/0`，分页结果可选 `/items/0`。查询 schemas 的片段含 `$ref` 时一并读取其所需 `$defs`；不要使用缺定义的片段。`mcp.tool` 返回一个完整上游 schema 及协议版本、指纹，避免重新拼出不完整协议。
 
 缓存仅在当前 MCP 进程内保留，默认 10 分钟、总上限 8 MiB。RESULT_EXPIRED 或过大未缓存时，对读取操作缩小范围重查；对写操作先核对持久记录，绝不为了恢复输出再执行写操作。
 
