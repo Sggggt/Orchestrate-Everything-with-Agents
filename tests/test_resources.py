@@ -79,17 +79,25 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
                     await rt.resources.configure({"key": key, "limit": 1})
                 spec = {"owner": "external", "scope": "scope", "phase": "call", "idempotency_key": "first",
                         "quantities": [{"key": "first"}], "ttl_seconds": .02}
-                lease = await rt.resources.request(spec)
-                await rt.resources.tick()
-                await asyncio.sleep(.03)
-                await rt.resources.tick()
-                self.assertEqual((await rt.resources.get(lease["id"]))["state"], "ISOLATED")
-                with self.assertRaises(RuntimeFault) as failure:
-                    await rt.resources.request({**spec, "idempotency_key": "second", "quantities": [{"key": "second"}]})
-                self.assertEqual(failure.exception.code, "QUEUE_FULL")
-                await rt.resources.release_lease(lease["id"], confirmed_stopped=True, evidence="The synthetic owner has finished")
-                next_lease = await rt.resources.request({**spec, "idempotency_key": "second", "quantities": [{"key": "second"}]})
-                self.assertEqual(next_lease["state"], "QUEUED")
+                with patch("ma_runtime.resources.now_ms", return_value=1_000_000) as clock:
+                    lease = await rt.resources.request(spec)
+                    await rt.resources.tick()
+                    granted = await rt.resources.get(lease["id"])
+                    self.assertEqual(granted["state"], "GRANTED")
+                    # Expiry follows the lease clock, independently of event-loop timer resolution.
+                    clock.return_value = granted["expires_at"] - 1
+                    await rt.resources.tick()
+                    self.assertEqual((await rt.resources.get(lease["id"]))["state"], "GRANTED")
+                    clock.return_value = granted["expires_at"]
+                    await rt.resources.tick()
+                    self.assertEqual((await rt.resources.get(lease["id"]))["state"], "ISOLATED")
+                    with self.assertRaises(RuntimeFault) as failure:
+                        await rt.resources.request({**spec, "idempotency_key": "second", "quantities": [{"key": "second"}]})
+                    self.assertEqual(failure.exception.code, "QUEUE_FULL")
+                    await rt.resources.release_lease(lease["id"], confirmed_stopped=True, evidence="The synthetic owner has finished")
+                    next_lease = await rt.resources.request({**spec, "idempotency_key": "second", "quantities": [{"key": "second"}]})
+                    await rt.resources.tick()
+                    self.assertEqual((await rt.resources.get(next_lease["id"]))["state"], "GRANTED")
 
     async def test_unknown_business_outcomes_without_resource_claims_do_not_accumulate_live_owners(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -122,14 +130,25 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
                 run_id = await asyncio.wait_for(worker.started.get(), 5)
                 await rt.resources.configure({"key": "service", "limit": 1})
                 committed, deliver = asyncio.Event(), asyncio.Event()
+                cleanup_committed, finish_cleanup, cleanup_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
                 original_call = rt.store.call
+                original_release = rt.resources.release_run_leases
                 async def delayed_delivery(fn, **options):
                     result = await original_call(fn, **options)
                     if asyncio.current_task().get_name() == "bound-lease-submit" and fn.__name__ == "insert":
                         committed.set()
                         await deliver.wait()
+                    elif fn.__name__ == "stop" and result:
+                        cleanup_committed.set()
+                        await finish_cleanup.wait()
                     return result
-                with patch.object(rt.store, "call", new=delayed_delivery):
+                async def observed_release(*args, **kwargs):
+                    await original_release(*args, **kwargs)
+                    cleanup_finished.set()
+                with (
+                    patch.object(rt.store, "call", new=delayed_delivery),
+                    patch.object(rt.resources, "release_run_leases", new=observed_release),
+                ):
                     submission = asyncio.create_task(rt.resources.request({"owner": run_id, "owner_run_id": run_id,
                         "scope": session.id, "phase": "local", "idempotency_key": "racing", "quantities": [{"key": "service"}]}),
                         name="bound-lease-submit")
@@ -137,16 +156,21 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.wait_for(committed.wait(), 5)
                         worker.release.set()
                         await rt.tasks.result(task.id, timeout=5)
+                        deliver.set()
+                        await asyncio.wait_for(cleanup_committed.wait(), 5)
+                        receipt = await asyncio.wait_for(submission, 5)
+                        # A durable RELEASED row can be visible before local cleanup returns.
+                        self.assertEqual((await rt.resources.get(receipt["id"]))["state"], "RELEASED")
+                        self.assertIn(receipt["id"], rt.resources.pending)
+                        finish_cleanup.set()
+                        await asyncio.wait_for(cleanup_finished.wait(), 5)
+                        self.assertFalse(rt.resources.pending)
+                        self.assertFalse(rt.resources.run_leases)
+                        self.assertNotIn("service", rt.resources.quantities)
                     finally:
                         deliver.set()
+                        finish_cleanup.set()
                         worker.release.set()
-                    receipt = await asyncio.wait_for(submission, 5)
-                    async with asyncio.timeout(5):
-                        while (await rt.resources.get(receipt["id"]))["state"] != "RELEASED":
-                            await asyncio.sleep(.01)
-                self.assertFalse(rt.resources.pending)
-                self.assertFalse(rt.resources.run_leases)
-                self.assertNotIn("service", rt.resources.quantities)
 
     async def test_run_bound_lease_recovers_after_stop_receipt_precedes_lease_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:
