@@ -216,21 +216,18 @@ class ToolGateway:
                 not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
                 uncertain = spec.side_effects != "NONE" and not not_dispatched
                 state = "UNCERTAIN" if uncertain else "FAILED"
+                cause = exc.as_dict() if isinstance(exc, RuntimeFault) else {"code": "TOOL_FAILED", "exception_type": type(exc).__name__}
+                error = self.runtime.vault.redact({"code": "OUTCOME_UNCERTAIN", "category": "tool", "retryable": False,
+                    "safe_message": "Dispatched tool action requires reconciliation",
+                    "details": {"stage": "tool", "tool_call_id": identity, "dispatched": True, "cause": cause}}
+                    if uncertain else cause)
                 if not self.runtime.store.failed and not self.runtime.store.closed:
                     await self.runtime.store.call(
                         lambda db: db.execute(
                             "UPDATE tool_calls SET state=?,error_json=?,updated_at=? WHERE id=?",
                             (
                                 state,
-                                json_dump(
-                                    exc.as_dict() if isinstance(exc, RuntimeFault) and not uncertain else {
-                                        "code": (
-                                            "OUTCOME_UNCERTAIN"
-                                            if uncertain
-                                            else "TOOL_FAILED"
-                                        )
-                                    }
-                                ),
+                                json_dump(error),
                                 now_ms(),
                                 identity,
                             ),
@@ -241,6 +238,7 @@ class ToolGateway:
                     raise RuntimeFault(
                         "OUTCOME_UNCERTAIN",
                         "Dispatched tool action requires reconciliation",
+                        details=error["details"],
                     ) from None
                 if isinstance(exc, asyncio.CancelledError):
                     raise
@@ -253,9 +251,41 @@ class ToolGateway:
                 self.runtime.resources.isolate(
                     owner, "Dispatched tool outcome is uncertain"
                 )
+                if name.startswith("mcp_") and not self.runtime.store.closed:
+                    call = await self.runtime.store.call(lambda db: one(db,
+                        "SELECT id,result_json FROM mcp_calls WHERE run_id=? AND idempotency_key=?",
+                        (caller_run_id, idempotency_key)))
+                    if call:
+                        cached = self.runtime.mcp.result_cache.get(call.id)
+                        result = json.loads(call.result_json) if call.result_json else cached[0] if cached else None
+                        if result is not None:
+                            await self.observe_mcp_response(call.id, result)
             else:
                 self.runtime.resources.release(owner)
             self.runtime.notify()
+
+    async def observe_mcp_response(self, call_id, result):
+        """Settle a mediated receipt from its verified original MCP response, without replay."""
+        from .mcp_service import tool_alias
+        result = self.runtime.mcp.bounded_result(result, self.runtime.config.max_message_bytes - 2048)
+        def observe(db):
+            upstream = one(db, "SELECT c.*,r.state AS resource_state FROM mcp_calls c "
+                           "JOIN mcp_call_resources r ON r.call_id=c.id WHERE c.id=?", (call_id,))
+            if upstream is None or not upstream.run_id or upstream.resource_state != "RELEASED" or upstream.state not in {"SUCCEEDED", "FAILED"}:
+                return None
+            call = one(db, "SELECT * FROM tool_calls WHERE run_id=? AND idempotency_key=? AND tool_name=?",
+                       (upstream.run_id, upstream.idempotency_key, tool_alias(upstream.server_id, upstream.tool_name)))
+            if call is None or call.state not in {"UNCERTAIN", "FAILED", "SUCCEEDED"}:
+                return None
+            if call.state != "SUCCEEDED":
+                db.execute("UPDATE tool_calls SET state='SUCCEEDED',result_json=?,error_json=NULL,updated_at=? WHERE id=?",
+                           (json_dump(result), now_ms(), call.id))
+                emit(db, "tool.observed", run_id=call.run_id, payload={"tool_call_id": call.id, "mcp_call_id": call_id})
+            return call.run_id + ":" + call.id
+        owner = await self.runtime.store.call(observe, transaction=True)
+        if owner is not None:
+            self.runtime.resources.resolve(owner)
+        return owner is not None
 
     async def reconcile(self, tool_call_id, resolution=None):
         from .services import need

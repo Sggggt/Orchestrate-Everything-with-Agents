@@ -19,6 +19,7 @@ from ma_runtime.models import (
     ExecutionRequest,
     LLMRequest,
     LLMResponse,
+    TaskResult,
     json_dump,
 )
 
@@ -78,6 +79,9 @@ class RemoteRunContext:
 
     async def project_context(self, value):
         return await self._call("runtime.context.project", value=value)
+
+    async def retain_partial_result(self, result):
+        return await self._call("runtime.result.retain_partial", result=TaskResult.model_validate(result).model_dump(mode="json"))
 
     async def list_skills(self):
         return await self._call("runtime.skills.list")

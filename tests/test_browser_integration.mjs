@@ -90,6 +90,18 @@ test("execution details merge stage boundaries and keep provider text non-execut
   assert.equal(duration(null), "—");
 });
 
+test("resource recovery details distinguish automatic observation, release and missing stop evidence", () => {
+  const html = executionTrace({ resource_calls: [
+    { tool: "<script>unsafe</script>", recovery_state: "RECOVERING" },
+    { tool: "completed", recovery_state: "RELEASED" },
+    { tool: "unknown", recovery_state: "NEEDS_EVIDENCE" },
+  ] });
+  assert.ok(html.includes("正在自动核验"));
+  assert.ok(html.includes("容量已归还"));
+  assert.ok(html.includes("等待停止证据"));
+  assert.ok(!html.includes("<script>"));
+});
+
 test("execution tree uses recorded parents and reads receipts only through explicit actions", () => {
   const html = executionTrace({ runs: [{ id: "run", attempt: 1, state: "SUCCEEDED" }], items: [
     { id: "model", run_id: "run", stage: "model", state: "SUCCEEDED" },

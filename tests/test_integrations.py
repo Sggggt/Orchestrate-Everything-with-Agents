@@ -616,7 +616,7 @@ class MigrationAndModelTests(unittest.IsolatedAsyncioTestCase):
                         )
                     ]
                 )
-                self.assertEqual(versions, list(range(1, 26)))
+                self.assertEqual(versions, list(range(1, 27)))
                 self.assertTrue((root / "backups/before-schema-2.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-3.sqlite").is_file())
                 self.assertTrue((root / "backups/before-schema-4.sqlite").is_file())

@@ -4,6 +4,8 @@ LangGraph 的上下文、受管工具和检查点接入见[单个参考](../refe
 
 先固定业务目标、输入、输出、可用数据源和验收条件。能从上下文确定的选择自行处理；缺少业务对象或关键凭据时才询问。仅需要提示词与获准工具循环时优先配置内置 LLM Agent；有确定节点、分支、计算或原生图需求时开发 process Agent。
 
+Agent 默认兼容自然语言输入；仅当明确约定为固定业务流程的专用执行端、且启动前必须确定具体业务对象时，才可要求 `case.procedure` 等结构化启动参数。
+
 LLM 凭据缺失不阻塞代码开发和离线测试。只有模型能力或供应商选择影响业务设计时才询问；API 密钥留给用户在前端配置，不要求在聊天中提供。
 
 ## 代码与协议
@@ -17,8 +19,10 @@ LLM 凭据缺失不阻塞代码开发和离线测试。只有模型能力或供�
 - `await context.llm.info()` 返回这次执行的非秘密模型配置。complete 默认合入 system_prompt 和 AGENT.md；Skills 正文仍由执行端按需读取。需要单独控制某个节点的系统消息时可设 include_instructions=false。模型返回的工具调用不会自动执行，仍须通过获准的 RunContext 工具执行。
 - 模型配置修改影响后续 run，同一 run 中的多个节点保持同一份配置快照。无需模型的确定性执行端保持 llm_required=false。协议按需查询 development.llm_request / llm_response；完整示例见 examples/model_agent.py。
 - MCP 工具通过 `context.list_tools` / `context.invoke_tool`，使用返回的稳定工具别名。不要在子进程中自行读取平台 token，或创建管理员 PlatformClient 绕开该 run 的授权。
+- 工具键按 task 与逻辑步骤区分，例如 `request.task_id + ':read-source'`；同一动作恢复沿用原键，不同任务不能共用固定字面量或借用旧回执。
 - `context.send_message`、`submit_task` 的作用域由平台验证。等待其他工作时提交 suspended 边界释放执行槽；不要自建不受平台计数的子 Agent 池。
 - stdout 只承载 JSONL，日志写 stderr。最终必须产生一次 completed 或 suspended 边界；异常不能伪装成成功。
+- 有部分成果后发生错误时，先 `await context.retain_partial_result(TaskResult(...))` 保存受管局部交付，再沿原异常通道上报；不要为了保存证据返回普通 completed 或只写 ready=false。该方法不表示业务成功，也不重置预算。
 - JSONL 是 SDK 传输协议，模型正文无需 JSON。用 `TaskResult(output={"text":完整Markdown}, summary_markdown=摘要)` 分开完整协作内容与前端展示。不因 Markdown 排版差异或缺少标题进行格式修复重试。
 - `context.llm.complete(..., emit_progress=True)` 流式展示摘要；建议先写任务、行动、结论，再以 `<!-- agent:details -->` 分隔完整内容。标记是可选展示约定，缺少时平台截取有界摘要；完整正文照常保留。
 - `request.project_id`、`request.project_folder` 是当前会话的项目快照。不得用另一个项目的 Agent 或连接替代当前目标。

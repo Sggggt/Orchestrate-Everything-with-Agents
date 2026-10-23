@@ -986,8 +986,9 @@ class Tasks:
     async def continue_result(self, task_id, idempotency_key, content=""):
         return await self.rt.continuations.begin(task_id, idempotency_key, content)
 
-    async def trace(self, task_id, cursor=None, limit=50):
+    async def trace(self, task_id, cursor=None, limit=50, include_resources=False):
         """Bounded execution evidence without loading prompts or complete results."""
+        require(type(include_resources) is bool, "INVALID_REQUEST", "include_resources must be boolean")
         limit = min(100, max(1, int(limit)))
         def read(db):
             task = need(db, "tasks", task_id)
@@ -995,7 +996,7 @@ class Tasks:
                           (task_id, int(cursor or 0), limit + 1))
             attempts = rows(db, "SELECT id,attempt_no,state,started_at,ended_at,error_json,boundary_receipt_json FROM runs WHERE task_id=? ORDER BY attempt_no", (task_id,))
             tools = rows(db, "SELECT c.id,c.run_id,c.tool_name,c.state,c.created_at,c.updated_at,c.error_json,c.parent_stage_id FROM tool_calls c JOIN runs r ON r.id=c.run_id WHERE r.task_id=? ORDER BY c.created_at,c.id LIMIT ?", (task_id, limit + 1)) if cursor is None else []
-            return {"task_id": task_id, "state": task.state, "queue_reason": task.queue_reason,
+            value = {"task_id": task_id, "state": task.state, "queue_reason": task.queue_reason,
                     "queued_ms": max(0, (attempts[0].started_at if attempts else task.updated_at if task.state in TERMINAL else now_ms()) - task.created_at),
                     "items": [{"seq": row.seq, "run_id": row.run_id, **json.loads(row.payload_json)} for row in stages[:limit]],
                     "cursor": str(stages[min(limit, len(stages)) - 1].seq) if stages else cursor,
@@ -1011,6 +1012,16 @@ class Tasks:
                     "tools": [{"id": call.id, "run_id": call.run_id, "tool": call.tool_name, "state": call.state, "parent_stage_id": call.parent_stage_id,
                                "duration_ms": call.updated_at - call.created_at if call.state not in {"PENDING", "DISPATCHED", "UNCERTAIN"} else None,
                                "error": json.loads(call.error_json) if call.error_json else None} for call in tools[:limit]]}
+            if include_resources:
+                resources = rows(db, "SELECT c.id,c.run_id,c.tool_name,c.state,c.error_json,x.state AS resource_state FROM mcp_calls c "
+                                 "JOIN runs r ON r.id=c.run_id JOIN mcp_call_resources x ON x.call_id=c.id "
+                                 "WHERE r.task_id=? ORDER BY c.started_at DESC,c.id DESC LIMIT ?", (task_id, limit + 1))
+                value["resource_calls"] = [{"call_id": item.id, "run_id": item.run_id, "tool": item.tool_name,
+                    "state": item.state, "resource_state": item.resource_state,
+                    "recovery_state": self.rt.mcp.capacity.recovery_state(item.id, item.resource_state),
+                    "error": json.loads(item.error_json) if item.error_json else None} for item in resources[:limit]]
+                value["resources_has_more"] = len(resources) > limit
+            return value
         return await self.rt.store.call(read)
 
     async def progress(self, task_id):

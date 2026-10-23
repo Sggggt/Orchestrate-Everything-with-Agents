@@ -29,6 +29,12 @@ class _Namespace:
 
 
 class ResourceClient(_Namespace):
+    async def status(self, scope=None, *, cursor=None, limit=25):
+        return await self.call("status", scope=scope, cursor=cursor, limit=limit)
+
+    async def recover(self, owner_id, idempotency_key):
+        return await self.call("recover", owner_id=owner_id, idempotency_key=idempotency_key)
+
     async def inspect(self):
         return await self.call("inspect")
 
@@ -114,6 +120,10 @@ class AdmissionClient(_Namespace):
 
 
 class MCPClient(_Namespace):
+    async def get_call(self, call_id=None, *, server_id=None, consumer_id=None, idempotency_key=None):
+        return await super().call("get_call", call_id=call_id, server_id=server_id,
+                                  consumer_id=consumer_id, idempotency_key=idempotency_key)
+
     async def catalog(self, server_id, *, cursor=None, limit=25):
         return await super().call("catalog", server_id=server_id, cursor=cursor, limit=limit)
 
@@ -497,6 +507,10 @@ class WorkflowClient(_Namespace):
 
     async def get_repair(self, run_id):
         return await self.call("get_repair", run_id=run_id)
+
+    async def preview_repair(self, source_run_id, *, inputs=None, expected_revision=None, rerun_nodes=()):
+        return await self.call("preview_repair", source_run_id=source_run_id, inputs=inputs,
+                               expected_revision=expected_revision, rerun_nodes=list(rerun_nodes))
 
     async def runs(self, workflow_id, **options):
         return await self.call("runs", workflow_id=workflow_id, **options)

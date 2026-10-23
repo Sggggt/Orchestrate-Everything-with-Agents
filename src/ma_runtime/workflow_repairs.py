@@ -42,6 +42,93 @@ class WorkflowRepairs:
                     row[field] = inherited
         return result
 
+    def plan(self, db, source, inputs, expected_revision, rerun_nodes):
+        resolve_project(db, source.project_id)
+        require(source.state in TERMINAL and source.ended_at is not None, "SOURCE_UNSETTLED", "Repair only a terminal workflow after unknown execution is resolved")
+        require(need(db, "sessions", source.session_id).state == "OPEN", "SESSION_CLOSED", "Repair requires an open source session")
+        workflow = need(db, "workflows", source.workflow_id)
+        self.rt.workflows._available(db, workflow.id)
+        require(workflow.state == "ACTIVE", "INVALID_STATE", "Restore the workflow before repair")
+        require(expected_revision is None or type(expected_revision) is int and workflow.revision == expected_revision,
+                "REVISION_CONFLICT", "Definition changed; select its current revision explicitly")
+        graph_json = workflow.graph_json if expected_revision is not None else source.graph_json
+        graph = WorkflowGraph.model_validate_json(graph_json)
+        report = self.rt.workflows._validation(db, source.project_id, graph)
+        require(report["valid"], "INVALID_WORKFLOW", "Repair graph is invalid", details=report)
+        values = inputs if inputs is not None else json.loads(source.inputs_json)
+        try:
+            Draft202012Validator(next(node.config["input_schema"] for node in graph.nodes if node.type == "start")).validate(values)
+        except (ValidationError, RecursionError):
+            raise RuntimeFault("INVALID_INPUT", "Repair input does not match the start schema") from None
+        previous = {node.id: node for node in WorkflowGraph.model_validate_json(source.graph_json).nodes}
+        nodes = {node.node_id: node for node in self.node_rows(db, source.id)}
+        require(isinstance(rerun_nodes, (list, tuple)) and all(isinstance(node, str) for node in rerun_nodes),
+                "INVALID_REQUEST", "Choose node IDs to rerun")
+        require(set(rerun_nodes) <= {node.id for node in graph.nodes}, "INVALID_REQUEST", "A selected repair node is absent from the graph")
+        from .workflows import references
+        old_inputs = json.loads(source.inputs_json)
+        changed_inputs = {name for name in set(values) | set(old_inputs)
+                          if values.get(name) != old_inputs.get(name) or (name in values) != (name in old_inputs)}
+        old_edges = {(edge.source, edge.target, edge.source_handle) for edge in WorkflowGraph.model_validate_json(source.graph_json).edges}
+        new_edges = {(edge.source, edge.target, edge.source_handle) for edge in graph.edges}
+        invalid = set(rerun_nodes) | {target for _, target, _ in old_edges ^ new_edges}
+        for node in graph.nodes:
+            old = nodes.get(node.id)
+            if old is None or node.type != previous[node.id].type or node.config != previous[node.id].config or old.state not in {"SUCCEEDED", "SKIPPED"}:
+                invalid.add(node.id)
+            if changed_inputs and node.type != "start" and any(path == "inputs" or path.startswith("inputs.")
+                    and path.split(".")[1] in changed_inputs for path in references(node.config)):
+                invalid.add(node.id)
+            if old and old.type == "map" and old.batch_id and self.map_snapshot(db, source.id, node.id, old.batch_id)["state"] != "SUCCEEDED":
+                invalid.add(node.id)
+        pending = list(invalid)
+        while pending:
+            parent = pending.pop()
+            for edge in graph.edges:
+                if edge.source == parent and edge.target not in invalid:
+                    invalid.add(edge.target)
+                    pending.append(edge.target)
+        if changed_inputs:
+            invalid.update(node.id for node in graph.nodes if node.type == "start")
+        return workflow, graph_json, graph, values, nodes, invalid, changed_inputs
+
+    async def preview(self, source_run_id, *, inputs=None, expected_revision=None, rerun_nodes=()):
+        inputs = self.rt.clean_json(inputs) if inputs is not None else None
+        require(inputs is None or isinstance(inputs, dict), "INVALID_REQUEST", "Repair inputs must be a JSON object")
+        def read(db):
+            source = need(db, "workflow_runs", source_run_id)
+            workflow, graph_json, graph, values, nodes, invalid, changed = self.plan(db, source, inputs, expected_revision, rerun_nodes)
+            from .workflows import references, resolve
+            scope = {"inputs": values, "nodes": {key: json.loads(node.output_json) for key, node in nodes.items()
+                     if key not in invalid and node.state == "SUCCEEDED" and node.output_json}}
+            member_plans = []
+            for spec in graph.nodes:
+                if spec.type != "map" or spec.id not in invalid:
+                    continue
+                member_plan = {"node_id": spec.id, "status": "UNKNOWN", "reason": "upstream_output_unavailable"}
+                # A default reference must not pretend an invalidated upstream value is known.
+                refs = references({key: spec.config[key] for key in ("items", "payload")})
+                if not any(path.startswith("nodes.") and path.split(".")[1] in invalid for path in refs):
+                    try:
+                        items = resolve(spec.config["items"], scope)
+                        require(isinstance(items, list) and len(items) <= 128, "INVALID_INPUT", "Map input must be a list of at most 128 items")
+                        payloads = [resolve(spec.config["payload"], {**scope, "item": item, "index": index})
+                                    for index, item in enumerate(items)]
+                    except RuntimeFault as exc:
+                        if exc.code != "VARIABLE_NOT_FOUND":
+                            raise
+                    else:
+                        reusable, reason = ({}, "explicit_rerun") if spec.id in rerun_nodes else self.member_candidates(db, source, spec, payloads)
+                        member_plan.update(status="KNOWN", reason=reason, member_count=len(payloads),
+                            reusable_ordinals=sorted(reusable), rerun_ordinals=[index for index in range(len(payloads)) if index not in reusable])
+                member_plans.append(member_plan)
+            return {"source_run_id": source_run_id, "revision": workflow.revision if expected_revision is not None else source.revision,
+                    "invalidated_nodes": sorted(invalid), "reuse_candidates": sorted(set(nodes) & {node.id for node in graph.nodes} - invalid),
+                    "map_members": member_plans,
+                    "changed_input_keys": sorted(changed), "snapshot_hash": content_hash({"graph": graph_json, "inputs": values}),
+                    "reservation": False, "note": "Creation rechecks authorization and current state; rerun_nodes is not an invalidation upper bound"}
+        return await self.rt.store.call(read)
+
     async def repair(self, source_run_id, idempotency_key, *, inputs=None, expected_revision=None, rerun_nodes=()):
         self.rt.admit()
         self.rt.workflows._key(idempotency_key)
@@ -55,50 +142,7 @@ class WorkflowRepairs:
             if prior:
                 require(prior.request_hash == digest, "IDEMPOTENCY_CONFLICT", "Repair key has different input")
                 return self.rt.workflows._handle(prior, reused=True)
-            resolve_project(db, source.project_id)
-            require(source.state in TERMINAL and source.ended_at is not None, "SOURCE_UNSETTLED", "Repair only a terminal workflow after unknown execution is resolved")
-            require(need(db, "sessions", source.session_id).state == "OPEN", "SESSION_CLOSED", "Repair requires an open source session")
-            workflow = need(db, "workflows", source.workflow_id)
-            self.rt.workflows._available(db, workflow.id)
-            require(workflow.state == "ACTIVE", "INVALID_STATE", "Restore the workflow before repair")
-            require(expected_revision is None or type(expected_revision) is int and workflow.revision == expected_revision,
-                    "REVISION_CONFLICT", "Definition changed; select its current revision explicitly")
-            graph_json = workflow.graph_json if expected_revision is not None else source.graph_json
-            graph = WorkflowGraph.model_validate_json(graph_json)
-            report = self.rt.workflows._validation(db, source.project_id, graph)
-            require(report["valid"], "INVALID_WORKFLOW", "Repair graph is invalid", details=report)
-            values = inputs if inputs is not None else json.loads(source.inputs_json)
-            try:
-                Draft202012Validator(next(node.config["input_schema"] for node in graph.nodes if node.type == "start")).validate(values)
-            except (ValidationError, RecursionError):
-                raise RuntimeFault("INVALID_INPUT", "Repair input does not match the start schema") from None
-            previous = {node.id: node for node in WorkflowGraph.model_validate_json(source.graph_json).nodes}
-            nodes = {node.node_id: node for node in self.node_rows(db, source.id)}
-            keyed = {node.id: node for node in graph.nodes}
-            require(set(rerun_nodes) <= set(keyed), "INVALID_REQUEST", "A selected repair node is absent from the graph")
-            from .workflows import references
-            old_inputs = json.loads(source.inputs_json)
-            changed_inputs = {name for name in set(values) | set(old_inputs) if values.get(name) != old_inputs.get(name) or (name in values) != (name in old_inputs)}
-            old_edges = {(edge.source, edge.target, edge.source_handle) for edge in WorkflowGraph.model_validate_json(source.graph_json).edges}
-            new_edges = {(edge.source, edge.target, edge.source_handle) for edge in graph.edges}
-            invalid = set(rerun_nodes) | {target for _, target, _ in old_edges ^ new_edges}
-            for node in graph.nodes:
-                old = nodes.get(node.id)
-                if old is None or node.type != previous[node.id].type or node.config != previous[node.id].config or old.state not in {"SUCCEEDED", "SKIPPED"}:
-                    invalid.add(node.id)
-                if changed_inputs and node.type != "start" and any(path == "inputs" or path.startswith("inputs.") and path.split(".")[1] in changed_inputs for path in references(node.config)):
-                    invalid.add(node.id)
-                if old and old.type == "map" and old.batch_id and self.map_snapshot(db, source.id, node.id, old.batch_id)["state"] != "SUCCEEDED":
-                    invalid.add(node.id)
-            pending = list(invalid)
-            while pending:
-                parent = pending.pop()
-                for edge in graph.edges:
-                    if edge.source == parent and edge.target not in invalid:
-                        invalid.add(edge.target)
-                        pending.append(edge.target)
-            if changed_inputs:
-                invalid.update(node.id for node in graph.nodes if node.type == "start")
+            workflow, graph_json, graph, values, nodes, invalid, _ = self.plan(db, source, inputs, expected_revision, rerun_nodes)
             require(one(db, "SELECT COUNT(*) AS count FROM workflow_runs WHERE ended_at IS NULL").count < 128,
                     "QUEUE_FULL", "Too many live workflow runs")
             identity, stamp = new_id("wfr"), now_ms()
@@ -147,14 +191,18 @@ class WorkflowRepairs:
         if not repair or spec.id in json.loads(repair.rerun_nodes_json):
             return {}
         source = need(db, "workflow_runs", repair.source_run_id)
+        return self.member_candidates(db, source, spec, payloads)[0]
+
+    def member_candidates(self, db, source, spec, payloads):
+        """Shared read-only member decision for preview and actual repair admission."""
         old_spec = next((node for node in WorkflowGraph.model_validate_json(source.graph_json).nodes if node.id == spec.id), None)
         old_node = one(db, "SELECT * FROM workflow_node_runs WHERE run_id=? AND node_id=?", (source.id, spec.id))
         if not old_spec or not old_node:
-            return {}
+            return {}, "no_source_node"
         old_config = {key: value for key, value in old_spec.config.items() if key != "result_policy"}
         new_config = {key: value for key, value in spec.config.items() if key != "result_policy"}
         if old_config != new_config:
-            return {}
+            return {}, "map_contract_changed"
         policy_changed = old_spec.config.get("result_policy") != spec.config.get("result_policy")
         result = {}
         for member in self.map_snapshot(db, source.id, spec.id, old_node.batch_id)["instances"]:
@@ -172,7 +220,7 @@ class WorkflowRepairs:
                         if error:
                             continue
                     result[ordinal] = {"task_id": task.id, "source_run_id": member.get("source_run_id") or source.id, "result_hash": content_hash(json.loads(task.result_json))}
-        return result
+        return result, "matching_successful_payloads"
 
     def bind_members(self, db, run_id, node_id, reusable, batch, count):
         remaining = iter(batch["instances"] if batch else ())

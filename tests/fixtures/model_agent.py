@@ -21,6 +21,9 @@ class Fixture:
         )
 
     async def execute(self, request, context):
+        if request.payload.get("retain_partial_failure"):
+            await context.retain_partial_result(TaskResult(output={"text": "Retained process phase evidence", "facts": ["local phase"]}))
+            raise RuntimeFault("LOCAL_PHASE_FAILED", "A later local phase failed")
         info = await context.llm.info()
         try:
             if request.payload.get("tamper"):

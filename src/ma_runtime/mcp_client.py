@@ -9,10 +9,19 @@ import time
 import httpx
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from dataclasses import dataclass
 
 from .brand import VERSION
 from .errors import RuntimeFault, require
 from .models import MCPServerConfig
+
+
+@dataclass
+class MCPRequest:
+    future: asyncio.Future
+    operation_id: str | None = None
+    dispatched: bool = False
+    replied: bool = False
 
 
 class MCPConnection:
@@ -23,7 +32,7 @@ class MCPConnection:
     tears down another consumer's shared transport.
     """
 
-    def __init__(self, config: MCPServerConfig, credentials: dict, *, default_cwd=None):
+    def __init__(self, config: MCPServerConfig, credentials: dict, *, default_cwd=None, recovery_timeout_seconds=30):
         self.config = config.model_copy(deep=True)
         self.credentials = credentials
         self.default_cwd = str(default_cwd) if default_cwd else None
@@ -43,6 +52,8 @@ class MCPConnection:
         self.initialized = False
         self.initialization_lock = asyncio.Lock()
         self.resource_owner = ""
+        self.recovery_timeout_seconds = recovery_timeout_seconds
+        self.operations: dict[str, MCPRequest] = {}
 
     async def start(self):
         if self.task is None:
@@ -93,7 +104,7 @@ class MCPConnection:
                             self.config.url,
                             headers=self.credentials.get("headers") or None,
                             timeout=self.config.startup_timeout_seconds,
-                            sse_read_timeout=self.config.timeout_seconds,
+                            sse_read_timeout=self.config.timeout_seconds + self.recovery_timeout_seconds,
                         )
                     else:
                         http = await stack.enter_async_context(
@@ -104,7 +115,7 @@ class MCPConnection:
                                     self.config.startup_timeout_seconds,
                                     read=max(
                                         self.config.startup_timeout_seconds,
-                                        self.config.timeout_seconds,
+                                        self.config.timeout_seconds + self.recovery_timeout_seconds,
                                     ),
                                 ),
                                 follow_redirects=False,
@@ -121,7 +132,7 @@ class MCPConnection:
                             read_timeout_seconds=timedelta(
                                 seconds=max(
                                     self.config.startup_timeout_seconds,
-                                    self.config.timeout_seconds,
+                                    self.config.timeout_seconds + self.recovery_timeout_seconds,
                                 )
                             ),
                             client_info=Implementation(
@@ -139,11 +150,12 @@ class MCPConnection:
                         job = await self.queue.get()
                         if job is None:
                             break
-                        future, method, params = job
+                        request, method, params = job
+                        future = request.future
                         if future.cancelled():
                             continue
                         task = group.create_task(
-                            self._request(session, future, method, params)
+                            self._request(session, request, method, params)
                         )
                         self.children.add(task)
                         task.add_done_callback(self.children.discard)
@@ -167,16 +179,19 @@ class MCPConnection:
             error = self.error or RuntimeFault(
                 "MCP_DISCONNECTED", "MCP connection has closed"
             )
-            for future in tuple(self.pending):
+            for future in self.pending | {request.future for request in self.operations.values()}:
                 if not future.done():
                     future.set_exception(error)
 
-    async def _request(self, session, future, method, params):
+    async def _request(self, session, request, method, params):
+        future = request.future
         try:
             async with self.slots:
                 if future.cancelled():
                     return
-                async with asyncio.timeout(self.config.timeout_seconds):
+                request.dispatched = True
+                timeout = self.config.timeout_seconds + (self.recovery_timeout_seconds if request.operation_id else 0)
+                async with asyncio.timeout(timeout):
                     if method == "tools/list":
                         value = await session.list_tools(cursor=params.get("cursor"))
                     elif method == "tools/call":
@@ -201,6 +216,7 @@ class MCPConnection:
                         raise RuntimeFault(
                             "METHOD_NOT_FOUND", "Unsupported MCP client method"
                         )
+                request.replied = True
                 if not future.done():
                     future.set_result(
                         value.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -225,21 +241,43 @@ class MCPConnection:
                     )
                 )
 
-    async def request(self, method, params=None):
+    @staticmethod
+    def consume_request(future):
+        if not future.cancelled():
+            future.exception()
+
+    async def request(self, method, params=None, *, operation_id=None):
         await self.start()
         require(self.active < 128, "MCP_QUEUE_FULL", "MCP connection has reached its bounded pending-request limit",
                 retryable=True, details={"dispatched": False})
         future = asyncio.get_running_loop().create_future()
+        future.add_done_callback(self.consume_request)
+        request = MCPRequest(future, operation_id)
+        if operation_id:
+            self.operations[operation_id] = request
         self.pending.add(future)
         self.active += 1
         self.last_used = time.monotonic()
         try:
-            self.queue.put_nowait((future, method, params or {}))
-            return await future
+            self.queue.put_nowait((request, method, params or {}))
+            try:
+                async with asyncio.timeout(self.config.timeout_seconds):
+                    result = await asyncio.shield(future)
+            except TimeoutError:
+                raise RuntimeFault("MCP_TIMEOUT", "MCP request exceeded its response deadline",
+                                   details={"dispatched": request.dispatched}) from None
+            if operation_id:
+                self.operations.pop(operation_id, None)
+            return result
         except asyncio.QueueFull:
             raise RuntimeFault("MCP_QUEUE_FULL", "MCP connection request queue is full", retryable=True,
                                details={"dispatched": False}) from None
         finally:
+            if not operation_id or not request.dispatched:
+                if not future.done():
+                    future.cancel()
+                if operation_id:
+                    self.operations.pop(operation_id, None)
             self.active -= 1
             self.last_used = time.monotonic()
             self.pending.discard(future)

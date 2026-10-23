@@ -285,6 +285,19 @@ class ModelConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.result.output["text"], "first-model:v1")
         self.assertNotIn("Untrusted adapter detail", json_dump(saved.error))
 
+    async def test_process_sdk_retains_structured_partial_result_without_fabricating_completion(self):
+        from ma_runtime.errors import RuntimeFault
+        await self.rt.agents.configure(self.config())
+        task = await self.submit({"retain_partial_failure": True})
+        with self.assertRaises(RuntimeFault):
+            await self.rt.tasks.result(task.id, timeout=15)
+        saved = await self.rt.tasks.get(task.id)
+        self.assertEqual(saved.state, "FAILED")
+        self.assertEqual(saved.error["code"], "LOCAL_PHASE_FAILED")
+        self.assertEqual(saved.result.output["text"], "Retained process phase evidence")
+        self.assertEqual(saved.result.output["facts"], ["local phase"])
+        self.assertIsNone(saved.runs[0].boundary_receipt)
+
     async def test_model_changes_apply_to_new_runs_and_not_running_nodes(self):
         await self.rt.agents.configure(self.config(reasoning_effort="low"), api_key="old-fixture-key")
         task = await self.submit({"input": "hold first node", "twice": True})

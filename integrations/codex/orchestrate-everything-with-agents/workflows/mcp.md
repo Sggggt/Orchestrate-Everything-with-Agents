@@ -21,7 +21,7 @@
 3. 按已授权业务目标调用 `mcp.call {server_id, tool_name, arguments, consumer_id, idempotency_key}`。一次调用一个工具；检查平台 `ok` 和上游结果 `isError`。
 4. 需要核对时 `mcp.calls {server_id, limit:25}`，沿用调用 ID 和幂等键；不因超时换键重试。
 
-当前 calls 接口最多返回最近 200 条，尚无按幂等键精准查询或历史分页，也不返回原始参数和幂等键。只在已有调用 ID、工具名、consumer 和时间等证据能唯一定位时匹配记录。仅知道原键而无法定位、记录已超出窗口或外部效果未知时，说明缺少的证据并停止重放；不能猜参数、直接读数据库绕过接口或把 tasks.reconcile 用于独立 MCP 调用。
+`mcp.get_call` 通过 call_id，或 server_id、consumer_id 与原 idempotency_key 精确读取回执、错误、资源状态和保留结果。calls 仍是最多 200 条的简短目录；不从相似时间/名称猜匹配。结果未保留或外部效果未知时不重放，不直接读数据库绕过接口，也不把 tasks.reconcile 用于独立 MCP 调用。
 
 `consumer_id` 使用本次对话稳定且与其他独立对话不同的值。consumer 模式隔离上游会话，shared 模式刻意共享状态；共享配置不等于所有客户端应共用当前项目选择。有项目选择或浏览器状态的服务使用 consumer 隔离，并显式选择当前目标。
 
@@ -29,7 +29,7 @@
 
 本地 JSON Schema 合法、OEA 帧/模型输入可容纳、供应商接受工具格式、上游执行业务成功是不同检查。缓存目录只证明曾完成发现；递归 schema 保留完整定义，不为缩短输入切掉必要引用。
 
-容量由 `mcp.policy` 查看，变更用 configure_policy；服务调用数、单连接调用数和连接数共同限制工具、资源和提示调用。未知/超时在实际停止前保留占用；真实停止证据齐全才用 `mcp.reconcile_capacity` 解除隔离。
+容量由 `mcp.policy` 查看，变更用 configure_policy；服务调用数、单连接调用数和连接数共同限制工具、资源和提示调用。取消/超时后原请求可在 recovery_timeout_seconds 的有界窗口内继续被宿主观察；终结响应自动归还对应容量，不重放业务。窗口结束仍无证据则保留隔离，按运维流程请求 resources.recover；旧 reconcile_capacity 仅作明确的管理员补救，不由 LLM 猜测停止事实。
 
 ## 授权、资源和提示
 

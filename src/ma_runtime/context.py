@@ -3,7 +3,7 @@
 import asyncio
 
 from .errors import RuntimeFault, require
-from .models import InstanceBatchSpec, MessageSpec, TaskSpec, new_id, content_hash
+from .models import InstanceBatchSpec, MessageSpec, TaskSpec, TaskResult, new_id, content_hash, json_dump, now_ms
 
 
 class RunContext:
@@ -62,6 +62,18 @@ class RunContext:
         from .chat_history import READ_HISTORY_TOOL
         history = [READ_HISTORY_TOOL] if (self.request.resume_ref or {}).get("history_truncated") else []
         return {**self._mcp_tools, "tools": [*self._mcp_tools["tools"], *self._runtime.workbench.catalog(self.request), READ_CONTEXT_TOOL, *history]}
+
+    async def retain_partial_result(self, result):
+        value = result.model_dump(mode="json") if isinstance(result, TaskResult) else result
+        result = TaskResult.model_validate(self._runtime.vault.redact(self._runtime.clean_json(value, limit=524288)))
+        def retain(db):
+            self._runtime.check_run(db, self.request.run_id)
+            self._runtime.check_artifacts(db, self.request.session_id, result.artifact_ids)
+            db.execute("INSERT INTO run_partial_results VALUES(?,?,?) ON CONFLICT(run_id) DO UPDATE SET result_json=excluded.result_json,updated_at=excluded.updated_at",
+                       (self.request.run_id, json_dump(result), now_ms()))
+        await self._runtime.store.call(retain, transaction=True)
+        self.partial_model_result = result
+        return {"retained": True, "run_id": self.request.run_id}
 
     async def read_history(self, cursor=None, limit=20):
         await self._charge_tool("read_history")

@@ -118,6 +118,7 @@ class StoreActor:
             Path(__file__).with_name("schema-23.sql"),
             Path(__file__).with_name("schema-24.sql"),
             Path(__file__).with_name("schema-25.sql"),
+            Path(__file__).with_name("schema-26.sql"),
         ]
         scripts = [source.read_text(encoding="utf-8") for source in sources]
         checksums = [hashlib.sha256(script.encode()).hexdigest() for script in scripts]

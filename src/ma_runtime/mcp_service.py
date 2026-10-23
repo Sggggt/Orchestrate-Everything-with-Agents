@@ -75,6 +75,7 @@ class MCPRegistry:
         self.result_cache = OrderedDict()
         self.result_cache_bytes = 0
         self.closing = False
+        self.reconfiguring = set()
         from .mcp_resources import MCPResources
         self.capacity = MCPResources(self)
 
@@ -372,13 +373,17 @@ class MCPRegistry:
                 "RESOURCE_BUSY",
                 "MCP calls are still running",
             )
-            await asyncio.gather(*(c.aclose() for c in clients))
             for client in clients:
-                self.rt.resources.release(client.resource_owner)
+                client.closing = True
+        await asyncio.gather(*(asyncio.shield(self.capacity.closures[c.resource_owner]) if c.resource_owner in self.capacity.closures
+                               else c.aclose() for c in clients))
+        async with self.lock:
             self.connections = {
-                k: c for k, c in self.connections.items() if k[0] != server_id
+                k: c for k, c in self.connections.items() if c not in clients
             }
             self.errors.pop(server_id, None)
+        for client in clients:
+            await self.capacity.connection_closed(client)
         return await self.get(server_id)
 
     def _consumer(self, consumer_id):
@@ -395,30 +400,40 @@ class MCPRegistry:
         require(not self.closing, "RUNTIME_CLOSING", "MCP manager is closing")
         config = self._config(server_id)
         require(config.enabled, "MCP_DISABLED", "This MCP server is disabled")
+        require(server_id not in self.reconfiguring, "MCP_CONFIG_CHANGED", "MCP connection policy is being changed", details={"dispatched": False})
         key = (server_id, "shared" if config.session_scope == "shared" else consumer)
-        _, connection_key, owner = self.capacity.define(config, consumer)
-        require(owner not in self.capacity.uncertain_connections or (key in self.connections and not self.connections[key].closed),
+        _, connection_key, owner_key = self.capacity.define(config, consumer)
+        require(not any(held == owner_key or held.startswith(owner_key + ":") for held in self.capacity.uncertain_connections)
+                or (key in self.connections and not self.connections[key].closed),
                 "OUTCOME_UNCERTAIN", "Previous calls on this consumer require stop confirmation before rebuilding its connection")
+        owner = None
         try:
             async with asyncio.timeout(config.startup_timeout_seconds):
                 while True:
                     self.rt.resources.changed.clear()
                     async with self.lock:
-                        require(self._config(server_id) == config and config.enabled, "MCP_CONFIG_CHANGED", "MCP configuration changed during connection admission")
-                        await self.capacity.reclaim(server_id)
+                        require(self._config(server_id) == config and config.enabled and server_id not in self.reconfiguring, "MCP_CONFIG_CHANGED", "MCP configuration changed during connection admission")
                         client = self.connections.get(key)
-                        if client is not None:
+                        if client is not None and not client.closed and not client.closing:
                             client.pins += 1
                             break
-                        claim = (QuantityRequirement(key=connection_key),)
-                        if not self.rt.resources.can_acquire(owner, (), claim):
-                            await self.capacity.reclaim(server_id, pressure=True)
-                        if self.rt.resources.acquire(owner, (), claim):
+                    if owner is None:
+                        owner = owner_key + ":" + new_id("generation")
+                    claim = (QuantityRequirement(key=connection_key),)
+                    await self.capacity.reclaim(server_id, pressure=not self.rt.resources.can_acquire(owner, (), claim))
+                    async with self.lock:
+                        require(self._config(server_id) == config and config.enabled and server_id not in self.reconfiguring, "MCP_CONFIG_CHANGED", "MCP configuration changed during connection admission")
+                        client = self.connections.get(key)
+                        if client is not None and not client.closed and not client.closing:
+                            client.pins += 1
+                            break
+                        if client is None and self.rt.resources.acquire(owner, (), claim):
                             credentials = {group: {name: self.rt.vault.get(ref) for name, ref in values.items()}
                                            for group, values in self.credentials.get(server_id, {}).items()}
                             workspace = safe_child(self.rt.root, f"mcp-workspaces/{server_id}/{hashlib.sha256(key[1].encode()).hexdigest()[:16]}")
                             workspace.mkdir(parents=True, exist_ok=True)
-                            client = MCPConnection(config, credentials, default_cwd=workspace)
+                            client = MCPConnection(config, credentials, default_cwd=workspace,
+                                recovery_timeout_seconds=self.capacity.policy(server_id).recovery_timeout_seconds)
                             client.resource_owner = owner
                             client.pins = 1
                             self.connections[key] = client
@@ -847,42 +862,16 @@ class MCPRegistry:
         reply_received = False
         try:
             result = await client.request(
-                "tools/call", {"name": tool_name, "arguments": arguments}
+                "tools/call", {"name": tool_name, "arguments": arguments}, operation_id=call_id
             )
             reply_received = True
-            result = self.rt.vault.redact(result)
-            result = {
-                **result,
-                "call_id": call_id,
-                "server_id": server_id,
-                "tool_name": tool_name,
-                "untrusted_tool_result": True,
-                "reused": False,
-            }
-            result = self.bounded_result(result, config.max_output_bytes)
-            call_state = "FAILED" if result.get("isError") else "SUCCEEDED"
-            def completed(db):
-                db.execute(
-                    "UPDATE mcp_calls SET state=?,result_json=?,ended_at=? WHERE id=?",
-                    (
-                        call_state,
-                        json_dump(result) if config.persist_results else None,
-                        now_ms(),
-                        call_id,
-                    ),
-                )
-                db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,))
-            await self.rt.store.call(completed, transaction=True)
-            size = len(json_dump(result).encode())
-            self.result_cache[call_id] = (result, size)
-            self.result_cache_bytes += size
-            while len(self.result_cache) > 64 or self.result_cache_bytes > 16777216:
-                _, (_, removed) = self.result_cache.popitem(last=False)
-                self.result_cache_bytes -= removed
-            return result
+            return await self.complete_call(call_id, result, config, tool_name)
         except BaseException as exc:
             readonly = tool.get("annotations", {}).get("readOnlyHint") is True
-            not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
+            if isinstance(exc, RuntimeFault):
+                exc.details["call_id"] = call_id
+            not_dispatched = ((isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False)
+                              or (not reply_received and call_id not in client.operations))
             state = "FAILED" if readonly or not_dispatched else "UNCERTAIN"
             error = (
                 exc.as_dict()
@@ -939,6 +928,82 @@ class MCPRegistry:
             for row in records
         ]
 
+    async def get_call(self, call_id=None, *, server_id=None, consumer_id=None, idempotency_key=None):
+        by_id = isinstance(call_id, str) and bool(call_id)
+        require(by_id != any(value is not None for value in (server_id, consumer_id, idempotency_key)),
+                "INVALID_REQUEST", "Choose call_id or server_id, consumer_id and idempotency_key")
+        if by_id:
+            query, params = "c.id=?", (call_id,)
+        else:
+            self._config(server_id)
+            require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 256,
+                    "INVALID_REQUEST", "Supply the original bounded idempotency key")
+            query, params = "c.server_id=? AND c.consumer_id=? AND c.idempotency_key=?", (server_id, self._consumer(consumer_id), idempotency_key)
+        row = await self.rt.store.call(lambda db: one(db,
+            "SELECT c.*,r.connection_owner,r.state AS resource_state,r.evidence FROM mcp_calls c "
+            "LEFT JOIN mcp_call_resources r ON r.call_id=c.id WHERE " + query, params))
+        require(row is not None, "NOT_FOUND", "MCP call receipt does not exist")
+        cached = self.result_cache.get(row.id)
+        result = json.loads(row.result_json) if row.result_json else cached[0] if cached else None
+        return {"call_id": row.id, "server_id": row.server_id, "consumer_id": row.consumer_id,
+                "tool_name": row.tool_name, "state": row.state,
+                "error": json.loads(row.error_json) if row.error_json else None,
+                "resource_state": row.resource_state, "connection_owner": row.connection_owner,
+                "started_at": row.started_at, "ended_at": row.ended_at,
+                "result_retained": result is not None, "result": result,
+                "evidence": row.evidence}
+
+    @staticmethod
+    def tool_error(result):
+        if not result.get("isError"):
+            return None
+        value = result.get("structuredContent")
+        text = next((block.get("text", "")[:4096] for block in result.get("content", [])
+                     if isinstance(block, dict) and block.get("type") == "text"), "")
+        if not isinstance(value, dict) and text:
+            try:
+                value = json.loads(text)
+            except ValueError:
+                value = None
+        if isinstance(value, dict) and isinstance(value.get("error"), dict):
+            value = value["error"]
+        value = value if isinstance(value, dict) else {}
+        message = value.get("safe_message") or value.get("message") or value.get("error") or text
+        details = {"stage": "tool"}
+        for key in ("code", "path", "issues"):
+            if key in value:
+                item = value[key]
+                details["upstream_code" if key == "code" else key] = item if len(json_dump(item).encode("utf-8")) <= 2048 else str(item)[:2048]
+        return {"code": "MCP_TOOL_ERROR", "category": "mcp", "retryable": False,
+                "safe_message": str(message or "Upstream MCP tool reported an error")[:1024], "details": details}
+
+    async def complete_call(self, call_id, value, config, tool_name, *, connection_owner=None):
+        """Commit an actual terminal response, including one observed after the caller left."""
+        value = self.rt.vault.redact(value)
+        error = self.tool_error(value)
+        result = self.bounded_result({**value, "call_id": call_id, "server_id": config.id,
+            "tool_name": tool_name, "untrusted_tool_result": True, "reused": False}, config.max_output_bytes)
+        def complete(db):
+            if connection_owner is not None:
+                held = one(db, "SELECT connection_owner FROM mcp_call_resources WHERE call_id=?", (call_id,))
+                if held is None or held.connection_owner != connection_owner:
+                    return False
+            db.execute("UPDATE mcp_calls SET state=?,result_json=?,error_json=?,ended_at=? WHERE id=?",
+                       ("FAILED" if error else "SUCCEEDED", json_dump(result) if config.persist_results else None,
+                        json_dump(error) if error else None, now_ms(), call_id))
+            db.execute("UPDATE mcp_call_resources SET state='RELEASED' WHERE call_id=?", (call_id,))
+            return True
+        if not await self.rt.store.call(complete, transaction=True):
+            return None
+        size = len(json_dump(result).encode())
+        previous = self.result_cache.pop(call_id, None)
+        self.result_cache_bytes += size - (previous[1] if previous else 0)
+        self.result_cache[call_id] = (result, size)
+        while len(self.result_cache) > 64 or self.result_cache_bytes > 16777216:
+            _, (_, removed) = self.result_cache.popitem(last=False)
+            self.result_cache_bytes -= removed
+        return result
+
     async def _external_request(self, server_id, consumer_id, method, params):
         config = self._config(server_id)
         require(
@@ -966,13 +1031,14 @@ class MCPRegistry:
                 await self.rt.store.call(intent, transaction=True)
                 reply_received = False
                 try:
-                    value = await client.request(method, params)
+                    value = await client.request(method, params, operation_id=call_id)
                     reply_received = True
                     value = self.rt.vault.redact(value)
                     require(len(json_dump(value).encode()) <= config.max_output_bytes,
                             "MCP_OUTPUT_LIMIT", "MCP response exceeds its output limit")
                 except BaseException as exc:
-                    not_dispatched = isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False
+                    not_dispatched = ((isinstance(exc, RuntimeFault) and exc.details.get("dispatched") is False)
+                                      or (not reply_received and call_id not in client.operations))
                     error = exc.as_dict() if isinstance(exc, RuntimeFault) else {
                         "code": "MCP_CANCELLED" if isinstance(exc, asyncio.CancelledError) else "MCP_REQUEST_FAILED",
                         "safe_message": "MCP read ended without a response"}
@@ -1207,4 +1273,8 @@ class MCPRegistry:
             *(client.aclose(force=True) for client in self.connections.values()),
             return_exceptions=True,
         )
+        for client in self.connections.values():
+            if client.closed:
+                await self.capacity.connection_closed(client)
+        await self.capacity.drain()
         self.connections.clear()

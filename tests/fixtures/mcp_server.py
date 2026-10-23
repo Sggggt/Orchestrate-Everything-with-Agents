@@ -7,7 +7,7 @@ import time
 import json
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import ToolAnnotations, CallToolResult, TextContent
 
 server = FastMCP(
     "Platform contract fixture",
@@ -15,6 +15,14 @@ server = FastMCP(
 )
 selected = "default"
 counter = 0
+
+
+@server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def structured_failure() -> CallToolResult:
+    """Return a safe structured upstream rejection for error propagation contracts."""
+    error = {"code": "SAMPLE_REJECTED", "message": "A bounded query is required",
+             "path": ["query", "where"], "issues": [{"expected": "bounded"}]}
+    return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps(error))], structuredContent=error)
 
 
 @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -35,6 +43,15 @@ def select_project(project: str) -> dict:
 def increment() -> dict:
     """Increment a process-local counter once."""
     global counter
+    counter += 1
+    return {"counter": counter}
+
+
+@server.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def timed_increment(delay: float = .1) -> dict:
+    """Return the actual completion of one delayed process-local mutation."""
+    global counter
+    await asyncio.sleep(min(delay, 3))
     counter += 1
     return {"counter": counter}
 

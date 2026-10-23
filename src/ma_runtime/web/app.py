@@ -492,8 +492,8 @@ def create_app(
         return await rt().tasks.result(task_id, timeout=0)
 
     @app.get("/api/tasks/{task_id}/trace")
-    async def task_trace(task_id: str, cursor: str | None = None, limit: int = 50):
-        return await rt().tasks.trace(task_id, cursor, limit)
+    async def task_trace(task_id: str, cursor: str | None = None, limit: int = 50, include_resources: bool = False):
+        return await rt().tasks.trace(task_id, cursor, limit, include_resources)
 
     @app.post("/api/tasks/{task_id}/{action}")
     async def task_action(task_id: str, action: str, request: Request):

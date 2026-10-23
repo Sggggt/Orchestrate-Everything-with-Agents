@@ -6,6 +6,7 @@
 - `control.config {}`：读取运行预算与限制。修改用 `control.configure {"changes":{...}}`，只提供本次要改的字段，其他设置保留。需要字段约束时查询该动作。
 - `control.events {"session_id":"...","after_seq":0,"limit":25}`：限定协作空间，使用上一页事件 seq 继续，不从头重复读取。
 - `control.resources {}`：检查资源锁、持有者和隔离状态。查看具体问题时再读取对应 task，不擅自释放隔离资源。
+- `resources.status {scope:{session_id},limit:25}`：分页读取当前占用、可用量和主控窗口；历史实例数不是并发数。需要处理某个 owner 时请求 `resources.recover {owner_id,idempotency_key}`，让宿主消费机器停止证据；不手填停止确认、不清空账本。未知执行交给运维排障流程。
 
 `active` 与 `uncertain_slots` 都会占用执行预算；减少容量时必须能容纳它们。配置中的 `reserved_external_slots` 为外部协调者预留容量，不代表平台能控制外部进程。
 

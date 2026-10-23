@@ -23,6 +23,22 @@ async def check_request(runtime, method, params, version):
     require(version in VIEW_VERSIONS, "UNSUPPORTED_VIEW_VERSION", "Supported response views are 1.0 and 1.1")
     if version != "1.0":
         return
+    if method == "resources.request":
+        spec = params.get("spec", {})
+        owner = spec.get("owner_run_id") if isinstance(spec, dict) else getattr(spec, "owner_run_id", None)
+        require(owner is None, "VIEW_VERSION_REQUIRED", "Run-bound resource leases require response view 1.1",
+                details={"view_version": "1.1"})
+    if method == "resources.release_lease":
+        row = await runtime.store.call(lambda db: one(db, "SELECT spec_json FROM resource_leases WHERE id=?", (params.get("lease_id"),)))
+        if row:
+            require(json.loads(row.spec_json).get("owner_run_id") is None, "VIEW_VERSION_REQUIRED",
+                    "Run-bound resource leases require response view 1.1", details={"view_version": "1.1"})
+    if method == "mcp.configure_policy":
+        policy = params.get("policy", {})
+        timeout = policy.get("recovery_timeout_seconds", 30) if isinstance(policy, dict) else getattr(policy, "recovery_timeout_seconds", 30)
+        current = runtime.mcp.capacity.policies.get(params.get("server_id"))
+        require(timeout == 30 and (current is None or current.recovery_timeout_seconds == 30),
+                "VIEW_VERSION_REQUIRED", "Explicit MCP recovery windows require response view 1.1", details={"view_version": "1.1"})
     if method == "agents.configure":
         config = params.get("config", {})
         if isinstance(config, AgentConfig):
@@ -52,6 +68,12 @@ def project(method, value, version):
         return value
     if method == "resources.inspect":
         return {"resources": value["resources"]}
+    if method in {"resources.get", "resources.request", "resources.release_lease"}:
+        require(value["spec"].get("owner_run_id") is None, "VIEW_VERSION_REQUIRED", "Run-bound resource leases require response view 1.1",
+                details={"view_version": "1.1"})
+    if method == "mcp.policy":
+        require(value["policy"].get("recovery_timeout_seconds", 30) == 30, "VIEW_VERSION_REQUIRED",
+                "Explicit MCP recovery windows require response view 1.1", details={"view_version": "1.1"})
     if method in {"agents.list", "agents.describe", "agents.configure"}:
         items = value if isinstance(value, list) else [value]
         require(all(item.get("reasoning_effort") is None for item in items),

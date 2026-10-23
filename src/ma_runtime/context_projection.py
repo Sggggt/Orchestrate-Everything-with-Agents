@@ -248,7 +248,7 @@ def estimated_tokens(value):
     if isinstance(value, str):
         return (len(value.encode("utf-8")) + 2) // 3
     if isinstance(value, dict):
-        if value.get("type") in {"oea_image", "image_url"}:
+        if isinstance(value.get("type"), str) and value["type"] in {"oea_image", "image_url"}:
             return 2048
         return 4 + sum(estimated_tokens(key) + estimated_tokens(item) for key, item in value.items())
     if isinstance(value, (tuple, list)):

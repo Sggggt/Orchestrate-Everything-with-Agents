@@ -557,6 +557,10 @@ class Workflows:
     async def get_repair(self, run_id):
         return await self.rt.workflow_repairs.get(run_id)
 
+    async def preview_repair(self, source_run_id, *, inputs=None, expected_revision=None, rerun_nodes=()):
+        return await self.rt.workflow_repairs.preview(source_run_id, inputs=inputs,
+                                                      expected_revision=expected_revision, rerun_nodes=rerun_nodes)
+
     async def activity(self, project_id):
         def read(db):
             need(db, "projects", project_id)

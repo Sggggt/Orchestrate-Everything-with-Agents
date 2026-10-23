@@ -143,9 +143,20 @@ class ResourceLeaseSpec(Model):
     quantities: tuple[QuantityRequirement, ...] = Field(default=(), max_length=32)
     resources: tuple[ResourceRequirement, ...] = Field(default=(), max_length=32)
     ttl_seconds: float = Field(default=300, gt=0, le=86400)
+    owner_run_id: str | None = Field(default=None, min_length=1, max_length=256,
+        description="Explicitly bind to the owner's run lifetime; must equal owner. Requires fully mediated execution and view 1.1. Actual exit, not TTL alone, releases it.")
+
+    @model_serializer(mode="wrap")
+    def legacy_shape(self, handler):
+        value = handler(self)
+        if self.owner_run_id is None:
+            value.pop("owner_run_id", None)
+        return value
 
     @model_validator(mode="after")
     def claims(self):
+        if self.owner_run_id is not None and self.owner != self.owner_run_id:
+            raise ValueError("A run-bound lease owner must equal owner_run_id")
         if not self.quantities and not self.resources:
             raise ValueError("A lease requires at least one resource")
         for claims in (self.quantities, self.resources):
@@ -443,7 +454,16 @@ class MCPResourcePolicy(Model):
     reserved_connections: int = Field(default=0, ge=0, le=63)
     state_mode: Literal["persistent", "stateless", "reinitialize"] = "persistent"
     idle_seconds: float = Field(default=60, ge=0, le=86400)
+    recovery_timeout_seconds: float = Field(default=30, ge=0, le=300,
+        description="Extra bounded observation window for the original request after the caller leaves; no replay. Zero disables late observation.")
     initialization: tuple[MCPInitialization, ...] = Field(default=(), max_length=8)
+
+    @model_serializer(mode="wrap")
+    def legacy_shape(self, handler):
+        value = handler(self)
+        if self.recovery_timeout_seconds == 30:
+            value.pop("recovery_timeout_seconds", None)
+        return value
 
     @model_validator(mode="after")
     def initialization_contract(self):
@@ -541,9 +561,9 @@ class AgentConfig(Model):
     system_prompt: str = Field(default="", max_length=16384)
     temperature: float | None = Field(default=None, ge=0, le=2)
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
-    max_output_tokens: int | None = Field(default=4096, ge=1, le=131072)
+    max_output_tokens: int | None = Field(default=32768, ge=1, le=131072)
     context_window_tokens: int | None = Field(default=None, ge=1024, le=2097152)
-    context_budget_tokens: int = Field(default=48000, ge=512, le=1048576)
+    context_budget_tokens: int = Field(default=131072, ge=512, le=1048576)
     token_parameter: Literal["max_completion_tokens", "max_tokens"] = (
         "max_completion_tokens"
     )

@@ -1274,6 +1274,8 @@ class Runtime:
                 if run_id in self._uncertain_owners or (not stopped and not active.committed):
                     self.retain_uncertain(active)
                 self.resources.release(run_id)
+                if active.committed or stopped:
+                    await self.resources.release_run_leases(run_id, {"kind": "execution_exit", "run_id": run_id})
             else:
                 active.worker.add_done_callback(
                     lambda task: self.on_late_stop(run_id, task)
@@ -1296,7 +1298,13 @@ class Runtime:
         self.consume_exception(worker)
         active = self.active.pop(run_id, None)
         if active is not None:
-            self.retain_uncertain(active)
+            if active.committed:
+                self.resources.release(run_id)
+                if run_id in self.resources.run_leases:
+                    self.resources.schedule_execution_recovery(active)
+            else:
+                self.retain_uncertain(active)
+                self.resources.schedule_execution_recovery(active)
         self.notify()
 
     async def fail_run(
@@ -1436,6 +1444,9 @@ class Runtime:
             self.resources.isolate(
                 active.request.run_id, "Unreconciled execution or external operation"
             )
+            if stopped:
+                await self.resources.execution_stopped(active.request.run_id,
+                    {"kind": "execution_boundary", "confirmed_stopped": True})
         self.notify()
 
     async def probe(self, adapter, run_ref):
@@ -1447,43 +1458,39 @@ class Runtime:
                     adapter.probe(run_ref), self.config.probe_timeout_seconds
                 )
             )
-        except Exception:
-            return ProbeResult(state="UNKNOWN")
+        except Exception as error:
+            return ProbeResult(state="UNKNOWN", evidence="Stop probe did not complete: " + type(error).__name__)
+
+    async def probe_recorded_run(self, run, adapter):
+        if run.get("execution_released"):
+            return ProbeResult(state="STOPPED", confirmed_stopped=True, evidence="Durable execution stop receipt")
+        reference = json.loads(run.adapter_run_ref_json) if run.adapter_run_ref_json else {}
+        reference["run_id"] = run.id
+        mode = json.loads(run.adapter_snapshot_json)["execution_mode"]
+        host_pid = reference.get("host_pid")
+        if mode == "in_process" and type(host_pid) is int and not process_alive(host_pid):
+            return ProbeResult(state="STOPPED", confirmed_stopped=True, evidence="Recorded in-process execution host has exited")
+        probe = await self.probe(adapter, reference) if adapter else ProbeResult(state="UNKNOWN")
+        if mode == "in_process" and probe.state == "STOPPED" and process_alive(host_pid) and (
+                run.ended_at is None or run.state in {"COMPLETED", "SUSPENDED"}):
+            worker = LOCAL_WORKERS.get(run.id)
+            if worker is None or not worker.done():
+                return ProbeResult(state="UNKNOWN", evidence="Previous host process is still alive")
+        return probe
 
     async def recover(self):
         pending = await self.store.call(
             lambda db: rows(
                 db,
-                "SELECT r.*,t.session_id,t.thread_id,t.spec_json,m.batch_id,b.max_concurrency AS batch_limit FROM runs r JOIN tasks t ON t.id=r.task_id "
-                "LEFT JOIN instance_members m ON m.task_id=t.id LEFT JOIN instance_batches b ON b.id=m.batch_id WHERE r.state IN ('RUNNING','UNCERTAIN')",
+                "SELECT r.*,t.session_id,t.thread_id,t.spec_json,m.batch_id,b.max_concurrency AS batch_limit,x.id AS execution_released FROM runs r JOIN tasks t ON t.id=r.task_id "
+                "LEFT JOIN instance_members m ON m.task_id=t.id LEFT JOIN instance_batches b ON b.id=m.batch_id "
+                "LEFT JOIN resource_recoveries x ON x.owner=r.id AND x.idempotency_key='execution-stop' WHERE r.state IN ('RUNNING','UNCERTAIN')",
             )
         )
         for run in pending:
             spec = TaskSpec.model_validate_json(run.spec_json)
             adapter = self.adapters.get(spec.agent_id)
-            ref = (
-                json.loads(run.adapter_run_ref_json)
-                if run.adapter_run_ref_json
-                else {"run_id": run.id}
-            )
-            ref["run_id"] = run.id
-            probe = (
-                await self.probe(adapter, ref)
-                if adapter
-                else ProbeResult(state="UNKNOWN")
-            )
-            if (
-                run.ended_at is None
-                and probe.state == "STOPPED"
-                and json.loads(run.adapter_snapshot_json)["execution_mode"]
-                == "in_process"
-                and process_alive(ref.get("host_pid"))
-            ):
-                worker = LOCAL_WORKERS.get(run.id)
-                if worker is None or not worker.done():
-                    probe = ProbeResult(
-                        state="UNKNOWN", evidence="Previous host process is still alive"
-                    )
+            probe = await self.probe_recorded_run(run, adapter)
             requirements = [
                 ResourceRequirement.model_validate(r)
                 for r in json.loads(run.held_resources_json)
@@ -1596,6 +1603,8 @@ class Runtime:
                     "UPDATE tool_calls SET state='UNCERTAIN' WHERE run_id=? AND state='DISPATCHED'",
                     (r.id,),
                 )
+                db.execute("UPDATE tasks SET result_json=COALESCE(result_json,(SELECT result_json FROM run_partial_results WHERE run_id=?)) WHERE id=?",
+                           (r.id, r.task_id))
                 emit(
                     db,
                     "run.recovery_required",
@@ -1614,6 +1623,10 @@ class Runtime:
             self.resources.isolate(run.id, "Previous execution needs reconciliation")
             self._uncertain_owners[run.id] = (spec.agent_id, run.batch_id)
             self.uncertain_slots.add(run.id)
+            if run.execution_released or probe.confirmed_stopped:
+                await self.resources.execution_stopped(run.id,
+                    {"kind": "host_recovery", "previous_stop_receipt": bool(run.execution_released),
+                     "probe_state": probe.state, "evidence": probe.evidence})
         for tool in await self.store.call(
             lambda db: rows(
                 db, "SELECT * FROM tool_calls WHERE state IN ('DISPATCHED','UNCERTAIN')"
@@ -1628,6 +1641,7 @@ class Runtime:
                 ],
             )
             self.resources.isolate(owner, "Tool outcome needs reconciliation")
+        await self.resources.recover_committed_run_leases()
 
     async def backup(self, destination):
         target = external_path(destination)
@@ -1706,6 +1720,7 @@ class Runtime:
                 pass
         await self.mcp.aclose()
         await self.model_transport.aclose()
+        await self.resources.drain()
         self.closed = True
         self.events.notify()
         try:

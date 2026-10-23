@@ -38,4 +38,6 @@ UNCERTAIN 会阻止新下游执行。查 `reconcile_node` 的 Reconciliation 协
 
 ## 局部修复
 
-真实终态且未知外部效果已核对后，调用 workflows.repair(source_run_id,idempotency_key)，必要时提供 inputs、expected_revision、rerun_nodes。省略版本使用源图，指定版本使用当前已保存图；输入、节点、依赖变化会使受影响结果失效。新运行和新线程保留来源，成功节点/成员按版本与授权检查后复用。get_repair 查看复用范围与来源，不重绑旧线程、不改原终态；修复累计原预算。
+真实终态且未知外部效果已核对后，先用 workflows.preview_repair(source_run_id,inputs?,expected_revision?,rerun_nodes?) 查看失效范围，再 repair 并读取 get_repair 核对实际复用。输入按顶层键判断变化，修改 case 内诊断说明也可能让多个引用 case 的节点及其下游失效；rerun_nodes 不是重做范围上限。省略版本使用源图，指定版本使用当前已保存图；预览不预留状态，实际创建重新核验。新运行和新线程保留来源，不重绑旧线程、不改原终态；修复累计原预算。
+
+map 必须核对预览的 map_members：reusable_ordinals 与 rerun_ordinals 才是成员范围，不能把 reuse_candidates 的节点数当作复用成员数。修改 items、payload 模板或执行设置会使 map 契约变化，即使部分实际输入相同也会重做；上游失效输出尚不可知时返回 UNKNOWN，先核算可能的重做成本。get_repair.members 为空不能证明全部复用，必须与实际实例和来源逐项核对。

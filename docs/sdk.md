@@ -12,6 +12,12 @@ For active diagnostics, passive receiving and run-bound Agent reports, see [Oper
 
 The public package is `oea`. Use `oea.client` for an existing host, `oea.execution` for adapter contracts, `oea.context` for run-bound capabilities, `oea.tools` for tool contracts and `oea.workflows` for graph definitions. The existing top-level `oea`, `ma_runtime` and `agent` imports and `multi-agent` command remain compatible. Process entry points use `oea.stdio`.
 
+When a custom execution has partial evidence and must fail, call `await context.retain_partial_result(TaskResult(...))` before raising the original safe error. The host validates artifact ownership and retains this bounded result through failure and recovery. This does not declare success or reset usage. Large evidence should be delivered as managed artifacts referenced by the partial result. The same method is available to managed process Agents.
+
+Resource management uses `client.resources.status(...)` and `client.resources.recover(owner_id, idempotency_key)`; recovery consumes actual stop observations and does not replay business operations. Read one MCP receipt with `client.mcp.get_call(...)`. Before creating a repair, `client.workflows.preview_repair(...)` reports invalidated nodes, node reuse candidates and map member reuse/rerun ordinals without dispatching. Unresolved upstream outputs produce an `UNKNOWN` member plan; creation rechecks current state and authorization.
+
+Scope a tool's stable key to its task and logical step, for example `request.task_id + ":read-source"`. Keep that key when recovering the same action; unrelated tasks must not share a literal key or borrow each other's receipts.
+
 ## Connect to an existing host
 
 ```python

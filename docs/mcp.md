@@ -50,3 +50,11 @@ Register STDIO, Streamable HTTP or SSE services through the frontend or `client.
 Use a stable, distinct `consumer_id` per conversation. Consumer-scoped connections isolate stateful upstream sessions; shared connections intentionally share them. After explicit connection/discovery, read the paginated cached `mcp.catalog`, then `mcp.tool` for one full schema with its protocol version and fingerprint. Preserve referenced definitions and distinguish schema validity from provider compatibility. Do not import this platform's own bridge back into itself.
 
 The platform does not widen an external service's authorization. Unknown tool outcomes require reconciliation; the bridge never makes blind retries safe.
+
+## Resource recovery and diagnostics
+
+Resource lifetimes are managed by the host. After a caller cancels or times out, an accepted MCP request can remain under observation for the policy's bounded `recovery_timeout_seconds` window (30 seconds by default). An actual terminal response settles the original receipt, releases its capacity and wakes queued work. The request is never replayed. A closed local connection or elapsed deadline alone does not prove a remote operation stopped; unresolved remote occupancy remains isolated.
+
+Use `resources.status(scope, cursor, limit)` for paged live claims and optional session/project workload counts. `resources.recover(owner_id, idempotency_key)` asks the host to consume available machine evidence; it has no force-release switch. `mcp.get_call(call_id)` reads one exact receipt, or use the original `server_id`, `consumer_id` and `idempotency_key` together. Missing retained output is distinct from a new execution intent.
+
+The coordinating Skill recommends at most four unfinished workflows per session. Within a single session, each Agent should have at most six running instances in total, counted across all workflows and ordinary tasks in that session. Lower Runtime, adapter, model and upstream limits take precedence. These recommendations do not raise saved capacities. Validate one real model/tool/result path before increasing parallelism; stop repeated repair dispatches when the input and failure cause have not changed.

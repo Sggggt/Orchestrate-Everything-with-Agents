@@ -581,7 +581,7 @@ function ensureSettings() {
           system_prompt: "",
           temperature: null,
           reasoning_effort: null,
-          max_output_tokens: 4096,
+          max_output_tokens: 32768,
           token_parameter: "max_completion_tokens",
           max_concurrency: 4,
           timeout_seconds: 120,
@@ -1129,6 +1129,14 @@ function connectEvents(epoch) {
         return;
       }
       state.events.push(value);
+      if (["mcp.capacity_reconciled", "mcp.capacity_isolated", "mcp.capacity_observed"].includes(value.type) &&
+          state.modal?.task?.id === value.task_id && state.modal.trace?.resource_calls) {
+        const calls = state.modal.trace.resource_calls;
+        state.modal.trace.resource_calls = calls.some(call => call.call_id === value.payload.call_id)
+          ? calls.map(call => call.call_id === value.payload.call_id ? { ...call, ...value.payload } : call)
+          : [...calls, { ...value.payload, run_id: value.run_id }].slice(-100);
+        renderModal();
+      }
       state.events = state.events.slice(-100);
       workflowUI.onEvent(value).catch((error) => toast(error.message, true));
       if (value.type === "session.deleted" && value.payload?.cascade) return;
@@ -1574,7 +1582,7 @@ async function action(name, element) {
       system_prompt: "",
       temperature: null,
       reasoning_effort: null,
-      max_output_tokens: 4096,
+      max_output_tokens: 32768,
       token_parameter: "max_completion_tokens",
       max_concurrency: 4,
       timeout_seconds: 120,
@@ -1698,7 +1706,7 @@ async function action(name, element) {
     modal.traceError = null;
     renderModal();
     try {
-      const cursor = modal.trace?.has_more ? `?cursor=${encodeURIComponent(modal.trace.cursor)}` : "";
+      const cursor = `?include_resources=true${modal.trace?.has_more ? `&cursor=${encodeURIComponent(modal.trace.cursor)}` : ""}`;
       const trace = await api(`/tasks/${encodeURIComponent(modal.task.id)}/trace${cursor}`);
       modal.trace = { ...trace, items: [...(modal.trace?.items || []), ...trace.items],
         tools: modal.trace?.tools || trace.tools, tools_has_more: modal.trace?.tools_has_more ?? trace.tools_has_more };

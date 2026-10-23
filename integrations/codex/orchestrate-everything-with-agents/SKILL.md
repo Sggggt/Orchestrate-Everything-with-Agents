@@ -33,6 +33,8 @@ description: Develop Agents, manage projects and MCP integrations, and orchestra
 
 ## 公共约定
 
+- 默认建议每会话最多推进 4 个未结束工作流；在单个会话内，同一 Agent 的所有正在运行实例合计不超过 6 个，跨该会话的全部工作流和普通任务统一计数。等待/取消/待核对的工作流计入主控窗口，排队和安全挂起实例不计实际占槽。更低的全局、适配器、模型与 MCP 限制优先；建议不自动修改配置或扩容。
+- 批量前先跑通真实模型、实际工具与结果核对的单实例。首次同类故障暂停新增派发，按[运维排障](workflows/operations.md)定位；扩大并发不用于排除故障。资源回收与恢复交给宿主机器核验，不由模型手填停止确认。
 - 选择 Agent 先按项目、授权、必需能力和资源约束筛选。`admission.candidates` 分页报告合格项、排除原因和未知；`admission.describe` 读取一个 Agent 的配置与观测。未知或混合任务样本不能证明成本最优。容量不足就排队/挂起，不加宿主绕过。
 - 列表取一页；已有明确协议无需重复发现。工具用 `mcp.catalog` 看缓存摘要，再用 `mcp.tool` 读取一个完整 schema。`consumer_id` 在本次协作中稳定、独立对话间隔离；共享上游连接必须明确配置。
 - 大响应的 `result_ref` 是短期缓存，用 `control.read_result` 和 JSON Pointer 读必要字段。过期后从持久对象回读，不重跑写操作。产物和 `context_refs` 是证据来源；展示摘要不能替代完整结果。需要细节才读[协议参考](references/protocol.md)。

@@ -16,6 +16,10 @@ class MCPResources:
         self.rt = registry.rt
         self.policies = {}
         self.uncertain_connections = set()
+        self.recoveries = {}
+        self.watching = {}
+        self.closures = {}
+        self.recovery_slots = self.rt.resources.recovery_slots
 
     def policy(self, server_id):
         return self.policies.get(server_id) or MCPResourcePolicy(
@@ -43,8 +47,14 @@ class MCPResources:
         for row in held:
             config = self.registry._config(row.server_id)
             _, connections, _ = self.define(config, row.consumer_id)
-            self.rt.resources.restore(row.connection_owner, (), (QuantityRequirement(key=connections),))
-            self.rt.resources.isolate(row.connection_owner, "MCP operation requires stop confirmation")
+            try:
+                evidence = json.loads(row.evidence or "{}")
+            except ValueError:
+                evidence = {}  # Legacy administrator evidence is plain text.
+            closed = isinstance(evidence, dict) and evidence.get("kind") == "connection_closed" and evidence.get("generation") == row.connection_owner
+            if not closed:
+                self.rt.resources.restore(row.connection_owner, (), (QuantityRequirement(key=connections),))
+                self.rt.resources.isolate(row.connection_owner, "MCP operation requires stop confirmation")
             self.uncertain_connections.add(row.connection_owner)
             quantities = tuple(QuantityRequirement.model_validate(item) for item in json.loads(row.quantities_json))
             self.rt.resources.restore(row.call_id, (), quantities)
@@ -64,16 +74,18 @@ class MCPResources:
                     "RESOURCE_BUSY", "Reconcile unresolved MCP capacity before changing its connection policy")
             for item in policy.initialization:
                 self.initialization_tool(server_id, item.tool_name)
-            for client in clients:
-                await client.aclose()
-                self.rt.resources.release(client.resource_owner)
-            self.registry.connections = {key: client for key, client in self.registry.connections.items() if key[0] != server_id}
+            require(server_id not in self.registry.reconfiguring, "RESOURCE_BUSY", "MCP connection policy is already changing")
+            self.registry.reconfiguring.add(server_id)
+        try:
+            await self.registry.disconnect(server_id)
             await self.rt.store.call(lambda db: db.execute(
                 "INSERT INTO mcp_resource_policies(server_id,policy_json) VALUES(?,?) ON CONFLICT(server_id) DO UPDATE SET policy_json=excluded.policy_json",
                 (server_id, json_dump(policy))), transaction=True)
             self.policies[server_id] = policy
             self.define(config, "console")
-        self.rt.resources.changed.set()
+        finally:
+            self.registry.reconfiguring.discard(server_id)
+            self.rt.resources.changed.set()
         return await self.inspect(server_id)
 
     async def inspect(self, server_id):
@@ -110,21 +122,53 @@ class MCPResources:
             client.initialized = True
 
     async def reclaim(self, server_id, *, pressure=False):
-        # Called under the registry lock. Closed or unknown operations never
-        # disappear merely because their transport has been disconnected.
+        # Pin checks and retirement fencing are atomic; transport I/O never holds the registry lock.
         policy = self.policy(server_id)
         now = time.monotonic()
-        candidates = sorted(((key, client) for key, client in self.registry.connections.items() if key[0] == server_id),
-                            key=lambda pair: pair[1].last_used)
-        for key, client in candidates:
-            if client.active or client.pins or client.children or client.resource_owner in self.uncertain_connections:
-                continue
-            if client.closed or (policy.state_mode != "persistent" and (pressure or now - client.last_used >= policy.idle_seconds)):
+        async with self.registry.lock:
+            candidates = [(key, client) for key, client in self.registry.connections.items()
+                          if key[0] == server_id and not (client.active or client.pins or client.children or client.closing and not client.closed)
+                          and client.resource_owner not in self.uncertain_connections
+                          and (client.closed or policy.state_mode != "persistent" and (pressure or now - client.last_used >= policy.idle_seconds))]
+            if pressure and candidates:
+                candidates = [min(candidates, key=lambda pair: pair[1].last_used)]
+            tasks = []
+            for key, client in candidates:
+                client.closing = True
+                task = asyncio.create_task(self.close_idle(key, client), name="mcp-idle-close:" + client.resource_owner)
+                self.closures[client.resource_owner] = task
+                def finished(done, owner=client.resource_owner):
+                    self.closures.pop(owner, None)
+                    if not done.cancelled() and done.exception() is not None:
+                        asyncio.get_running_loop().call_exception_handler({
+                            "message": "Idle MCP transport did not close; capacity remains held", "exception": done.exception()})
+                task.add_done_callback(finished)
+                tasks.append(task)
+        if tasks:
+            completion = asyncio.gather(*tasks)
+            completion.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            await asyncio.shield(completion)
+
+    async def close_idle(self, key, client):
+        try:
+            async with self.recovery_slots:
                 await client.aclose()
-                self.registry.connections.pop(key, None)
-                self.rt.resources.release(client.resource_owner)
-                if pressure:
-                    break
+        finally:
+            if client.closed:
+                async with self.registry.lock:
+                    if self.registry.connections.get(key) is client:
+                        self.registry.connections.pop(key)
+                await self.connection_closed(client)
+
+    async def connection_closed(self, client):
+        require(client.closed, "RESOURCE_BUSY", "A live physical connection cannot return its connection slot")
+        if client.resource_owner in self.uncertain_connections:
+            evidence = json_dump({"kind": "connection_closed", "generation": client.resource_owner})
+            await self.rt.store.call(lambda db: db.execute(
+                "UPDATE mcp_call_resources SET evidence=? WHERE connection_owner=? AND state!='RELEASED' AND COALESCE(evidence,'')!=?",
+                (evidence, client.resource_owner, evidence)), transaction=True)
+        self.rt.resources.resolve(client.resource_owner)
+        self.rt.resources.retire_connection_capacity(client.resource_owner.partition(":generation_")[0])
 
     @asynccontextmanager
     async def borrow(self, server_id, consumer):
@@ -141,7 +185,98 @@ class MCPResources:
         self.rt.resources.isolate(call_id, "MCP call did not confirm it stopped")
         self.rt.resources.isolate(client.resource_owner, "MCP call did not confirm it stopped")
         self.uncertain_connections.add(client.resource_owner)
-        await self.rt.store.call(lambda db: db.execute("UPDATE mcp_call_resources SET state='ISOLATED' WHERE call_id=?", (call_id,)), transaction=True)
+        request = client.operations.get(call_id)
+        def isolate(db):
+            db.execute("UPDATE mcp_call_resources SET state='ISOLATED' WHERE call_id=?", (call_id,))
+            self.event(db, "mcp.capacity_isolated", call_id, "ISOLATED", "RECOVERING" if request else "NEEDS_EVIDENCE")
+        await self.rt.store.call(isolate, transaction=True)
+        if request is not None:
+            self.watching[call_id] = client
+            request.future.add_done_callback(lambda _: self.schedule_recovery(call_id, client))
+
+    @staticmethod
+    def event(db, name, call_id, resource_state, recovery_state):
+        call = one(db, "SELECT c.state,c.tool_name,c.run_id,t.id AS task_id,t.session_id,t.thread_id FROM mcp_calls c "
+                   "LEFT JOIN runs r ON r.id=c.run_id LEFT JOIN tasks t ON t.id=r.task_id WHERE c.id=?", (call_id,))
+        emit(db, name, session_id=call.session_id, thread_id=call.thread_id, task_id=call.task_id, run_id=call.run_id,
+             payload={"call_id": call_id, "tool": call.tool_name, "resource_state": resource_state,
+                      "recovery_state": recovery_state, "state": call.state,
+                      "confirmed_stopped": resource_state == "RELEASED"})
+
+    def recovery_state(self, call_id, state):
+        if state == "RELEASED":
+            return "RELEASED"
+        if state != "ISOLATED":
+            return "ACTIVE"
+        return "RECOVERING" if call_id in self.watching or call_id in self.recoveries else "NEEDS_EVIDENCE"
+
+    def schedule_recovery(self, call_id, client):
+        if call_id in self.recoveries or self.rt.store.closed:
+            return
+        task = asyncio.create_task(self.observe(call_id, client), name="mcp-recovery:" + call_id)
+        self.recoveries[call_id] = task
+        def finished(done):
+            self.recoveries.pop(call_id, None)
+            if not done.cancelled() and done.exception() is not None:
+                asyncio.get_running_loop().call_exception_handler({
+                    "message": "MCP resource recovery failed; capacity remains isolated", "exception": done.exception()})
+        task.add_done_callback(finished)
+
+    async def observe(self, call_id, client):
+        async with self.recovery_slots:
+            request = client.operations.get(call_id)
+            if request is None or not request.future.done():
+                return False
+            client.operations.pop(call_id, None)
+            self.watching.pop(call_id, None)
+            row = await self.rt.store.call(lambda db: one(db,
+                "SELECT c.tool_name,r.connection_owner,r.state FROM mcp_calls c JOIN mcp_call_resources r ON r.call_id=c.id WHERE c.id=?",
+                (call_id,)))
+            if row is None or row.connection_owner != client.resource_owner:
+                return False
+            if not request.replied or request.future.cancelled() or request.future.exception() is not None:
+                await self.rt.store.call(lambda db: self.event(db, "mcp.capacity_observed", call_id,
+                                          row.state, "RELEASED" if row.state == "RELEASED" else "NEEDS_EVIDENCE"), transaction=True)
+                return False
+            result = await self.registry.complete_call(call_id, request.future.result(), client.config, row.tool_name,
+                                                       connection_owner=client.resource_owner)
+            if result is None:
+                return False
+            await self.reconcile(call_id, confirmed_stopped=True, evidence=json_dump({
+                "kind": "terminal_mcp_response", "connection_owner": client.resource_owner, "call_id": call_id}))
+            await self.rt.tools.observe_mcp_response(call_id, result)
+            self.rt.notify()
+            return True
+
+    async def drain(self):
+        await asyncio.sleep(0)
+        tasks = [*self.recoveries.values(), *self.closures.values()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def recover(self, call_id):
+        row = await self.rt.store.call(lambda db: one(db,
+            "SELECT state,connection_owner FROM mcp_call_resources WHERE call_id=?", (call_id,)))
+        require(row is not None, "NOT_FOUND", "MCP call has no resource receipt")
+        if row.state == "RELEASED":
+            return {"state": "RELEASED", "generation": row.connection_owner}
+        client = next((item for item in self.registry.connections.values() if item.resource_owner == row.connection_owner), None)
+        request = client.operations.get(call_id) if client is not None else None
+        if request is not None and request.future.done():
+            task = self.recoveries.get(call_id)
+            if task is not None:
+                await asyncio.shield(task)
+            else:
+                await self.observe(call_id, client)
+            latest = await self.rt.store.call(lambda db: one(db,
+                "SELECT state FROM mcp_call_resources WHERE call_id=?", (call_id,)))
+            if latest.state == "RELEASED":
+                return {"state": "RELEASED", "generation": row.connection_owner}
+        if request is not None and not request.future.done():
+            return {"state": "RECOVERING", "generation": row.connection_owner,
+                    "reason": "Awaiting the original request's bounded terminal response"}
+        return {"state": "NEEDS_EVIDENCE", "generation": row.connection_owner,
+                "reason": "No terminal response or upstream stop proof is available; capacity remains held"}
 
     async def reconcile(self, call_id, *, confirmed_stopped, evidence):
         require(confirmed_stopped and isinstance(evidence, str) and 0 < len(evidence.strip()) <= 4096,
@@ -152,7 +287,7 @@ class MCPResources:
             require(row.state in {"ISOLATED", "RELEASED"}, "RESOURCE_BUSY", "A running MCP call cannot release its own capacity early")
             db.execute("UPDATE mcp_call_resources SET state='RELEASED',evidence=? WHERE call_id=?", (evidence, call_id))
             remaining = one(db, "SELECT call_id FROM mcp_call_resources WHERE connection_owner=? AND state!='RELEASED' LIMIT 1", (row.connection_owner,))
-            emit(db, "mcp.capacity_reconciled", payload={"call_id": call_id, "confirmed_stopped": True})
+            self.event(db, "mcp.capacity_reconciled", call_id, "RELEASED", "RELEASED")
             return row.connection_owner, remaining is None
         owner, last = await self.rt.store.call(commit, transaction=True)
         self.rt.resources.resolve(call_id)
@@ -162,5 +297,6 @@ class MCPResources:
             self.rt.resources.isolated.pop(owner, None)
             if not any(client.resource_owner == owner and not client.closed for client in self.registry.connections.values()):
                 self.rt.resources.release(owner)
+                self.rt.resources.retire_connection_capacity(owner.partition(":generation_")[0])
         self.rt.resources.changed.set()
         return {"call_id": call_id, "resource_state": "RELEASED", "outcome_changed": False}

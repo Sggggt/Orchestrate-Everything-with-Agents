@@ -47,6 +47,10 @@ class CompactMCPTests(unittest.IsolatedAsyncioTestCase):
         selected = self.bridge.guide("profiles", "skill_put")
         self.assertEqual(set(selected["schemas"]), {"AgentSkill"})
         self.assertNotIn("MCPServerConfig", json_dump(selected))
+        limit = next(parameter for parameter in self.bridge.guide("control", "read_result")["parameters"] if parameter["name"] == "limit")
+        self.assertEqual((limit["default"], limit["minimum"], limit["maximum"]), (4000, 1, 6000))
+        self.assertIn("recover", self.bridge.guide("resources")["actions"])
+        self.assertIn("preview_repair", self.bridge.guide("workflows")["actions"])
         self.assertEqual(
             self.bridge.guide("tasks", "result")["parameters"][1]["default"], 0
         )

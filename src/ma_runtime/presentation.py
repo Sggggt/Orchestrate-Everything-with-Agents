@@ -14,7 +14,7 @@ OUTPUT_GUIDANCE = (
 )
 
 
-def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="内容已保留，可查看相关记录。"):
+def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="未取得可展示的结果，请查看执行记录。"):
     """Best-effort projection, never a business-output validator."""
     if isinstance(value, dict):
         for key in ("summary_markdown", "summary", "text", "content", "conclusion"):
@@ -34,7 +34,9 @@ def markdown_summary(value, *, limit=SUMMARY_LIMIT, fallback="内容已保留，
                          for c in cards[:3] if isinstance(c, dict) and c.get("conclusion"))
         if value.get("issues"):
             lines.append(f"有 {len(value['issues'])} 项待处理事项，已保留在完整协作结果中。")
-        return markdown_summary("\n\n".join(lines), limit=limit, fallback=fallback) if lines else fallback
+        if lines:
+            return markdown_summary("\n\n".join(lines), limit=limit, fallback=fallback)
+        return "已保留结构化结果，请查看详情。" if value and any(item not in (None, "", [], {}) for item in value.values()) else fallback
     if value is None:
         return fallback
     text = str(value).strip()

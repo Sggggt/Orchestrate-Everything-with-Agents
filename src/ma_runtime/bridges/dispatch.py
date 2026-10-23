@@ -68,7 +68,7 @@ def methods(rt):
         )},
         **{"workflows." + name: getattr(rt.workflows, name) for name in (
             "create", "get", "list", "update", "archive", "delete", "restore", "validate", "node_types",
-            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair",
+            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair", "preview_repair",
         )},
         "messages.send": rt.messages.send,
         "messages.get": rt.messages.get,
@@ -85,7 +85,7 @@ def methods(rt):
         "events.live": rt.events.live,
         "resources.inspect": rt.resources.inspect,
         **{"resources." + name: getattr(rt.resources, name) for name in (
-            "configure", "preflight", "request", "get", "release_lease",
+            "configure", "preflight", "request", "get", "release_lease", "status", "recover",
         )},
         "mcp.list": rt.mcp.list,
         "mcp.get": rt.mcp.get,
@@ -93,6 +93,7 @@ def methods(rt):
         "mcp.configure_policy": rt.mcp.configure_policy,
         "mcp.policy": rt.mcp.policy,
         "mcp.reconcile_capacity": rt.mcp.reconcile_capacity,
+        "mcp.get_call": rt.mcp.get_call,
         "mcp.register_directory": rt.mcp.register_directory,
         "mcp.delete": rt.mcp.delete,
         "mcp.connect": rt.mcp.connect,

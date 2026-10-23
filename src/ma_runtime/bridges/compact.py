@@ -27,12 +27,15 @@ from ..a2a import A2AMapping
 from ..budgets import Budgets
 from ..admission import Admission
 
+DEFAULT_RESULT_READ_CHARS = 4000
+MAX_RESULT_READ_CHARS = 6000
+
 AREAS = {
     "admission": ("有界能力摘要、同项目候选硬约束和只读任务预检；不创建对象或占用容量", {name: "admission." + name for name in ("describe", "candidates", "check")}),
     "budgets": ("会话内累计模型、token、工具和时间预算；子任务与修复继承同一账本", {name: "budgets." + name for name in ("create", "get", "for_task", "entries", "amend")}),
     "a2a": ("A2A v1.0.1 内部对象映射；消息与执行意图分开；无网络绑定", {name: "a2a." + name for name in ("capabilities", "send", "get_task")}),
     "channels": ("执行逻辑通道、当前代次与连续传输确认；连接不创建执行者", {"get": "channels.get"}),
-    "resources": ("数量容量、组合准入预检和持久租约；未知执行保留隔离占用", {name: "resources." + name for name in ("inspect", "configure", "preflight", "request", "get", "release_lease")}),
+    "resources": ("资源占用、机器核验恢复、组合准入和持久租约", {name: "resources." + name for name in ("inspect", "status", "recover", "configure", "preflight", "request", "get", "release_lease")}),
     "contexts": ("按引用读取项目内上下文证据；固定来源与版本显式合并", {name: "contexts." + name for name in ("read", "merge", "get_merge")}),
     "environments": ("外部受限执行环境与受管准备任务", {name: "environments." + name for name in ("list", "get", "configure", "prepare", "check")}),
     "workbench": ("Agent 工作能力、目录映射与原生工具回执", {name: "workbench." + name for name in ("inspect", "calls", "reconcile")}),
@@ -130,7 +133,7 @@ AREAS = {
         "项目工作流、画布节点/连线、变量、校验与版本运行记录",
         {name: "workflows." + name for name in (
             "create", "get", "list", "update", "archive", "delete", "restore", "validate", "node_types",
-            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair",
+            "run", "get_run", "runs", "activity", "result", "cancel", "resume_node", "reconcile_node", "repair", "get_repair", "preview_repair",
         )},
     ),
     "artifacts": (
@@ -161,6 +164,7 @@ AREAS = {
                 "tool",
                 "call",
                 "calls",
+                "get_call",
                 "resources",
                 "read_resource",
                 "prompts",
@@ -251,7 +255,7 @@ EXTRA_PARAMS = {
     "@skill_parse": {"skill_id": ..., "markdown": ...},
     "@upload_file": {"session_id": ..., "path": ...},
     "@download_file": {"artifact_id": ..., "path": ..., "overwrite": False},
-    "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": 4000},
+    "@read_result": {"result_ref": ..., "pointer": "", "offset": 0, "limit": DEFAULT_RESULT_READ_CHARS},
 }
 NOTES = {
     "budgets.amend": "Explicit administrative limit change. Read the current policy_hash first; submit the complete policy, stable idempotency_key and reason. Usage, start time, progress counters and inherited bindings are preserved. Do not use amendments as an automatic response to budget exhaustion.",
@@ -314,7 +318,11 @@ NOTES = {
     "sessions.close": "drain waits for accepted work; cancel requests cancellation. Closing does not erase history.",
     "@upload_file": "Uploads one user-authorized absolute local file; does not send it to an external MCP service.",
     "@download_file": "Writes one artifact to an absolute path outside source repositories; existing files require overwrite=true.",
-    "@read_result": "Reads a large prior result from this MCP process's expiring memory cache. pointer is an RFC 6901 JSON Pointer. Expiry is not permission to replay a mutation.",
+    "@read_result": "Reads a large prior result from this MCP process's expiring memory cache. pointer is an RFC 6901 JSON Pointer. offset>=0; limit defaults to 4000 and must be 1..6000 characters. Expiry is not permission to replay a mutation.",
+    "resources.status": "Paged live claims, optional scope owner_id/resource_key/session_id/project_id. Scope workload counts unfinished workflows and actually occupied execution claims. Recommendations: at most 4 unfinished workflows per session; within a single session, at most 6 running instances per Agent in total across all workflows and ordinary tasks. Lower runtime and upstream limits still apply; these recommendations do not raise saved capacities.",
+    "resources.recover": "Ask the host to consume machine-observed stop boundaries using a stable key. A bounded original MCP response may release its own capacity. No forced release, business replay, budget reset or model-generated stop confirmation. NEEDS_EVIDENCE retains actual unresolved occupancy.",
+    "mcp.get_call": "Choose call_id, or server_id/consumer_id/original idempotency_key together. Reads the exact retained receipt and resource state; missing retained output never permits replay with a new key.",
+    "workflows.preview_repair": "Read-only node invalidation and map_members reuse/rerun ordinals using shared repair decisions. Changing a top-level input invalidates its referencing nodes and descendants; changing map items or execution settings prevents member reuse. Invalidated upstream outputs make a member plan UNKNOWN. No reservation or dispatch; creation rechecks current authorization and state.",
 }
 
 
@@ -378,7 +386,7 @@ class ResultCache:
             "untrusted_data": True,
         }
 
-    def read(self, result_ref, pointer="", offset=0, limit=4000):
+    def read(self, result_ref, pointer="", offset=0, limit=DEFAULT_RESULT_READ_CHARS):
         self._expire()
         require(
             result_ref in self.entries,
@@ -407,7 +415,7 @@ class ResultCache:
             type(offset) is int
             and offset >= 0
             and type(limit) is int
-            and 1 <= limit <= 6000,
+            and 1 <= limit <= MAX_RESULT_READ_CHARS,
             "INVALID_REQUEST",
             "offset must be nonnegative; limit must be 1..6000",
         )
@@ -494,6 +502,10 @@ class CompactBridge:
             defaults["tool_name"] = None
         for name, default in defaults.items():
             entry = {"name": name, "required": default is ...}
+            if method == "@read_result" and name in {"offset", "limit"}:
+                entry.update({"type": "integer", "minimum": 0 if name == "offset" else 1})
+                if name == "limit":
+                    entry["maximum"] = MAX_RESULT_READ_CHARS
             if default is not ...:
                 entry["default"] = (
                     0

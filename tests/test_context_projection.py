@@ -78,6 +78,19 @@ class ContextAgent:
 
 
 class ContextProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_complete_tool_schema_with_type_union_and_type_property_reaches_context_preparation(self):
+        config = AgentConfig(id="worker", name="Worker", context_budget_tokens=6000)
+        context = type("Context", (), {"request": None})()
+        schema = {"type": "object", "properties": {"type": {"type": ["string", "null"]},
+                  "node": {"$ref": "#/$defs/node"}},
+                  "$defs": {"node": {"type": "object", "properties": {"next": {"$ref": "#/$defs/node"}}}}}
+        tools = [{"type": "function", "function": {"name": "query", "parameters": schema}}]
+        messages = [{"role": "user", "content": "Read a bounded query"}]
+        projected, _ = await prepare_context(messages, tools, context, ConfiguredLLM(config))
+        self.assertEqual(projected, messages)
+        self.assertEqual(tools[0]["function"]["parameters"], schema)
+        self.assertGreater(estimated_tokens(tools), 0)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="oea-context-")
         self.root = Path(self.temp.name)

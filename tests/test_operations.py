@@ -263,7 +263,7 @@ class OperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("wait_for_message", names)
         self.assertNotIn("spawn_instances", names)
 
-    async def test_uncertain_child_is_reported_without_releasing_its_slot(self):
+    async def test_uncertain_child_is_reported_after_its_confirmed_local_execution_stops(self):
         child_config, _, child_thread = await self.agent("uncertain", enabled=False)
         class Uncertain(PolicyLLM):
             async def _completion(inner, messages, context, tools=None):
@@ -279,7 +279,8 @@ class OperationsTests(unittest.IsolatedAsyncioTestCase):
         await self.rt.tasks.result(task.id, timeout=10)
         self.assertIn("OUTCOME_UNCERTAIN", json.dumps(parent.captured[-1]["messages"]))
         self.assertEqual((await self.rt.tasks.get(child.id)).state, "UNCERTAIN")
-        self.assertTrue(self.rt.uncertain_slots or self.rt._uncertain_owners)
+        self.assertFalse(self.rt.uncertain_slots)
+        self.assertFalse(self.rt._uncertain_owners)
 
     async def test_coordinator_failure_does_not_schedule_itself_again(self):
         config, _, thread = await self.agent("supervisor")

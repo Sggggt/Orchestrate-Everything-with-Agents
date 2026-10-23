@@ -291,6 +291,8 @@ class JsonlAgent:
                             value = await context.read_context(params["reference"], params.get("offset", 0), params.get("limit", 8192))
                         elif method == "runtime.context.project":
                             value = await context.project_context(params["value"])
+                        elif method == "runtime.result.retain_partial":
+                            value = await context.retain_partial_result(params["result"])
                         elif method == "runtime.skills.list":
                             value = await context.list_skills()
                         elif method == "runtime.skills.read":
