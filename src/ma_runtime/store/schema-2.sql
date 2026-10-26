@@ -1,3 +1,0 @@
-CREATE TABLE mcp_servers(id TEXT PRIMARY KEY, config_json TEXT NOT NULL, catalog_json TEXT NOT NULL DEFAULT '{}', credentials_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-CREATE TABLE mcp_calls(id TEXT PRIMARY KEY, server_id TEXT NOT NULL, consumer_id TEXT NOT NULL, tool_name TEXT NOT NULL, state TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, result_json TEXT, error_json TEXT, run_id TEXT, started_at INTEGER NOT NULL, ended_at INTEGER, UNIQUE(server_id,consumer_id,idempotency_key));
-CREATE INDEX mcp_calls_server_time ON mcp_calls(server_id,started_at);

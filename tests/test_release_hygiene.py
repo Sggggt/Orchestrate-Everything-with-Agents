@@ -46,8 +46,8 @@ class ReleaseHygieneTests(unittest.TestCase):
 
     def test_public_assets_templates_and_synthetic_examples_remain_allowed(self):
         for name in (
-            "docs/images/diagram.svg", "src/ma_runtime/secrets.py",
-            "src/ma_runtime/store/schema.sql", ".env.example",
+            "docs/images/diagram.svg", "src/oea/security/secrets.py",
+            "src/oea/storage/schema-v2.sql", ".env.example",
             ".github/workflows/ci.yml", "tests/fixtures/mcp_server.py",
             "integrations/codex/example/references/local-instance.md",
         ):
@@ -84,6 +84,22 @@ class ReleaseHygieneTests(unittest.TestCase):
             self.assertTrue(any("Tracked skills/private/SKILL.md" in error for error in errors))
             (root / ".gitignore").write_text("AGENTS.md\nPROJECT_SPEC.md\n/skills/\n/mcp/\n", encoding="utf-8")
             self.assertTrue(any("root .gitignore rule" in error for error in release_check.git_hygiene_issues(root)))
+
+    def test_skill_links_must_work_after_standalone_installation(self):
+        with tempfile.TemporaryDirectory(prefix="oea-skill-links-") as temp:
+            root = Path(temp)
+            skill = root / "integrations/codex/example"
+            workflow = skill / "workflows/develop.md"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("Development", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs/sdk.md").write_text("SDK", encoding="utf-8")
+            self.assertEqual(release_check.local_link_issue(workflow, "../../../../docs/sdk.md", root),
+                             "local Skill link escapes its distributable directory")
+            (skill / "references").mkdir()
+            (skill / "references/sdk.md").write_text("SDK template", encoding="utf-8")
+            self.assertIsNone(release_check.local_link_issue(workflow, "../references/sdk.md", root))
+            self.assertIsNone(release_check.local_link_issue(root / "docs/sdk.md", "../integrations/codex/example/workflows/develop.md", root))
 
     def test_source_archive_does_not_require_git(self):
         with tempfile.TemporaryDirectory(prefix="oea-source-contract-") as temp:

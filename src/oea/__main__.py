@@ -1,4 +1,4 @@
-from ma_runtime.cli import main
+from oea.interfaces.cli import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

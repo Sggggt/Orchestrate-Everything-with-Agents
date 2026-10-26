@@ -1,60 +1,19 @@
 # MCP and Codex skills
 
-The `environments` and `workbench` areas expose [local work capabilities](workbench.md). Preparation and checks return task receipts; file/command tools remain run-bound capabilities rather than new top-level MCP tools. Detailed types are available individually through development.workbench, development.environment and development.graph_adapter.
-
-Generated Codex configuration keeps the existing 180-second tool timeout for compatible synchronous upstream MCP calls. New environment operations are task-based; bounded task and inbox waits do not hold a tool request for the full job. Lowering the client timeout requires those remaining synchronous upstream paths to fit it too.
-
-The MCP bridge connects ChatGPT, Codex or another MCP client to the same host used by the browser. A client must support the chosen MCP transport and local process execution. Product-specific client availability may vary.
-
-## Connect a running host
+The control MCP connects to an already running OEA 2 host. Install the `mcp` extra in its Python environment:
 
 ```sh
-oea mcp --connect --compact --data-dir /absolute/path/to/state
+oea mcp
 ```
 
-The bridge reads the host's local connection metadata and token. It does not start another scheduler. Omit `--connect` only when intentionally running a standalone bridge with its own state directory.
+The normal connection needs no directory argument. It reads the saved endpoint and authentication from `~/.oea/data`, or an explicitly isolated `OEA_HOME`. The server only connects to the existing host; start `oea serve` first. A Codex connection uses command `oea` and arguments `["mcp"]`. Calls create OEA-owned records in that host, not a new database for each Codex chat.
 
-In the frontend, open the MCP integration guide to copy the generated Codex configuration. The SDK provides it with `await client.mcp.codex_config()`. The generated server ID is `oea`, uses the current Python executable, and exposes only:
+It exposes `platform_guide(consumer_id, area, action)` and `platform_call(consumer_id, operation, params)`. Discover the current action, then execute the exact shared operation. SDK, HTTP and MCP use the same registry, authorization and receipts. Read the [interface module](interfaces/README.md) for the maintained transport contract.
 
-- `platform_guide(area, action?)`: a small index or one operation's parameters.
-- `platform_call(area, action, params)`: one scoped operation.
+Keep a stable consumer identity within one conversation. Independent conversations use separate identities. Lists return bounded pages. Large results return `result_ref`; `results.read` reads the selected JSON Pointer with its original project and consumer ownership. Reading a result never repeats the mutation that created it.
 
-Keep an existing `multi_agent` server registration when upgrading if clients already depend on that ID; the tool names and operations remain compatible. Install the new package in the executable's environment before switching its command to `python -m oea`.
+The wheel includes the supplied [Codex skill](../integrations/codex/orchestrate-everything-with-agents/SKILL.md). Export it to a new directory with `oea export-skill --output EXTERNAL_SKILL_DIRECTORY`, then place that directory under the client's skill directory. Export refuses an existing destination, preserving local instructions. Its router loads one current workflow. Local paths, connection names and object IDs belong in your installed local configuration.
 
-Discover one area, then one action. For example, inspect `workflows.create`, supply its parameters, and verify the returned workflow ID. Areas cover projects, sessions, threads, tasks, messages, artifacts, workflows, Agents, profiles, shared MCP services and runtime control. Large responses return a session-local reference; use `control.read_result` with a JSON Pointer instead of rerunning a mutation. Check both the outer `ok` flag and any upstream tool `isError`.
+Business MCP services are separate from platform control. Save a service with named secret references, discover its tools, then bind selected upstream names in `tools.mcp`. Discovery does not execute business work. Current project, service, Agent and Run grants are checked at invocation and replay. Consumer-scoped sessions are the default; explicit shared sessions share upstream conversational state.
 
-Resources `oea://tool-index`, `oea://projects` and `oea://output-contract` provide small discovery and presentation contracts. The older `multi-agent://` URIs remain aliases. Standard mode without `--compact` exposes named tools and protocol discovery.
-
-## Install the supplied Codex skill
-
-Copy [orchestrate-everything-with-agents](../integrations/codex/orchestrate-everything-with-agents/SKILL.md)'s containing directory into `$CODEX_HOME/skills` (normally `~/.codex/skills`). Invoke `$orchestrate-everything-with-agents`, or let Codex select it for an established platform task.
-
-The entry point routes to one workflow at a time: Agent development, configuration, project management, graph orchestration, tasks, messages, artifacts, MCP integration or maintenance. Its [local instance reference](../integrations/codex/orchestrate-everything-with-agents/references/local-instance.md) is a template. Fill your installed copy with local paths; keep those paths out of the public repository. If retaining a legacy MCP ID, change the installed skill's dependency metadata to that ID.
-
-## Coordinate independent instances
-
-For complex work, the skill routes to one [heavy-task workflow](../integrations/codex/orchestrate-everything-with-agents/workflows/heavy-task.md). Use `admission.candidates` for bounded same-project filtering, `admission.describe` for one Agent's declarations and qualified observations, and `admission.check` for an existing-thread TaskSpec preflight. These shared-service operations do not execute, reserve capacity or probe upstream systems. Unknown capabilities and unmeasured costs remain explicit; planning stays with the coordinating Agent.
-
-For bidirectional supervision use the `operations` area: bind a receiver, inspect or dispatch a diagnostic test, wait for compact inbox summaries and reply to a selected report. It adds no top-level MCP tools. [Operations and guidance](operations.md) describes replay, acknowledgement and Codex parameter recommendations.
-
-Use `platform_guide(area="instances", action="spawn")` to discover only the batch contract, then `platform_call` with one `InstanceBatchSpec`. The `instances` area exposes `spawn`, `get`, `list`, `result` and `cancel`; it adds no top-level MCP tools. Batches reuse Agent configurations and create independent threads/tasks. Agent pools, stable request keys and batch limits support bounded orchestration by the coordinating client.
-
-For repeated list processing inside a fixed workflow, use the `map` node and discover its configuration with `workflows.node_types`. Runtime state transitions and authorization remain in shared services; Skills explain which operation to choose. Install the updated skill's `workflows/instances.md` alongside its main router, and reconnect the MCP bridge after updating the host so discovery uses the new protocol. Preserve local instance references and unrelated client settings.
-
-## Share upstream tools
-
-Shared [Skill registrations and task policies](skills.md) complement MCP bindings. Use `agents.capabilities` for a compact linked capability catalog. Dispatch may include `tool_policy` and `skill_policy`; both default to `auto`.
-
-Register STDIO, Streamable HTTP or SSE services through the frontend or `client.mcp.configure()`. Credentials go through `secret_values`, not command arguments or URLs. Bind the required tools to an Agent with `mcp_bindings`. Skills and instructions guide behavior; the runtime's bindings enforce tool access.
-
-Use a stable, distinct `consumer_id` per conversation. Consumer-scoped connections isolate stateful upstream sessions; shared connections intentionally share them. After explicit connection/discovery, read the paginated cached `mcp.catalog`, then `mcp.tool` for one full schema with its protocol version and fingerprint. Preserve referenced definitions and distinguish schema validity from provider compatibility. Do not import this platform's own bridge back into itself.
-
-The platform does not widen an external service's authorization. Unknown tool outcomes require reconciliation; the bridge never makes blind retries safe.
-
-## Resource recovery and diagnostics
-
-Resource lifetimes are managed by the host. After a caller cancels or times out, an accepted MCP request can remain under observation for the policy's bounded `recovery_timeout_seconds` window (30 seconds by default). An actual terminal response settles the original receipt, releases its capacity and wakes queued work. The request is never replayed. A closed local connection or elapsed deadline alone does not prove a remote operation stopped; unresolved remote occupancy remains isolated.
-
-Use `resources.status(scope, cursor, limit)` for paged live claims and optional session/project workload counts. `resources.recover(owner_id, idempotency_key)` asks the host to consume available machine evidence; it has no force-release switch. `mcp.get_call(call_id)` reads one exact receipt, or use the original `server_id`, `consumer_id` and `idempotency_key` together. Missing retained output is distinct from a new execution intent.
-
-The coordinating Skill recommends at most four unfinished workflows per session. Within a single session, each Agent should have at most six running instances in total, counted across all workflows and ordinary tasks in that session. Lower Runtime, adapter, model and upstream limits take precedence. These recommendations do not raise saved capacities. Validate one real model/tool/result path before increasing parallelism; stop repeated repair dispatches when the input and failure cause have not changed.
+For a controller's explicit tool trial use `mcp.call` and retain its original key. Read `mcp.call_result`; request cancellation with `mcp.cancel_call`. An unknown external outcome requires evidence through `mcp.confirm_call`; confirmation does not resend the invocation. See the [SDK](sdk.md) and [MCP module](mcp/README.md).

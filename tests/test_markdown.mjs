@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { markdown } from "../src/ma_runtime/web/static/markdown.mjs";
+import { markdown } from "../src/oea/web/static/markdown.mjs";
 
 test("headings, paragraphs, lists, table and links render as Markdown", () => {
   const html = markdown("# 摘要\n\n**完成**，见[报告](https://example.com).\n\n- 已检查\n- 待确认\n\n|项目|状态|\n|---|---|\n|示例项目|待审|");

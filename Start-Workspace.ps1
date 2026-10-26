@@ -1,166 +1,128 @@
 param(
-    [switch]$Mock,
-    [ValidateRange(1, 65535)][int]$Port = 8890,
-    [Nullable[int]]$ReservedExternalSlots = $null,
     [string]$DataDir,
-    [switch]$NoBrowser
+    [string]$Python,
+    [ValidateRange(1, 65535)][int]$Port = 8890,
+    [switch]$NoBrowser,
+    [switch]$AllowCommands
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $OutputEncoding
-$maSourceRoot = $PSScriptRoot
-$maEnvironmentRoot = Join-Path $env:LOCALAPPDATA 'OEA\environment'
-$maPython = Join-Path $maEnvironmentRoot 'Scripts\python.exe'
 $env:PYTHONDONTWRITEBYTECODE = '1'
 $env:PYTHONUTF8 = '1'
 
-if (-not $DataDir) {
-    $DataDir = Join-Path $env:LOCALAPPDATA 'OEA\workspace'
-    $maLegacyData = Join-Path $env:LOCALAPPDATA 'MultiAgentPlatform\integrated-workspace'
-    if (-not (Test-Path -LiteralPath (Join-Path $DataDir 'runtime.sqlite')) -and
-        (Test-Path -LiteralPath (Join-Path $maLegacyData 'runtime.sqlite'))) {
-        $DataDir = $maLegacyData
-    }
-    # A desktop-app package may redirect LOCALAPPDATA. Explorer must still find
-    # the workspace that was created from within Codex instead of an empty one.
-    if (-not (Test-Path -LiteralPath (Join-Path $DataDir 'runtime.sqlite'))) {
-        $maPackages = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Packages'
-        $maPackagedRoots = @(Get-ChildItem -LiteralPath $maPackages -Directory -Filter 'OpenAI.Codex_*' -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                Join-Path $_.FullName 'LocalCache\Local\OEA\workspace'
-                Join-Path $_.FullName 'LocalCache\Local\MultiAgentPlatform\integrated-workspace'
-            } |
-            Where-Object { Test-Path -LiteralPath (Join-Path $_ 'runtime.sqlite') })
-        if ($maPackagedRoots.Count -gt 1) {
-            throw 'Multiple existing workspaces were found in desktop-app storage. Select one with -DataDir.'
-        }
-        if ($maPackagedRoots.Count -eq 1) {
-            $DataDir = $maPackagedRoots[0]
-            $maPackagedEnvironment = Join-Path (Split-Path -Parent $DataDir) 'environment'
-            if (-not (Test-Path -LiteralPath $maPython) -and
-                (Test-Path -LiteralPath (Join-Path $maPackagedEnvironment 'Scripts\python.exe'))) {
-                $maEnvironmentRoot = $maPackagedEnvironment
-                $maPython = Join-Path $maEnvironmentRoot 'Scripts\python.exe'
-            }
-        }
-    }
+function Stop-Launcher([string]$Message) {
+    Write-Host $Message -ForegroundColor Red
+    exit 1
 }
-$maDataRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DataDir)
-$maUrl = "http://127.0.0.1:$Port"
-$maClientPath = Join-Path $maDataRoot 'client.json'
-$maTokenPath = Join-Path $maDataRoot 'client-token'
+if (-not $Python) {
+    $oeaHome = if ($env:OEA_HOME) { $env:OEA_HOME } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.oea' }
+    if (-not [IO.Path]::IsPathRooted($oeaHome)) { Stop-Launcher 'OEA_HOME must be an absolute path.' }
+    $Python = Join-Path $oeaHome 'runtime\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $Python)) { Stop-Launcher 'OEA is not installed. Run Install-OEA.cmd once, then open Start-Workspace.cmd.' }
+}
+# Windows PowerShell can omit an empty native argument; absence selects the package default.
+# Return validation failures on stdout so native stderr does not bypass our startup message.
+$oeaValidate = @'
+import json, sys
+try:
+    from oea.contracts.errors import RuntimeFault
+    from oea.workspace.paths import resolve_data_dir
+except ImportError as error:
+    print(json.dumps({'error': 'OEA or a required dependency is not installed in the selected Python environment: ' + str(error.name)}))
+    raise SystemExit(2)
+try:
+    path = resolve_data_dir(sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None)
+except RuntimeFault as error:
+    print(json.dumps({'error': error.safe_message, 'code': error.code}))
+    raise SystemExit(3)
+print(json.dumps({'path': str(path)}))
+'@
+try {
+    $oeaValidated = & $Python -B -c $oeaValidate ([string]$DataDir)
+    $oeaValidationExitCode = $LASTEXITCODE
+} catch {
+    Stop-Launcher "Cannot run OEA Python '$Python'. Run Install-OEA.cmd to prepare the managed runtime. $($_.Exception.Message)"
+}
+try { $oeaValidation = ([string]($oeaValidated | Select-Object -Last 1)) | ConvertFrom-Json }
+catch { Stop-Launcher "Python '$Python' could not validate the OEA installation. See docs/getting-started.md and check that OEA 2 is installed in this environment." }
+if ($oeaValidationExitCode -ne 0) {
+    $oeaReason = [string]$oeaValidation.error
+    if ($oeaValidationExitCode -eq 2) {
+        Stop-Launcher "Python '$Python': $oeaReason. Run Install-OEA.cmd, or install into an explicitly selected development environment with pip install -e '.[web,mcp,workbench]'."
+    }
+    Stop-Launcher "Python '$Python': $oeaReason. Select a local data directory outside source repositories and synchronized folders."
+}
+$oeaDataRoot = [string]$oeaValidation.path
+if ((Test-Path -LiteralPath (Join-Path $oeaDataRoot 'runtime.sqlite')) -and -not (Test-Path -LiteralPath (Join-Path $oeaDataRoot 'oea.sqlite'))) {
+    throw 'Legacy state requires offline conversion. Run oea migrate --source OLD_DIRECTORY first, then --target NEW_DIRECTORY --apply after reviewing the report. Start with the new directory.'
+}
+$oeaUrl = "http://127.0.0.1:$Port"
+$oeaTokenPath = Join-Path $oeaDataRoot 'client-token'
+$oeaClientPath = Join-Path $oeaDataRoot 'client.json'
 
 function Test-WorkspaceService([string]$Url) {
-    if (-not (Test-Path -LiteralPath $maTokenPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $oeaTokenPath)) { return $false }
     try {
-        $maToken = (Get-Content -LiteralPath $maTokenPath -Raw -Encoding UTF8).Trim()
-        if (-not $maToken) { return $false }
-        $maProtocol = Invoke-RestMethod -Uri "$Url/api/protocol" -Method Get `
-            -Headers @{ Authorization = "Bearer $maToken" } -TimeoutSec 2 -MaximumRedirection 0
-        return $maProtocol.name -in @('Orchestrate Everything with Agents', 'Multi-Agent Platform') -and $maProtocol.capabilities -contains 'mcp_registry'
-    } catch {
-        return $false
-    }
+        $token = (Get-Content -LiteralPath $oeaTokenPath -Raw -Encoding UTF8).Trim()
+        if (-not $token) { return $false }
+        $protocol = Invoke-RestMethod -Uri "$Url/api/protocol" -Method Get -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 2 -MaximumRedirection 0
+        return $protocol.protocol_version -eq '2.0' -and $protocol.engine -eq 'langgraph'
+    } catch { return $false }
 }
-
 function Show-Workspace([string]$Url) {
     Write-Host "Workspace: $Url"
-    Write-Host "Data:      $maDataRoot"
+    Write-Host "Data:      $oeaDataRoot"
     if (-not $NoBrowser) {
-        try { Start-Process -FilePath "$Url/#workspace" }
-        catch { Write-Warning "Could not open the browser. Open $Url/#workspace manually." }
+        try { Start-Process -FilePath $Url }
+        catch { Write-Warning "Open $Url in your browser." }
     }
 }
-
-# Authenticate with this workspace's token before reusing a running instance.
-# Never follow an arbitrary URL from client metadata or send a token remotely.
-if (Test-Path -LiteralPath $maClientPath) {
-    $maSavedUrl = $null
+# Only authenticate against loopback metadata owned by this data directory.
+if (Test-Path -LiteralPath $oeaClientPath) {
+    $oeaSavedUrl = $null
     try {
-        $maMetadata = Get-Content -LiteralPath $maClientPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $maSavedUri = [uri]$maMetadata.url
-        if ($maSavedUri.Scheme -eq 'http' -and
-            $maSavedUri.Host -in @('127.0.0.1', 'localhost', '[::1]', '::1') -and
-            -not $maSavedUri.UserInfo -and -not $maSavedUri.Query -and -not $maSavedUri.Fragment -and
-            $maSavedUri.AbsolutePath -eq '/') {
-            $maSavedUrl = $maSavedUri.GetLeftPart([System.UriPartial]::Authority)
+        $oeaMetadata = Get-Content -LiteralPath $oeaClientPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $oeaSavedUri = [uri]$oeaMetadata.url
+        if ($oeaSavedUri.Scheme -eq 'http' -and $oeaSavedUri.Host -in @('127.0.0.1','localhost','[::1]','::1') -and -not $oeaSavedUri.UserInfo -and -not $oeaSavedUri.Query -and -not $oeaSavedUri.Fragment -and $oeaSavedUri.AbsolutePath -eq '/') {
+            $oeaSavedUrl = $oeaSavedUri.GetLeftPart([System.UriPartial]::Authority)
         }
     } catch { }
-    if ($maSavedUrl -and (Test-WorkspaceService $maSavedUrl)) {
-        if ($PSBoundParameters.ContainsKey('Port') -and $maSavedUri.Port -ne $Port) {
-            throw "This workspace is already running at $maSavedUrl. Stop that instance before changing its port."
-        }
-        if ($Mock -or $null -ne $ReservedExternalSlots) {
-            Write-Warning 'Reusing the running workspace; Mock and ReservedExternalSlots only apply on a fresh start.'
-        }
-        Write-Host 'Using the running workspace.'
-        Show-Workspace $maSavedUrl
+    if ($oeaSavedUrl -and -not $PSBoundParameters.ContainsKey('Port')) {
+        $Port = $oeaSavedUri.Port
+        $oeaUrl = "http://127.0.0.1:$Port"
+    }
+    if ($oeaSavedUrl -and (Test-WorkspaceService $oeaSavedUrl)) {
+        if ($PSBoundParameters.ContainsKey('Port') -and $oeaSavedUri.Port -ne $Port) { throw "This data directory is already served at $oeaSavedUrl. Stop that host before changing its port." }
+        if ($AllowCommands) { Write-Host 'Reusing the host with its existing command grant.' }
+        Show-Workspace $oeaSavedUrl
         exit 0
     }
 }
-
-# Detect port conflicts before opening the database or installing dependencies.
-$maProbe = New-Object System.Net.Sockets.TcpClient
+$oeaProbe = New-Object System.Net.Sockets.TcpClient
 try {
-    $maConnect = $maProbe.ConnectAsync('127.0.0.1', $Port)
-    try { $null = $maConnect.Wait(1000) } catch { }
-    if ($maProbe.Connected) {
-        throw "Port $Port is in use by another service or workspace. Choose -Port with a free port."
-    }
-} finally { $maProbe.Dispose() }
-
-if (-not (Test-Path -LiteralPath $maPython)) {
-    & python -c 'import sys; assert sys.version_info >= (3,12), "Python 3.12 or newer is required"'
-    if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 or newer is required.' }
-    & python -m venv $maEnvironmentRoot
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create the external Python environment.' }
-}
-
-$maDependencyHash = (Get-FileHash -LiteralPath (Join-Path $maSourceRoot 'pyproject.toml') -Algorithm SHA256).Hash +
-    (Get-FileHash -LiteralPath (Join-Path $maSourceRoot 'constraints.txt') -Algorithm SHA256).Hash + $maSourceRoot
-$maInstallMarker = Join-Path $maEnvironmentRoot 'source-install.hash'
-$maInstalledHash = if (Test-Path -LiteralPath $maInstallMarker) { Get-Content -LiteralPath $maInstallMarker -Raw -Encoding UTF8 } else { '' }
-if ($maInstalledHash.Trim() -ne $maDependencyHash) {
-    & $maPython -m pip install --disable-pip-version-check --constraint (Join-Path $maSourceRoot 'constraints.txt') --editable "$maSourceRoot[web,mcp]"
-    if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed; the source tree has not been modified.' }
-    Set-Content -LiteralPath $maInstallMarker -Value $maDependencyHash -Encoding UTF8
-}
-
-# Validate and normalize state paths with the same rules as the Runtime.
-$maValidation = 'import sys; from ma_runtime.paths import external_path, require_local_state; p = external_path(sys.argv[1]); require_local_state(p); print(p)'
-$maValidatedPath = & $maPython -c $maValidation $maDataRoot
-if ($LASTEXITCODE -ne 0) { throw 'The data directory must be on a local disk outside the source repository.' }
-$maDataRoot = [string]($maValidatedPath | Select-Object -Last 1)
-$maLogRoot = Join-Path $maDataRoot 'logs'
-$null = New-Item -ItemType Directory -Path $maLogRoot -Force
-$maLaunchId = Get-Date -Format 'yyyyMMdd-HHmmss-ffff'
-$maOutputLog = Join-Path $maLogRoot "launcher-$maLaunchId.out.log"
-$maErrorLog = Join-Path $maLogRoot "launcher-$maLaunchId.err.log"
-
-$maArguments = @('-m', 'oea', 'serve', '--port', [string]$Port, '--data-dir', $maDataRoot)
-if ($Mock) { $maArguments += '--mock' }
-if ($null -ne $ReservedExternalSlots) { $maArguments += @('--reserved-external-slots', [string]$ReservedExternalSlots) }
-# Start-Process joins its argument array; quote according to Windows argv rules.
-$maCommandLine = ($maArguments | ForEach-Object {
-    '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
-}) -join ' '
-Write-Host 'Starting Orchestrate Everything with Agents...'
-$maService = Start-Process -FilePath $maPython -ArgumentList $maCommandLine `
-    -WorkingDirectory $maDataRoot -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput $maOutputLog -RedirectStandardError $maErrorLog
-$maDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    $oeaConnect = $oeaProbe.ConnectAsync('127.0.0.1', $Port)
+    try { $null = $oeaConnect.Wait(1000) } catch { }
+    if ($oeaProbe.Connected) { throw "Port $Port is in use. Select a free -Port." }
+} finally { $oeaProbe.Dispose() }
+$oeaLogRoot = Join-Path $oeaDataRoot 'logs'
+$null = New-Item -ItemType Directory -Force -Path $oeaLogRoot
+$oeaLaunch = Get-Date -Format 'yyyyMMdd-HHmmss-ffff'
+$oeaOutputLog = Join-Path $oeaLogRoot "launcher-$oeaLaunch.out.log"
+$oeaErrorLog = Join-Path $oeaLogRoot "launcher-$oeaLaunch.err.log"
+$oeaArguments = @('-B', '-m', 'oea', 'serve', '--port', [string]$Port, '--data-dir', $oeaDataRoot)
+if ($AllowCommands) { $oeaArguments += '--allow-commands' }
+# Start-Process joins its array; preserve Windows argv quoting and empty values.
+$oeaCommandLine = ($oeaArguments | ForEach-Object { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }) -join ' '
+$oeaService = Start-Process -FilePath $Python -ArgumentList $oeaCommandLine -WorkingDirectory $oeaDataRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $oeaOutputLog -RedirectStandardError $oeaErrorLog
+Write-Host "Host PID:  $($oeaService.Id)"
+$oeaDeadline = [DateTime]::UtcNow.AddSeconds(45)
 do {
-    if (Test-WorkspaceService $maUrl) {
-        Write-Host 'Workspace is ready. The service runs in the background.'
-        Show-Workspace $maUrl
-        exit 0
-    }
-    $maService.Refresh()
-    if ($maService.HasExited) {
-        throw "The workspace did not start (exit $($maService.ExitCode)). See $maErrorLog"
-    }
+    if (Test-WorkspaceService $oeaUrl) { Show-Workspace $oeaUrl; exit 0 }
+    $oeaService.Refresh()
+    if ($oeaService.HasExited) { throw "The host exited ($($oeaService.ExitCode)). See $oeaErrorLog" }
     Start-Sleep -Milliseconds 400
-} while ([DateTime]::UtcNow -lt $maDeadline)
-throw "The workspace has not become ready yet. See $maErrorLog before trying again."
+} while ([DateTime]::UtcNow -lt $oeaDeadline)
+throw "The host has not become ready. Read $oeaErrorLog before retrying."

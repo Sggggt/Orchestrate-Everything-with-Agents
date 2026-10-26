@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestrate-everything-with-agents"
-version = "1.4.0"
+version = "2.0.3"
 description = "A lightweight personal platform for developing, orchestrating and collaborating with agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -15,22 +15,28 @@ dependencies = [
   "httpx>=0.28,<1",
   "cryptography>=43,<51",
   "jsonschema>=4.21,<5",
+  "jsonschema-specifications>=2025.9.1,<2027",
+  "referencing>=0.37,<1",
   "PyYAML>=6,<7",
+  "langgraph>=1.2.14,<2",
+  "langgraph-checkpoint-sqlite>=3.1,<4",
 ]
 
 [project.optional-dependencies]
 web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 mcp = ["mcp>=1.30,<2"]
-langgraph = ["langgraph>=1,<2", "langgraph-checkpoint-sqlite>=2,<4"]
 workbench = ["Pillow>=10,<13"]
 
 [project.scripts]
-oea = "ma_runtime.cli:main"
-multi-agent = "ma_runtime.cli:main"
+oea = "oea.interfaces.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oea", "src/ma_runtime", "agent"]
+packages = ["src/oea"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "oea/THIRD_PARTY_NOTICES.md"
+"integrations/codex/orchestrate-everything-with-agents" = "oea/codex_skill"
 
 [tool.hatch.build.targets.sdist]
 exclude = ["/skills", "/mcp", "/PROJECT_SPEC.md", "/AGENTS.md"]
-include = ["src/", "agent/", "docs/", "examples/", "tests/", "integrations/", "scripts/", ".github/", "README.md", "README.zh-CN.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "pyproject.toml", "constraints.txt", "Start-Workspace.ps1", "Start-Workspace.cmd", ".gitignore", ".gitattributes"]
+include = ["src/oea/", "docs/", "examples/", "tests/", "integrations/", "scripts/", ".github/", "README.md", "README.zh-CN.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "constraints.txt", "Install-OEA.ps1", "Install-OEA.cmd", "Start-Workspace.ps1", "Start-Workspace.cmd", ".gitignore", ".gitattributes"]

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { autoLayout, canConnect, fitViewport, portPoint } from '../src/ma_runtime/web/static/workflow-graph.mjs';
+import { autoLayout, canConnect, fitViewport, portPoint } from '../src/oea/web/static/workflow-graph.mjs';
 
 const graph = {nodes: [
   {id:'start',type:'start',position:{x:0,y:0}},
@@ -8,11 +8,11 @@ const graph = {nodes: [
   {id:'b',type:'template',position:{x:0,y:0}},
   {id:'c',type:'template',position:{x:0,y:0}},
   {id:'end',type:'end',position:{x:0,y:0}},
-],edges:[{id:'1',source:'start',target:'a'}, {id:'2',source:'a',target:'b',source_handle:'true'},
-  {id:'3',source:'a',target:'c',source_handle:'false'}, {id:'4',source:'b',target:'end'}, {id:'5',source:'c',target:'end'}]};
+],edges:[{id:'1',source:'start',target:'a'}, {id:'2',source:'a',target:'b',branch:'true'},
+  {id:'3',source:'a',target:'c',branch:'false'}, {id:'4',source:'b',target:'end'}, {id:'5',source:'c',target:'end'}]};
 
-test('connections reject cycles, duplicate ports and start/end violations', () => {
-  assert.ok(canConnect(graph,'b','a'));
+test('connections allow native graph loops and reject duplicate ports and start/end violations', () => {
+  assert.equal(canConnect(graph,'b','a'),'');
   assert.ok(canConnect(graph,'a','b','true'));
   assert.ok(canConnect(graph,'end','b'));
   assert.ok(canConnect(graph,'b','start'));

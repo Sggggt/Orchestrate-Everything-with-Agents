@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = {".git"}
 LOCAL_REGISTRIES = {"skills", "mcp"}
 LOCAL_DOCUMENTS = {"AGENTS.md", "PROJECT_SPEC.md"}
+RETIRED_PATHS = {"src/ma_runtime", "agent", "src/oea/a2a.py", "src/oea/context.py", "src/oea/execution.py", "src/oea/workflows.py"}
 GENERATED = {
     "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache",
     ".mypy_cache", ".ruff_cache", "dist", "build", "runtime-data", ".runtime",
@@ -48,11 +49,15 @@ PRIVATE = {
     "private service address": re.compile(r"\b(?:https?|ssh|postgres(?:ql)?|mysql|mongodb)://(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?=[:/\s\"']|$)", re.I),
 }
 CREDENTIAL_URL = re.compile(r"\b(?:https?|ssh|postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s/\"'<>:]+:[^\s/\"'<>@]+@[^\s/\"'<>\x60]+")
+ROLE_METAPHORS = re.compile(r"\u7ecf\u7406|\u8001\u677f|\u4e3b\u63a7|\u5458\u5de5|\u96c7\u5458|\u90e8\u95e8")
 INSTANCE_ID = re.compile(r"\b(?:prj|wf|wfr|ses|thr|tsk|run|msg|art)_[0-9a-f]{32}\b", re.I)
 
 
 def artifact_reason(relative: Path):
     """Identify state even when copied into a directory with an arbitrary name."""
+    value = relative.as_posix()
+    if any(value == retired or value.startswith(retired + "/") for retired in RETIRED_PATHS):
+        return "retired runtime entry point"
     directories = relative.parts[:-1]
     name = relative.name.lower()
     if relative.as_posix() in LOCAL_DOCUMENTS or relative.parts[0] in LOCAL_REGISTRIES:
@@ -77,6 +82,8 @@ def artifact_reason(relative: Path):
 def content_issues(value: str, *, skill=False):
     """Return categories only, never credential values or private path contents."""
     issues = [label for label, pattern in PRIVATE.items() if pattern.search(value)]
+    if ROLE_METAPHORS.search(value):
+        issues.append("noncanonical role terminology")
     for match in CREDENTIAL_URL.finditer(value):
         try:
             host = (urlsplit(match.group()).hostname or "").lower()
@@ -88,6 +95,25 @@ def content_issues(value: str, *, skill=False):
     if skill and INSTANCE_ID.search(value):
         issues.append("concrete workspace object ID in public skill")
     return issues
+
+
+def local_link_issue(path: Path, target: str, root=ROOT):
+    """Validate repository links and the stricter standalone Skill boundary."""
+    parsed = urlsplit(target)
+    relative = path.relative_to(root)
+    skill = relative.parts[:2] == ("integrations", "codex") and len(relative.parts) > 3
+    if skill and (parsed.scheme == "file" or target.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", target)):
+        return "local Skill link must be relative to its distributable directory"
+    if parsed.scheme or not parsed.path or target.startswith("/"):
+        return None
+    resolved = (path.parent / unquote(parsed.path)).resolve()
+    if skill:
+        skill_root = root.joinpath(*relative.parts[:3]).resolve()
+        if not resolved.is_relative_to(skill_root):
+            return "local Skill link escapes its distributable directory"
+    if not resolved.is_relative_to(root) or not resolved.exists():
+        return "broken local link"
+    return None
 
 
 def git_hygiene_issues(root=ROOT):
@@ -103,6 +129,8 @@ def git_hygiene_issues(root=ROOT):
         return ["Cannot verify Git index and root ignore rules"]
     for name in tracked.decode("utf-8").split("\0"):
         if name and (reason := artifact_reason(Path(name))):
+            if reason == "retired runtime entry point" and not (root / name).exists():
+                continue  # Pending tracked deletions are absent from the release tree.
             errors.append(f"Tracked {name}: {reason}")
     rules = {}
     for line in ignored.stdout.decode("utf-8").splitlines():
@@ -144,18 +172,21 @@ def main():
             targets += re.findall(r"(?:src|href)=[\"']([^\"']+)[\"']", prose)
             for target in targets:
                 target = target.strip().split(' "', 1)[0].strip("<>")
-                parsed = urlsplit(target)
-                if parsed.scheme or not parsed.path or target.startswith("/"):
-                    continue
-                resolved = (path.parent / unquote(parsed.path)).resolve()
-                if not resolved.is_relative_to(ROOT) or not resolved.exists():
-                    errors.append(f"{relative}: broken local link {target}")
+                issue = local_link_issue(path, target)
+                if issue:
+                    errors.append(f"{relative}: {issue} {target}")
+    import tomllib
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    if project["project"].get("scripts") != {"oea": "oea.interfaces.cli:main"}:
+        errors.append("Only the oea CLI entry point may be published")
+    if project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] != ["src/oea"]:
+        errors.append("The wheel must contain only the oea package")
     for name in ("README.md", "README.zh-CN.md", "LICENSE", "CONTRIBUTING.md", "SECURITY.md", "docs/README.md"):
         if not (ROOT / name).is_file():
             errors.append(f"Missing {name}")
-    logo = ROOT / "src/ma_runtime/web/static/mark.svg"
+    logo = ROOT / "src/oea/web/static/mark.svg"
     skill_logo = ROOT / "integrations/codex/orchestrate-everything-with-agents/assets/mark.svg"
-    if not skill_logo.is_file() or logo.read_bytes() != skill_logo.read_bytes():
+    if not logo.is_file() or not skill_logo.is_file() or logo.read_bytes() != skill_logo.read_bytes():
         errors.append("Skill logo must match the canonical frontend mark")
     if errors:
         print("\n".join(errors))

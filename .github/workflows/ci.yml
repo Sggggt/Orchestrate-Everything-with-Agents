@@ -2,6 +2,7 @@ name: Contracts
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -23,12 +24,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -c constraints.txt -e ".[web,mcp,langgraph,workbench]"
+      - run: python -m pip install -c constraints.txt -e ".[web,mcp,workbench]"
       - name: Run Python contracts
         env:
           TMPDIR: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: python -B -m unittest discover -s tests -p "test_*.py"
-      - run: node --test tests/test_markdown.mjs tests/test_workflow_graph.mjs tests/test_agent_status.mjs tests/test_browser_integration.mjs tests/test_message_feed.mjs tests/test_instance_view.mjs tests/test_workflow_ui.mjs
+      - name: Run JavaScript contracts
+        shell: python {0}
+        run: |
+          from pathlib import Path
+          import subprocess
+          tests = sorted(str(path) for path in Path("tests").glob("test_*.mjs"))
+          subprocess.run(["node", "--test", *tests], check=True)
       - run: python -B scripts/check_release.py

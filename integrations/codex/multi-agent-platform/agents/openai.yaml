@@ -1,6 +1,0 @@
-interface:
-  display_name: "Multi-Agent Platform (compatibility)"
-  short_description: "Explicit compatibility entry for the canonical OEA Skill"
-  default_prompt: "Use $orchestrate-everything-with-agents and load one matching workflow."
-policy:
-  allow_implicit_invocation: false

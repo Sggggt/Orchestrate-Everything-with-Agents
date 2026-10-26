@@ -1,15 +1,9 @@
-# 控制与观测
+# 运行与核验
 
-在总入口选择本模块后使用。目标是得到当前实例状态，或完成用户指定的运行参数修改。
-
-- `control.status {}`：返回实际 URL、数据目录、运行状态及对象计数，不展开所有对象。
-- `control.config {}`：读取运行预算与限制。修改用 `control.configure {"changes":{...}}`，只提供本次要改的字段，其他设置保留。需要字段约束时查询该动作。
-- `control.events {"session_id":"...","after_seq":0,"limit":25}`：限定协作空间，使用上一页事件 seq 继续，不从头重复读取。
-- `control.resources {}`：检查资源锁、持有者和隔离状态。查看具体问题时再读取对应 task，不擅自释放隔离资源。
-- `resources.status {scope:{session_id},limit:25}`：分页读取当前占用、可用量和主控窗口；历史实例数不是并发数。需要处理某个 owner 时请求 `resources.recover {owner_id,idempotency_key}`，让宿主消费机器停止证据；不手填停止确认、不清空账本。未知执行交给运维排障流程。
-
-`active` 与 `uncertain_slots` 都会占用执行预算；减少容量时必须能容纳它们。配置中的 `reserved_external_slots` 为外部协调者预留容量，不代表平台能控制外部进程。
-
-新工作区默认全局 16 槽、预留 1 槽，可配置上限 256；内置 Agent 默认 4 并发、上限 64，自定义适配器仍受真实声明约束。已有工作区保留保存的预算。多实例还受批次 max_concurrency 限制；AGENT_LIMIT / BATCH_LIMIT 是正常排队原因，不应通过额外宿主绕过。需要调高时只修改明确的预算，并考虑模型服务与上游工具的实际容量。
-
-状态检查完成即停止。用户要任务结果时转入任务子技能，不用频繁读取全局状态代替任务查询。连接失败转维护子技能；不启动第二个 Runtime 来探测同一个数据目录。
+1. 首次在线用 `host.status` 确认版本与宿主。分页读取项目、会话、实例和 runs.list，保留实际 ID。
+2. 独立上下文用 instances.create；追加到既有实例使用 runs.submit，携带原意图幂等键。一个实例只有一个写入者，独立实例可并行。
+3. `runs.get` 看状态，`runs.inspect` 看动作、预算和产物。完整结果用 runs.result；大输出通过 results.read，模型历史用 runs.attempts 和固定 attempt_id 的 runs.action。
+4. waiting 输入用 runs.resume 和原 Run；失败先看原错误、检查点与动作。修复配置后显式继续，默认在该边界刷新模型与能力。不要把未决外部动作伪装成普通失败。
+5. `runs.cancel` 表示请求取消；核对 cancellation、stopped_at 和原动作，区分已停止和 needs_review。晚到结果保留在原 action，不自动重派。
+6. events.list 按持久游标补读，SSE 只提供实时观察；丢帧后读取事实，不重新执行操作。
+7. 独立核对产物内容、来源和实际业务效果。报告实际完成、真实调用量和未验证范围，不把配置成功或状态绿色当作业务正确。

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWorkflowUI } from "../src/ma_runtime/web/static/workflows.js";
+import { createWorkflowUI } from "../src/oea/web/static/workflow-canvas.mjs";
 
 test("run selection survives new executions and definition edits while rendering its saved graph", async t => {
   const oldWindow = globalThis.window, oldDocument = globalThis.document;
@@ -10,28 +10,27 @@ test("run selection survives new executions and definition edits while rendering
   const graph = { nodes: [
     { id: "start", type: "start", title: "Start", position: { x: 0, y: 0 }, config: { input_schema: { type: "object" } } },
     { id: "end", type: "end", title: "Saved end", position: { x: 300, y: 0 }, config: { outputs: {} } },
-  ], edges: [{ id: "edge", source: "start", target: "end", source_handle: "default" }], viewport: { x: 0, y: 0, zoom: 1 } };
-  let definition = { id: "flow", project_id: "project", name: "Flow", revision: 2, state: "ACTIVE", graph, validation: { valid: true, warnings: [] } };
-  const makeRun = (id, created_at, revision) => ({ id, workflow_id: "flow", project_id: "project", session_id: "session", state: "WAITING", revision, created_at, graph: structuredClone(graph),
-    nodes: [{ node_id: "start", type: "start", title: "Start", state: "SUCCEEDED" },
+  ], edges: [{ id: "edge", source: "start", target: "end", branch: "default" }], viewport: { x: 0, y: 0, zoom: 1 } };
+  let definition = { id: "flow", project_id: "project", name: "Flow", revision: 2, state: "active", graph, validation: { valid: true, warnings: [] } };
+  const makeRun = (id, created_at, revision) => ({ id, workflow_id: "flow", project_id: "project", session_id: "session", state: "waiting", revision, created_at, graph: structuredClone(graph),
+    nodes: [{ node_id: "start", type: "start", title: "Start", state: "completed" },
       { node_id: "end", type: "end", title: "Saved end", state: "PENDING" }] });
   const runs = [makeRun("run-b", 2, 2), makeRun("run-a", 1, 1)];
   const state = { route: "workflows", project: { id: "project", name: "Project" }, session: { id: "session" }, agents: [], sessions: [] };
-  const api = async (_path, options) => {
-    const { method, params } = options.body;
+  const rpc = async (method, params) => {
     const values = {
-      "workflows.list": () => ({ items: [definition], has_more: false }),
-      "workflows.node_types": () => [],
-      "workflows.activity": () => [{ workflow_id: "flow", active_count: runs.length, counts: { WAITING: runs.length } }],
+      "workflows.list": () => ({ items: [definition], cursor: null }),
+      "workflows.node_types": () => ({}),
+      "workflows.activity": () => ({items:[{ workflow_id: "flow", active_count: runs.length }],cursor:null}),
       "workflows.get": () => structuredClone(definition),
-      "workflows.runs": () => ({ items: runs.map(({ graph, nodes, ...run }) => run), has_more: false }),
-      "workflows.get_run": () => structuredClone(runs.find(run => run.id === params.run_id)),
+      "workflows.list_runs": () => ({ items: runs.map(({ graph, nodes, ...run }) => run), cursor: null }),
+      "workflows.inspect": () => structuredClone(runs.find(run => run.id === params.workflow_run_id)),
     };
     assert.ok(values[method], method);
-    return { result: values[method]() };
+    return values[method]();
   };
   let ui, html;
-  ui = createWorkflowUI({ state, api, escape: value => String(value ?? ""), icon: () => "", badge: value => String(value),
+  ui = createWorkflowUI({ state, rpc, escape: value => String(value ?? ""), icon: () => "", badge: value => String(value),
     markdown: value => value, toast: () => {}, time: () => "", idempotency: () => "key", render: () => { if (ui) html = ui.page(); } });
   await ui.load("project");
   assert.match(html, /value="run-b" selected/);

@@ -1,72 +1,39 @@
 # Getting started
 
-Orchestrate Everything with Agents runs on your computer. Python 3.12 or newer is required. The browser frontend has no Node.js build step.
+On Windows, run `Install-OEA.cmd` once from the source distribution, then open `Start-Workspace.cmd`. The installer finds Python 3.12 or newer for bootstrapping, creates OEA's own runtime, installs the declared dependencies, and adds the OEA command directory to your user PATH. Open a new terminal or restart the MCP client after installation so it sees that PATH.
 
-Local command work is optional: start with `--allow-trusted-local-execution` to authorize configured programs, then assign an environment and workbench tools. No container engine is required. See [workbench setup](workbench.md) for readiness and the explicit local execution boundary.
-
-## Install from source
-
-Create the Python environment outside the checkout. From the repository root:
-
-```powershell
-python -m venv "$env:LOCALAPPDATA\OEA\environment"
-& "$env:LOCALAPPDATA\OEA\environment\Scripts\python.exe" -m pip install -c constraints.txt ".[web,mcp]"
-& "$env:LOCALAPPDATA\OEA\environment\Scripts\oea.exe" serve --port 8890
-```
-
-On Linux or macOS:
+For an existing Python installation on other systems, use an environment outside the checkout:
 
 ```sh
-python3 -m venv "$HOME/.local/share/oea/environment"
-"$HOME/.local/share/oea/environment/bin/pip" install -c constraints.txt '.[web,mcp]'
-"$HOME/.local/share/oea/environment/bin/oea" serve --port 8890
+python -m pip install -c constraints.txt '.[web,mcp,workbench]'
+oea serve
 ```
 
-Open `http://127.0.0.1:8890`. The loopback page sets an HttpOnly, same-site authentication cookie automatically. SDK and MCP clients read the external `client-token` file; treat that file as an administrator credential.
+The default home is `~/.oea` (`%USERPROFILE%\.oea` on Windows):
 
-Windows users can also run `Start-Workspace.cmd`. It creates an external environment, installs the source with pinned constraints, and opens the workspace. `Start-Workspace.ps1 -NoBrowser` runs without opening a browser. The launcher uses `%LOCALAPPDATA%\OEA\workspace`; an existing legacy workspace is discovered and reused. Direct CLI commands default to `%LOCALAPPDATA%\OEA\data` on Windows, or `$XDG_STATE_HOME/oea` (`~/.local/state/oea`) elsewhere. Use `--data-dir` consistently when connecting to a custom directory.
+| Directory | Contents |
+| --- | --- |
+| `data/` | Databases, checkpoints, credentials, saved connection information, managed workspaces and artifacts |
+| `runtime/` | Windows installer-managed Python environment and application dependencies |
+| `cache/` | Regenerable downloads, build and temporary files |
+| `bin/` | Installed `oea` entry point and Windows launchers |
 
-## Your first project
-
-1. Create a project and optionally bind a local folder outside this repository.
-2. Add an Agent to that project. Use an LLM Agent for instructions and tools, or a process Agent for your own code.
-3. For model-backed Agents, open **Agent → 配置 → 模型 API**, save the endpoint, model and key, then test the saved configuration. Model tuning is under **模型高级参数**.
-4. Create a session and start a conversation, or open **工作流** to connect reusable steps. The workspace highlights the next setup step and tasks that need your attention.
-
-Documents open as rendered Markdown; choose **编辑** to change an Agent's instructions. Tool parameters and workflow inputs use typed fields, and structured results appear as labeled values. Register MCP services and Skills first, then assign them in the Agent's configuration. Connect an external Codex coordinator from the **外部协调 · Codex** section on the Agent page.
-
-For local process Agents, **本机运行方式** shows which program handles tasks. Choose **修改启动设置** to select a Python script, Python module, Node.js script, or executable. Entry files must implement the OEA Agent protocol; the Python SDK provides its standard transport. Existing startup options are preserved; developer options stay under **其他启动选项（高级）**. Finish with **保存配置**. Local MCP services use the same startup editor and save with **保存服务**.
-
-The workspace is designed for desktop browsers, and the Windows launcher opens the **工作台**. Use the project and session selectors in the sidebar; their adjacent menus contain creation, settings and deletion actions. The bound folder is shown in project settings.
-
-Agent indicators in the overview and sidebar show current availability and activity. A failed past task stays beside its conversation messages and in execution details. Idle instances remain selectable in the instance picker. Conversation updates preserve your reading position, follow new content when you are near the bottom, and show thinking feedback before the first response text arrives.
-
-The MCP page accepts a directory containing `mcp.json` through its registration form, like the Skill directory form. The terminal icon in the upper right opens SDK and Codex connection instructions.
-
-The **工作产物** page groups files by source Agent; **最近产物** on the overview shows the latest files with their source. Uploads, external submissions and legacy files without recorded provenance appear separately. Work artifacts can be opened from the overview or artifact list in a read-only original-text dialog, with copy and download actions. Markdown, HTML and code remain source text in this view. The browser previews up to 1 MiB of UTF-8 or BOM-marked UTF-16 text; larger files show a notice, and unsupported formats remain downloadable.
-
-The session overview contains conversation progress, tasks and dependencies, collaboration messages, and work artifacts as top tabs. New activity is marked with a red dot. Workflows belong to exactly one project; Agents from another project cannot be substituted into them.
-
-## Try without a model
+Open **http://127.0.0.1:8890** on first launch. Later launches retain the saved port. The browser establishes an authenticated session. `oea serve` reuses an authenticated running host for the same data directory. One host owns that directory; clients never open a second host.
 
 ```sh
-oea serve --mock --port 8890 --data-dir /absolute/path/outside-the-repository
+oea paths
+oea request host.status
+oea mcp
 ```
 
-Use a separate empty data directory for mock mode. It registers demonstration Agents in that directory. Normal startup does not populate demonstration sessions, tasks or business records.
+For a Codex stdio MCP connection, use command `oea` with arguments `["mcp"]`. Start the host first. MCP-created objects are stored by the same OEA host used by the browser and SDK clients, not in the MCP client's own cache or conversation directory. `PlatformClient.from_data_dir()` discovers that same default host.
 
-After creating a project in that workspace, the deterministic [workflow example](../examples/workflow.py) needs no model:
+Create a project, save an Agent configuration, and open a session. Configure model endpoint, model name and credential locally. Main and manager roles use separate configuration and secrets. Startup registers no demonstration Agents and makes no model calls. `--allow-commands` explicitly enables bound local commands and process Agents; reconnecting does not expand an existing host's permissions.
 
-```sh
-python -B examples/workflow.py --data-dir /absolute/path/outside-the-repository --project-id PROJECT_ID
-```
+For development, run `Install-OEA.ps1 -Editable` or install with `pip install -e '.[web,mcp,workbench]'` in an external environment. Editable mode imports repository code directly. Refresh the browser after frontend changes; restart the idle host after Python changes. Keep test and build output outside the checkout.
 
-## State and backups
+`OEA_HOME` is an optional absolute home override for explicit isolation. Advanced `--data-dir` and launcher `-DataDir` remain available for selected isolated states. The Windows launcher also supports `-Python`, `-Port`, `-NoBrowser`, and `-AllowCommands`; normal use needs none of the directory or interpreter options. It selects the managed runtime automatically. Old `OEA_DATA_DIR` and `OEA_PYTHON` variables no longer silently select normal startup locations. Changing homes does not move existing data. If the retired data-directory setting still points to an existing database and the standard database is absent, normal startup reports `DATA_RELOCATION_REQUIRED` instead of creating an empty replacement. Remove obsolete settings only after a verified relocation; an explicit isolated home remains available for tests.
 
-SQLite, credentials, profiles, artifacts, logs and backups live outside the source tree on a local disk. Network shares and synchronized storage are rejected for runtime state. Never open a second embedded Runtime against a directory already served by a host; connect with `PlatformClient` instead.
+For existing data, keep the original host and directory until an offline relocation has been reviewed. Preserve databases, secrets, artifacts, workspaces and absolute path references; do not copy a live database or switch clients to an empty home. The [legacy migration tool](migration/README.md) converts old formats; it is not a same-version directory relocation tool. The launcher does not migrate state, install dependencies or modify model settings. Inspect the dry-run report before applying conversion to a new directory.
 
-```sh
-oea backup --data-dir /absolute/path/to/state --output /absolute/path/to/backup.sqlite
-```
-
-Schema upgrades create a backup before migration. Stop the relevant host before replacing its state or restoring a backup. Updating source files does not reload a running Python host; restart it after active work has reached a safe boundary, then reconnect its MCP clients.
+Read the [SDK](sdk.md), [workflow guide](workflows.md), and [MCP guide](mcp.md) for execution and integration.
