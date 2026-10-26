@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from oea.tools.gateway import ToolGateway
 from oea.contracts.errors import RuntimeFault, require
@@ -85,6 +86,117 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         self.assertEqual(await asyncio.gather(*requests), [{"count": 3}] * 20)
         self.assertEqual(submissions, [3])
+
+    async def test_delayed_creator_joins_the_action_started_by_a_replay(self):
+        started, release, creator_returned = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        submissions = []
+
+        @tool(side_effects="local")
+        async def submit(count: int) -> Submitted:
+            submissions.append(count)
+            started.set()
+            await release.wait()
+            return Submitted(count)
+
+        self.gateway.register(submit)
+        call = self.store.call
+
+        async def delay_creator(function, *, transaction=False):
+            result = await call(function, transaction=transaction)
+            if isinstance(result, tuple) and len(result) == 2 and result[1] is True:
+                await started.wait()
+                creator_returned.set()
+            return result
+
+        with patch.object(self.store, "call", delay_creator), patch.object(self.gateway, "_execute", wraps=self.gateway._execute) as execute:
+            requests = [asyncio.create_task(self.gateway.invoke("r", "submit", {"count": 3}, "delayed-creator")) for _ in range(2)]
+            try:
+                await asyncio.wait_for(creator_returned.wait(), 2)
+            finally:
+                release.set()
+            results = await asyncio.gather(*requests, return_exceptions=True)
+        self.assertEqual(results, [{"count": 3}] * 2)
+        self.assertEqual(submissions, [3])
+        self.assertEqual(execute.await_count, 1)
+
+    async def test_delayed_replay_reads_the_settled_original_receipt(self):
+        started, release, replay_read, return_replay = (asyncio.Event() for _ in range(4))
+        submissions = []
+
+        @tool(side_effects="local")
+        async def submit(count: int) -> Submitted:
+            submissions.append(count)
+            started.set()
+            await release.wait()
+            return Submitted(count)
+
+        self.gateway.register(submit)
+        call = self.store.call
+        delayed = 0
+
+        async def delay_replay(function, *, transaction=False):
+            nonlocal delayed
+            result = await call(function, transaction=transaction)
+            if isinstance(result, tuple) and len(result) == 2 and result[1] is False:
+                delayed += 1
+                if delayed == 2:
+                    replay_read.set()
+                await return_replay.wait()
+            return result
+
+        with patch.object(self.store, "call", delay_replay):
+            original = asyncio.create_task(self.gateway.invoke("r", "submit", {"count": 3}, "delayed-replay"))
+            await asyncio.wait_for(started.wait(), 2)
+            replay = asyncio.create_task(self.gateway.invoke("r", "submit", {"count": 3}, "delayed-replay"))
+            receipt = asyncio.create_task(self.gateway._invoke("r", self.gateway.prepare("submit", {"count": 3}), "delayed-replay", wait=False))
+            try:
+                await asyncio.wait_for(replay_read.wait(), 2)
+                release.set()
+                self.assertEqual(await original, {"count": 3})
+                self.assertFalse(self.gateway.inflight)
+            finally:
+                release.set()
+                return_replay.set()
+            result, action = await asyncio.gather(replay, receipt, return_exceptions=True)
+        self.assertEqual(result, {"count": 3})
+        self.assertIn(action["state"], {"dispatched", "completed"})
+        self.assertEqual(action["name"], "submit")
+        self.assertEqual(submissions, [3])
+
+    async def test_delayed_creator_preserves_the_original_failure(self):
+        accepted, return_creator = asyncio.Event(), asyncio.Event()
+        submissions = []
+
+        @tool
+        async def submit(count: int) -> Submitted:
+            submissions.append(count)
+            raise RuntimeFault("SUBMIT_REJECTED", "Submission was rejected")
+
+        self.gateway.register(submit)
+        call = self.store.call
+
+        async def delay_creator(function, *, transaction=False):
+            result = await call(function, transaction=transaction)
+            if isinstance(result, tuple) and len(result) == 2 and result[1] is True:
+                accepted.set()
+                await return_creator.wait()
+            return result
+
+        with patch.object(self.store, "call", delay_creator):
+            original = asyncio.create_task(self.gateway.invoke("r", "submit", {"count": 3}, "delayed-failure"))
+            try:
+                await asyncio.wait_for(accepted.wait(), 2)
+                with self.assertRaises(RuntimeFault) as replay:
+                    await self.gateway.invoke("r", "submit", {"count": 3}, "delayed-failure")
+                self.assertEqual(replay.exception.code, "SUBMIT_REJECTED")
+            finally:
+                return_creator.set()
+            with self.assertRaises(RuntimeFault) as creator:
+                await original
+        self.assertEqual(creator.exception.code, "SUBMIT_REJECTED")
+        self.assertEqual(submissions, [3])
+        failures = await self.store.call(lambda db: rows(db, "SELECT * FROM events WHERE kind='action.failed'"))
+        self.assertEqual(len(failures), 1)
 
     async def test_unknown_side_effect_is_not_replayed_and_does_not_block_another_run(self):
         submissions = []

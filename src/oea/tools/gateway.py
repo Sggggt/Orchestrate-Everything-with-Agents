@@ -123,14 +123,20 @@ class ToolGateway:
             authorize_replay = getattr(provider, "authorize_replay", None)
             if authorize_replay is not None:
                 await authorize_replay(run_id, arguments)
+            if identity not in self.inflight and receipt["state"] not in {"completed", "failed"}:
+                # Execution can settle while this caller receives its snapshot.
+                receipt = await self.inspect(identity)
+                if not wait and receipt["state"] != "intent":
+                    return receipt
             if receipt["state"] == "completed":
                 return json.loads(receipt["result_json"])
             if receipt["state"] == "failed":
                 raise RuntimeFault(**json.loads(receipt["error_json"]))
-            if identity in self.inflight:
-                return await self._result(self.inflight[identity], receipt, spec)
-            if receipt["state"] != "intent":
-                raise RuntimeFault("OUTCOME_UNCERTAIN", "Inspect the original action before continuing", run_id=run_id, action_id=identity)
+        # A replay can publish the execution before the creator resumes.
+        if identity in self.inflight:
+            return await self._result(self.inflight[identity], receipt, spec) if wait else receipt
+        if receipt["state"] != "intent":
+            raise RuntimeFault("OUTCOME_UNCERTAIN", "Inspect the original action before continuing", run_id=run_id, action_id=identity)
         # No await between publishing the task and assigning its identity.
         task = asyncio.create_task(self._execute(receipt, provider, arguments, prepared.bound_arguments), name=identity)
         self.inflight[identity] = task
@@ -225,9 +231,13 @@ class ToolGateway:
             # honor the same JSON boundary before their receipt is committed.
             return await self.store.call(lambda db: self._commit(db, receipt, result), transaction=True)
         except BaseException as error:
-            committed = await self.store.call(lambda db: one(db, "SELECT result_json FROM actions WHERE id=? AND state='completed'", (identity,)))
-            if committed:
-                return json.loads(committed["result_json"])
+            previous = await self.store.call(lambda db: one(db, "SELECT state,result_json,error_json FROM actions WHERE id=?", (identity,)))
+            if previous["state"] == "completed":
+                return json.loads(previous["result_json"])
+            if identity not in self.started and isinstance(error, RuntimeFault) and error.code == "STALE_ACTION":
+                if previous["state"] == "failed":
+                    raise RuntimeFault(**json.loads(previous["error_json"])) from None
+                raise RuntimeFault("OUTCOME_UNCERTAIN", "Inspect the original action before continuing", run_id=run_id, action_id=identity) from error
             unknown = identity in self.started and spec.side_effects != "none"
             fault = RuntimeFault("ACTION_NOT_STARTED", "Action stopped before provider execution") if isinstance(error, asyncio.CancelledError) and identity not in self.started else error if isinstance(error, RuntimeFault) and not unknown else RuntimeFault(
                 "OUTCOME_UNCERTAIN" if unknown else "TOOL_FAILED", "Tool did not return a valid result",
