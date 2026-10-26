@@ -224,8 +224,11 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancelled["state"], "cancelled")
         self.host.model_api.release.set()
         self.assertEqual(await self.host.workflows.result(other["id"], project_id="p", timeout=10), {"text": "work"})
-        child_states = await self.host.store.call(lambda db: rows(db, "SELECT workflow_run_id,state FROM runs ORDER BY rowid"))
-        self.assertEqual([item["state"] for item in child_states], ["cancelled", "completed"])
+        child_states = await self.host.store.call(lambda db: rows(db, "SELECT workflow_run_id,state FROM runs"))
+        self.assertCountEqual(
+            [(item["workflow_run_id"], item["state"]) for item in child_states],
+            [(first["id"], "cancelled"), (other["id"], "completed")],
+        )
 
     async def test_empty_map_and_frozen_revision_idempotency(self):
         graph = (WorkflowBuilder().node("start", "start").node("batch", "map", agent_id="worker")
