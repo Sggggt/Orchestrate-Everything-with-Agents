@@ -24,18 +24,28 @@ The frontend is served directly from local assets, with no build step. Saved Age
 
 ## Run locally
 
-Requires **Python 3.12+**. From a source checkout, create an environment outside the repository and install the Web and MCP extras:
+The recommended platform installation uses [uv](https://docs.astral.sh/uv/getting-started/installation/) on Windows, Linux and macOS. Download or clone this source repository, open its root in a terminal, and install OEA as a command-line tool:
 
 ```sh
-python -m pip install -c constraints.txt '.[web,mcp]'
+uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
+uv tool update-shell
+```
+
+Reopen your terminal, then run this from any directory:
+
+```sh
 oea serve
 ```
 
-Open **http://127.0.0.1:8890**; the loopback page establishes a local authenticated browser session. Use a local state directory outside source repositories and synchronized folders. See [getting started](docs/getting-started.md) for setup.
+uv manages an isolated Python environment and exposes the `oea` command without manual environment activation. OEA requires Python 3.12+; the command selects Python 3.12, which uv can download if needed. See [quick installation](docs/getting-started.md#quick-install). To import OEA in Python code, use the [SDK environment instructions](docs/getting-started.md#sdk-installation) for Windows, Linux or macOS. Windows users can optionally use the [convenience scripts](docs/getting-started.md#windows-shortcuts).
+
+Open the URL printed by `oea serve`; the first-launch default is **http://127.0.0.1:8890**. The loopback page establishes a local authenticated browser session. Keep runtime state outside source repositories and synchronized folders.
 
 Create a project, configure an Agent and open a session. Save endpoint, model and credential through Agent settings. Keys stay in local secret storage. `--allow-commands` explicitly enables configured local commands and process Agents with host user permissions. Startup creates no demonstration work.
 
 ## Orchestrate with Python
+
+Install the [SDK in your application's Python environment](docs/getting-started.md#sdk-installation) before running Python examples.
 
 ```python
 from oea import PlatformClient, WorkflowBuilder
@@ -75,7 +85,9 @@ The stdio bridge connects to the running host and exposes `platform_guide` and `
 
 ## Documentation
 
-[Getting started](docs/getting-started.md) · [SDK](docs/sdk.md) · [Workflows](docs/workflows.md) · [MCP and skills](docs/mcp.md) · [API](docs/api.md) · [Architecture](docs/architecture.md) · [Module interfaces](docs/modules.md) · [Brand](docs/brand.md)
+Read the **[User Guide](docs/user-guide.md)** for concepts, a first task, browser operations, tools, collaboration, workflows and troubleshooting. Also available in **[简体中文](docs/user-guide.zh-CN.md)**.
+
+[Documentation index](docs/README.md) · [Getting started](docs/getting-started.md) · [SDK](docs/sdk.md) · [Workflows](docs/workflows.md) · [MCP and skills](docs/mcp.md) · [API](docs/api.md) · [Architecture](docs/architecture.md) · [Module interfaces](docs/modules.md) · [Brand](docs/brand.md)
 
 Runtime state belongs on a local disk outside Git repositories and synchronized folders. Connect to an existing host with `PlatformClient`; one Host owns each state directory. Agents are trusted local programs, and managed subprocesses are not an OS sandbox. Context, action receipts and native graph checkpoints retain their own data ownership during recovery.
 

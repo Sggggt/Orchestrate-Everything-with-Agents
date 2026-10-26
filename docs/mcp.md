@@ -1,12 +1,14 @@
 # MCP and Codex skills
 
-The control MCP connects to an already running OEA 2 host. Install the `mcp` extra in its Python environment:
+The control MCP connects to an already running OEA 2 host. The [recommended uv tool installation](getting-started.md#quick-install) includes the `mcp` extra. Use the installed command:
 
 ```sh
 oea mcp
 ```
 
 The normal connection needs no directory argument. It reads the saved endpoint and authentication from `~/.oea/data`, or an explicitly isolated `OEA_HOME`. The server only connects to the existing host; start `oea serve` first. A Codex connection uses command `oea` and arguments `["mcp"]`. Calls create OEA-owned records in that host, not a new database for each Codex chat.
+
+After `uv tool update-shell`, restart your MCP client so it sees the updated PATH. With a manually managed Python environment, a graphical client may not inherit the activated terminal's PATH. Use `(Get-Command oea).Source` in Windows PowerShell, `where oea` in Windows Command Prompt, or `command -v oea` on Linux/macOS to find the installed executable. Set that absolute executable path as the client command when needed; keep arguments `["mcp"]`. The [cross-platform setup guide](getting-started.md#mcp-client) covers command lookup. Windows convenience scripts are optional.
 
 It exposes `platform_guide(consumer_id, area, action)` and `platform_call(consumer_id, operation, params)`. Discover the current action, then execute the exact shared operation. SDK, HTTP and MCP use the same registry, authorization and receipts. Read the [interface module](interfaces/README.md) for the maintained transport contract.
 

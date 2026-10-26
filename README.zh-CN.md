@@ -24,20 +24,30 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-需要 **Python 3.12 或更新版本**。在仓库外创建 Python 环境，然后从源码仓库安装 Web 和 MCP 组件：
+Windows、Linux 和 macOS 推荐使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 安装平台。下载或克隆源码仓库，在仓库根目录打开终端，将 OEA 安装为命令行工具：
 
 ```sh
-python -m pip install -c constraints.txt '.[web,mcp]'
+uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
+uv tool update-shell
+```
+
+重新打开终端后，可以在任意目录运行：
+
+```sh
 oea serve
 ```
 
-打开 **http://127.0.0.1:8890**，本机页面会自动建立经过认证的浏览器会话。Windows 用户先运行 **Install-OEA.cmd**，再打开 **Start-Workspace.cmd**；安装器自动准备仓库外的托管环境。各系统的完整环境命令和数据目录说明见[快速开始](docs/getting-started.md)。
+uv 管理独立 Python 环境并提供 `oea` 命令，日常使用无需手动激活环境。OEA 需要 Python 3.12+；上述命令选择 Python 3.12，uv 可在需要时下载解释器。详见[快速安装](docs/getting-started.md#quick-install)。需要在 Python 代码中导入 OEA 时，使用覆盖 Windows、Linux、macOS 的 [SDK 环境安装步骤](docs/getting-started.md#sdk-installation)。Windows 用户也可以选择[便捷脚本](docs/getting-started.md#windows-shortcuts)。
 
-创建项目、添加 Agent，再开启会话。需要模型的 Agent 请在 **Agent → 配置 → 模型 API** 中保存 API 地址、模型和密钥，并测试已保存配置。密钥保存在本机，不进入源码仓库。
+打开 `oea serve` 打印的地址，首次启动默认是 **http://127.0.0.1:8890**。本机页面会自动建立经过认证的浏览器会话。运行状态保存在源码仓库和同步目录之外。
+
+创建项目、添加 Agent，再开启会话。需要模型的 Agent 请在 **Agent → 配置 → 职责与模型** 中保存 API 地址、模型和密钥，检查已保存配置，再用一个小任务核验实际调用。密钥保存在本机，不进入源码仓库。
 
 启动不注册演示 Agent，也不发起真实模型调用。命令和进程 Agent 需显式加 `--allow-commands`，并具有已保存的工具授权。
 
 ## 用 Python 编排
+
+运行 Python 示例前，先在应用使用的 Python 环境中[安装 SDK](docs/getting-started.md#sdk-installation)。
 
 ```python
 from oea import PlatformClient, WorkflowBuilder
@@ -76,7 +86,9 @@ oea mcp
 
 ## 文档
 
-[快速开始](docs/getting-started.md) · [SDK](docs/sdk.md) · [工作流](docs/workflows.md) · [MCP 与技能](docs/mcp.md) · [API](docs/api.md) · [架构](docs/architecture.md) · [品牌](docs/brand.md)
+从**[用户指南](docs/user-guide.zh-CN.md)**了解核心概念、首个任务、界面操作、工具、协作、工作流和排障。另有 **[English](docs/user-guide.md)** 版本。
+
+[文档目录](docs/README.md) · [快速开始](docs/getting-started.md) · [SDK](docs/sdk.md) · [工作流](docs/workflows.md) · [MCP 与技能](docs/mcp.md) · [API](docs/api.md) · [架构](docs/architecture.md) · [品牌](docs/brand.md)
 
 运行数据必须位于 Git 仓库和同步文件夹之外的本机磁盘。连接已有宿主使用 `PlatformClient`，同一数据目录只由一个 Host 拥有。Agent 是需要信任的本机程序，受管子进程不等于操作系统沙箱。LangGraph 统一负责图、循环、并行汇合和持久中断。
 

@@ -2,6 +2,8 @@
 
 OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; version 2 rejects legacy runtime contracts.
 
+Install OEA in the Python environment that runs your application using the [SDK installation steps](getting-started.md#sdk-installation). The recommended `uv tool install` platform setup provides the global `oea` command in an isolated tool environment; it does not make the package importable in another Python environment.
+
 ## A standalone Agent
 
 Set `OEA_STATE_DIR` to a local directory outside source repositories and synchronized folders. Configure `OPENAI_BASE_URL`, `OPENAI_MODEL`, and `OPENAI_API_KEY` for an OpenAI-compatible provider. The SDK keeps a credential reference; it does not copy the key into exported Agent configuration.

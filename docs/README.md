@@ -1,10 +1,11 @@
 # Documentation
 
-Start with [getting started](getting-started.md), then build an [Agent](sdk.md) or a [workflow](workflows.md).
+Start with the **[User Guide](user-guide.md)** or **[中文用户指南](user-guide.zh-CN.md)** for a complete path from installation and a first task to tools, collaboration, workflows and troubleshooting. Use the focused guides below for more detail.
 
 | Guide | What it covers |
 | --- | --- |
-| [Getting started](getting-started.md) | Installation, local storage, first project and model configuration |
+| [User Guide](user-guide.md) · [中文用户指南](user-guide.zh-CN.md) | Concepts, browser walkthroughs, SDK/MCP entry points, results, maintenance and troubleshooting |
+| [Getting started](getting-started.md) | Recommended uv CLI installation, Python SDK environments, local storage and first project |
 | [Python SDK](sdk.md) | Remote clients, owned hosts and isolated Agent processes |
 | [Workbench](workbench.md) | File/image tools, local programs, environment readiness and command receipts |
 | [Workflows](workflows.md) | Canvas, nodes, variables, versioning and run lifecycle |
