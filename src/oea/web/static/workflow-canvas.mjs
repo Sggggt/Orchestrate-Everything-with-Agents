@@ -9,7 +9,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
   const symbols = { start: "arrow", agent: "agents", map: "agents", condition: "branch", template: "file", function: "terminal", subgraph: "flow", wait: "clock", end: "check" };
   const done = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
   const projects = new Map();
-  let ws = fresh(null), drag = null;
+  let ws = fresh(null), drag = null, canvasObserver = null, canvasSize = null;
   function fresh(projectId) {
     return { projectId, items: [], cursor: null, more: false, archived: false, deletedOnly: false, loading: false, loaded: false,
       draft: null, buffers: new Map(), dirty: false, selected: null, edge: null, types: [], errors: {},
@@ -71,6 +71,13 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     ws.linking = null;
     ws.needsFit = true;
   }
+  function refreshDefinition(value) {
+    const sameRevision = ws.draft?.id === value.id && ws.draft.revision === value.revision;
+    const view = ws.draft?.graph.viewport;
+    ws.draft = clone(value);
+    if (sameRevision && view) ws.draft.graph.viewport = view;
+    else if (ws.mode === "canvas") ws.needsFit = true;
+  }
   function clearEditor(target = ws) {
     clearTimeout(target.timer);
     Object.assign(target, { draft: null, dirty: false, errors: {}, undo: [], redo: [],
@@ -109,7 +116,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
           use(updated);
           if (ws.activity.some(item => item.workflow_id === identity && item.active_count)) await history();
         }
-        else ws.draft = clone(updated);
+        else refreshDefinition(updated);
       }
     } catch (error) {
       if (ws !== current || ws.epoch !== epoch) return;
@@ -217,17 +224,17 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     return `<div class="field"><span>${esc(label)}</span>${valueEditor(value, "wf-" + field)}<small class="wf-field-error" id="wf-error-${field}" role="status">${esc(ws.errors[keyFor(selected(), field)] || "")}</small></div>`;
   }
   function inputFields(schema) {
-    return `<p class="form-hint">设置用户在运行前需要提供的信息。</p><div class="wf-input-fields">${Object.entries(schema.properties || {}).map(([key, field]) => `<div class="wf-input-field"><label class="field">变量名称<input data-wf-schema="name" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-name" value="${esc(key)}" required></label><label class="field">显示名称<input data-wf-schema="title" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-title" value="${esc(field.title || "")}" placeholder="例如：工作目标"></label><label class="field">内容类型<select data-wf-schema="type" data-key="${esc(key)}">${Object.entries({ string: "文本", number: "数字", integer: "整数", boolean: "开关", array: "列表", object: "字段组" }).map(([type, label]) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="check-row"><input type="checkbox" data-wf-schema="required" data-key="${esc(key)}" ${(schema.required || []).includes(key) ? "checked" : ""}>运行前必填</label><button class="text-link danger-text" data-action="wf-remove-input" data-key="${esc(key)}">移除此变量</button></div>`).join("")}</div><button class="text-link" data-action="wf-add-input">${icon("plus")}添加输入变量</button><details class="wf-advanced"><summary>输入结构高级设置</summary>${jsonField("输入结构", "input_schema", schema)}</details>`;
+    return `<p class="form-hint">设置用户在运行前需要提供的信息。</p><div class="wf-input-fields">${Object.entries(schema.properties || {}).map(([key, field]) => `<div class="wf-input-field"><label class="field">变量名称<input data-wf-schema="name" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-name" value="${esc(key)}" required></label><label class="field">显示名称<input data-wf-schema="title" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-title" value="${esc(field.title || "")}" placeholder="例如：工作目标"></label><label class="field">内容类型<select data-wf-schema="type" data-key="${esc(key)}">${Object.entries({ string: "文本", number: "数字", integer: "整数", boolean: "开关", array: "列表", object: "字段组" }).map(([type, label]) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="check-row"><input type="checkbox" data-wf-schema="required" data-key="${esc(key)}" ${(schema.required || []).includes(key) ? "checked" : ""}>运行前必填</label><button class="icon-btn danger-text" data-action="wf-remove-input" data-key="${esc(key)}" title="移除此变量" aria-label="移除此变量">${icon("trash")}</button></div>`).join("")}</div><button class="text-link" data-action="wf-add-input">${icon("plus")}添加输入变量</button><details class="wf-advanced"><summary>输入结构高级设置</summary>${jsonField("输入结构", "input_schema", schema)}</details>`;
   }
   function inspector() {
     if (ws.edge) {
       const edge = graph().edges.find((item) => item.id === ws.edge);
-      return `<header><h2>连线</h2><button class="icon-btn wf-inspector-close" data-action="wf-toggle-inspector" aria-label="关闭属性面板">${icon("close")}</button></header><div class="wf-inspector-body"><p>${esc(edge?.source)} ${icon("arrow")} ${esc(edge?.target)}</p><p class="wf-muted">${edge?.branch === "true" ? "条件为是" : edge?.branch === "false" ? "条件为否" : "前置步骤完成后继续"}</p>${editable() ? `<button class="btn danger" data-action="wf-delete-edge" data-id="${esc(ws.edge)}">${icon("trash")}删除连线</button>` : ""}</div>`;
+      return `<header><h2>连线</h2><button class="icon-btn wf-inspector-close" data-action="wf-toggle-inspector" aria-label="关闭属性面板">${icon("close")}</button></header><div class="wf-inspector-body"><p>${esc(edge?.source)} ${icon("arrow")} ${esc(edge?.target)}</p><p class="wf-muted">${edge?.branch === "true" ? "条件为是" : edge?.branch === "false" ? "条件为否" : "前置步骤完成后继续"}</p>${editable() ? `<button class="icon-btn danger-text" data-action="wf-delete-edge" data-id="${esc(ws.edge)}" title="删除连线" aria-label="删除连线">${icon("trash")}</button>` : ""}</div>`;
     }
     const node = selected();
     if (!node) return `<header><h2>${ws.mode === "history" ? "运行概览" : "工作流属性"}</h2></header><div class="wf-inspector-body">${ws.mode === "history" ? runOverview() : `<p class="wf-muted">选择节点配置输入和输出。可从端口拖动连线，也可使用下方表单。</p>${textField("工作流说明", "description", ws.draft.description, { textarea: true })}${connectionForm()}`}</div>`;
     const execution = ws.mode === "history" ? ws.run?.nodes.find((item) => item.node_id === node.id) : null;
-    return `<header><span class="wf-node-symbol ${node.type}">${icon(symbols[node.type])}</span><h2>${labels[node.type]}</h2><button class="icon-btn wf-inspector-close" data-action="wf-toggle-inspector" aria-label="关闭属性面板">${icon("close")}</button></header><div class="wf-inspector-body">${execution ? runNode(node, execution) : !editable() ? `<h3>${esc(node.title)}</h3>${content(node.config)}` : `${textField("节点名称", "title", node.title)}<span class="wf-node-id">${esc(node.id)}</span>${configPanel(node)}${variables(node)}${connections(node)}<details class="wf-advanced"><summary>位置与连接</summary><div class="form-grid">${textField("X", "x", node.position.x, { type: "number" })}${textField("Y", "y", node.position.y, { type: "number" })}</div>${connectionForm(node)}</details><div class="wf-node-actions"><button class="btn small" data-action="wf-duplicate" ${node.type === "start" ? "disabled" : ""}>复制节点</button><button class="btn small danger" data-action="wf-delete-node">${icon("trash")}删除</button></div>`}</div>`;
+    return `<header><span class="wf-node-symbol ${node.type}">${icon(symbols[node.type])}</span><h2>${labels[node.type]}</h2><button class="icon-btn wf-inspector-close" data-action="wf-toggle-inspector" aria-label="关闭属性面板">${icon("close")}</button></header><div class="wf-inspector-body">${execution ? runNode(node, execution) : !editable() ? `<h3>${esc(node.title)}</h3>${content(node.config)}` : `${textField("节点名称", "title", node.title)}<span class="wf-node-id">${esc(node.id)}</span>${configPanel(node)}${variables(node)}${connections(node)}<details class="wf-advanced"><summary>位置与连接</summary><div class="form-grid">${textField("X", "x", node.position.x, { type: "number" })}${textField("Y", "y", node.position.y, { type: "number" })}</div>${connectionForm(node)}</details><div class="wf-node-actions"><button class="btn small" data-action="wf-duplicate" ${node.type === "start" ? "disabled" : ""}>复制节点</button><button class="icon-btn danger-text" data-action="wf-delete-node" title="删除节点" aria-label="删除节点">${icon("trash")}</button></div>`}</div>`;
   }
   function configPanel(node) {
     const config=node.config, schema=ws.types.find(type=>type.type===node.type)?.config_schema;
@@ -258,7 +265,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
   }
   function connections(node) {
     const edges = graph().edges.filter((edge) => edge.source === node.id || edge.target === node.id);
-    return `<div class="wf-connections"><h3>连接 <span>${edges.length}</span></h3>${edges.map((edge) => `<div><span>${esc(edge.source)} → ${esc(edge.target)}${edge.branch === "true" ? " · 是" : edge.branch === "false" ? " · 否" : ""}</span><button class="icon-btn" data-action="wf-delete-edge" data-id="${esc(edge.id)}" aria-label="删除 ${esc(edge.source)} 到 ${esc(edge.target)} 的连线">${icon("close")}</button></div>`).join("") || '<p class="form-hint">还没有连接。</p>'}</div>`;
+    return `<div class="wf-connections"><h3>连接 <span>${edges.length}</span></h3>${edges.map((edge) => `<div><span>${esc(edge.source)} → ${esc(edge.target)}${edge.branch === "true" ? " · 是" : edge.branch === "false" ? " · 否" : ""}</span><button class="icon-btn danger-text" data-action="wf-delete-edge" data-id="${esc(edge.id)}" aria-label="删除 ${esc(edge.source)} 到 ${esc(edge.target)} 的连线" title="删除连线">${icon("trash")}</button></div>`).join("") || '<p class="form-hint">还没有连接。</p>'}</div>`;
   }
   function connectionForm(node) {
     const current = graph();
@@ -294,7 +301,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
   }
   function dialog() {
     if (!ws.dialog) return "";
-    if (ws.dialog.type === "delete") return `<div class="wf-dialog-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="wf-dialog-title"><header><h2 id="wf-dialog-title">删除工作流？</h2><button class="icon-btn" data-action="wf-close-dialog" aria-label="关闭删除确认" ${ws.dialog.pending ? "disabled" : ""}>${icon("close")}</button></header><div class="modal-content"><p>“${esc(ws.dialog.name)}”将移入工作流回收站。</p><p class="form-hint">画布和运行记录保留，可从项目工作流右上角的回收站恢复。未完成或待核对的运行会阻止删除。</p>${ws.dialog.dirty ? '<p class="form-hint">当前未保存的修改将一并丢弃。</p>' : ""}</div><footer><button class="btn" id="wf-delete-cancel" data-action="wf-close-dialog" ${ws.dialog.pending ? "disabled" : ""}>取消</button><button class="btn danger" data-action="wf-confirm-delete" ${ws.dialog.pending ? "disabled" : ""}>${ws.dialog.pending ? "正在删除…" : "确认删除工作流"}</button></footer></section></div>`;
+    if (ws.dialog.type === "delete") return `<div class="wf-dialog-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="wf-dialog-title"><header><h2 id="wf-dialog-title">删除工作流？</h2><button class="icon-btn" data-action="wf-close-dialog" aria-label="关闭删除确认" ${ws.dialog.pending ? "disabled" : ""}>${icon("close")}</button></header><div class="modal-content"><p>“${esc(ws.dialog.name)}”将移入工作流回收站。</p><p class="form-hint">画布和运行记录保留，可从项目工作流右上角的回收站恢复。未完成或待核对的运行会阻止删除。</p>${ws.dialog.dirty ? '<p class="form-hint">当前未保存的修改将一并丢弃。</p>' : ""}</div><footer><button class="btn" id="wf-delete-cancel" data-action="wf-close-dialog" ${ws.dialog.pending ? "disabled" : ""}>取消</button><button class="icon-btn danger-text" data-action="wf-confirm-delete" ${ws.dialog.pending ? "disabled" : ""} title="确认删除工作流" aria-label="确认删除工作流">${icon("trash")}</button></footer></section></div>`;
     const resume = ws.dialog.type === "resume";
     return `<div class="wf-dialog-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="wf-dialog-title"><header><h2 id="wf-dialog-title">${resume ? "继续等待的节点" : "运行工作流"}</h2><button class="icon-btn" data-action="wf-close-dialog" aria-label="关闭运行面板">${icon("close")}</button></header><div class="modal-content"><p>${resume ? "填写真实输入，继续当前节点。" : `${esc(ws.draft.name)} · r${ws.draft.revision}`}</p><div class="field"><span>${resume ? "补充信息" : "运行输入"}</span>${valueEditor(resume ? { input: JSON.parse(ws.dialog.input).input || "" } : JSON.parse(ws.dialog.input), "wf-run-inputs", resume ? { type: "object", properties: { input: { type: "string", title: "补充信息" } }, required: ["input"] } : ws.draft.graph.nodes.find(node => node.type === "start")?.config.input_schema)}</div>${!resume ? `<label class="field">保存到会话<select id="wf-run-session" data-focus="wf-run-session"><option value="">新建会话</option>${state.sessions.filter(session => session.project_id === ws.projectId && session.state === "OPEN").map(session => `<option value="${esc(session.id)}" ${ws.dialog.sessionId === session.id ? "selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label><details class="wf-advanced"><summary>输入说明</summary>${schemaView(ws.draft.graph.nodes.find(node => node.type === "start")?.config.input_schema)}</details>` : ""}${ws.validation?.warnings.map((issue) => `<p class="form-hint">${esc(issue.message)}</p>`).join("") || ""}<p class="form-hint">${resume ? "沿原等待与动作回执继续；已完成的节点不会重新执行。" : "运行保留固定版本；同会话中的各个运行独立管理。相关工作共用本次根预算。"}</p></div><footer><button class="btn" data-action="wf-close-dialog">取消</button><button class="btn primary" data-action="${resume ? "wf-confirm-resume" : "wf-confirm-run"}">${icon("arrow")}${resume ? "继续执行" : "开始运行"}</button></footer></section></div>`;
   }
@@ -740,10 +747,23 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     if ($("#wf-edge-paths")) $("#wf-edge-paths").innerHTML = edges();
   }
   function mount() {
+    canvasObserver?.disconnect();
+    canvasObserver = null;
     const canvas = $("#wf-canvas");
     if (state.route !== "workflows" || !canvas) return;
-    if (ws.needsFit) { ws.needsFit = false; fit(false); }
+    const size = { width: canvas.clientWidth, height: canvas.clientHeight };
+    if (ws.needsFit || canvasSize && (canvasSize.width !== size.width || canvasSize.height !== size.height)) { ws.needsFit = false; fit(false); }
     else if (viewport()) setViewport(viewport(), false);
+    canvasSize = size;
+    canvasObserver = new ResizeObserver((entries, observer) => {
+      if (state.route !== "workflows" || $("#wf-canvas") !== canvas) { observer.disconnect(); return; }
+      const width = canvas.clientWidth, height = canvas.clientHeight;
+      if (!drag && width > 0 && height > 0 && (canvasSize.width !== width || canvasSize.height !== height)) {
+        canvasSize = { width, height };
+        fit(false);
+      }
+    });
+    canvasObserver.observe(canvas);
     updateGeometry();
     canvas.addEventListener("pointerdown", pointerDown);
     canvas.addEventListener("wheel", (event) => {
@@ -861,7 +881,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     else if (ws.items.some((item) => item.id === value.id)) ws.items = ws.items.map((item) => item.id === value.id ? value : item);
     else ws.items.push(value);
     if (ws.draft?.id === value.id) {
-      if (!ws.dirty && !drag) { ws.draft = clone(value); ws.errors = {}; }
+      if (!ws.dirty && !drag) { refreshDefinition(value); ws.errors = {}; }
       else if (value.revision > ws.draft.revision || value.state !== ws.draft.state) ws.conflict = true;
     }
     render();

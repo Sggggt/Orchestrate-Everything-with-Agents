@@ -12,6 +12,8 @@
   - `instance(self, name='default')`
   - `run(self, text, **options)`
   - `async arun(self, text, **options)`
+  - `async aprobe(self, *, idempotency_key=None, role='main', timeout=300)`
+  - `probe(self, **options)`
   - `stream(self, text, **options)`
   - `astream(self, text, **options)`
   - `async aclose(self)`

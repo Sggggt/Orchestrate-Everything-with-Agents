@@ -14,6 +14,9 @@
 - `runtime/context.py`：`RunContext`
   - `async prepare(self, state, *, uses_model=True)`
   - `tool_names(self)`
+  - `deferred_tools(self, names=None)`
+  - `async load_tool(self, name, *, load=True)`
+  - `async restore_tools(self)`
   - `filter_tools(self, names)`
   - `coordination_tools(self)`
   - `check_tool_policy(self, name)`
@@ -81,7 +84,7 @@
 
 ## 项目生命周期
 
-`projects.delete` 在同一领域事务中删除无在途或未决工作的项目平台记录，并保留稳定原键回执。宿主在提交后仅回收该项目的配置、工具校验器和隔离 MCP 连接，共享配置与其它项目继续使用。实际发现、调用和上传的在途索引属于所有权观察，不承担容量准入。物理工作目录、图检查点及离线备份不自动清理。
+`projects.delete` 在确认名称后撤销项目的新工作与能力调用，取消所属本地任务、发现、控制调用和上传，再在领域事务中注销全部所属记录；未决状态和待核对用量不阻挡删除。宿主回收项目配置、工具校验器和隔离 MCP 连接，并清理 Agent/Workflow 的图检查点；原键支持跨库清理恢复。不能撤销的外部工作不被伪造为已停止，其迟到结果以 `OWNER_DELETED` 丢弃。其它项目及共享配置继续使用。注销范围是生命周期边界，不提供容量准入；物理工作目录及离线备份保留。
 
 ## 原回执与诊断
 

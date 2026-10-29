@@ -1,4 +1,5 @@
-import { $,escape,icon,rpc,element,modal,notify,badge,date } from "./ui.mjs";
+import { $,escape,icon,rpc,element,modal,notify,badge,date,confirmRemoval } from "./ui.mjs";
+import { removeAgent } from "./settings.mjs";
 import { renderArtifactsPage,previewArtifact,uploadArtifact } from "./artifact-directory.mjs";
 export { renderArtifactsPage };
 import { avatar,agentCards,unreadBadge } from "./workbench-shell.mjs";
@@ -12,6 +13,7 @@ export function bindWorkbench(app,root){
   if($(".nav-scrim",root))$(".nav-scrim",root).onclick=()=>toggleNavigation(false);
   for(const button of root.querySelectorAll("[data-page]"))button.onclick=()=>app.navigate(button.dataset.page);
   for(const button of root.querySelectorAll("[data-configure-agent]"))button.onclick=()=>app.openSettings(button.dataset.configureAgent);
+  for(const button of root.querySelectorAll("[data-remove-agent]"))button.onclick=()=>{const row=app.state.agents.find(value=>value.definition.id===button.dataset.removeAgent);if(!row)return;confirmRemoval("删除 Agent",`删除 ${row.definition.name} 后将停止接受新工作。历史和文件保留；未结束或待核对的工作会阻止删除。`,async()=>{await removeAgent(app,row.definition.id,row.revision);await app.render();app.refreshFrame();notify("Agent 已删除，历史和文件已保留。");});};
   for(const button of root.querySelectorAll("[data-agent-chat]"))button.onclick=()=>openAgent(app,button.dataset.agentChat);
   for(const button of root.querySelectorAll("[data-instance]"))button.onclick=()=>openInstance(app,button.dataset.instance);
   for(const button of root.querySelectorAll("[data-close-instance]"))button.onclick=()=>{const s=app.state;s.openTabs=s.openTabs.filter(id=>id!==button.dataset.closeInstance);if(s.selectedInstance?.id===button.dataset.closeInstance){s.selectedInstance=null;app.navigate("overview");}else app.refreshFrame();};
@@ -67,12 +69,12 @@ export async function openInstance(app,identity){
   if(!s.openTabs.includes(identity))s.openTabs.push(identity);await app.navigate("conversation");
 }
 function projectSettings(app){
-  const s=app.state,content=element(`<form><label class="field">项目名称<input id="rename-project" required maxlength="80" value="${escape(s.project.name)}"></label><dl class="v2-kv"><dt>原件目录</dt><dd>${escape(s.project.folder||"尚未绑定")}</dd><dt>数据位置</dt><dd>${escape(s.status.data_dir)}</dd></dl><div class="inline-actions"><button type="button" class="btn danger" id="delete-project">永久删除项目</button><button class="btn primary">保存名称</button></div></form>`),close=modal("项目设置",content);
+  const s=app.state,content=element(`<form><label class="field">项目名称<input id="rename-project" required maxlength="80" value="${escape(s.project.name)}"></label><dl class="v2-kv"><dt>原件目录</dt><dd>${escape(s.project.folder||"尚未绑定")}</dd><dt>数据位置</dt><dd>${escape(s.status.data_dir)}</dd></dl><div class="inline-actions"><button type="button" class="icon-btn danger-text" id="delete-project" title="永久删除项目" aria-label="永久删除项目">${icon("trash")}</button><button class="btn primary">保存名称</button></div></form>`),close=modal("项目设置",content);
   content.onsubmit=async event=>{event.preventDefault();try{Object.assign(s.project,await rpc("projects.update",{project_id:s.project.id,name:$("#rename-project",content).value}));close();app.refreshFrame();await app.render();}catch(error){notify(error.message,true);}};
   $("#delete-project",content).onclick=()=>{close();deleteProject(app,s.project);};
 }
 function deleteProject(app,project){
-  const key=crypto.randomUUID(),content=element(`<form><p>将永久删除此项目的平台记录，无法恢复。</p><p class="form-hint">项目原件目录和外部备份会保留。</p><label class="field">输入项目名称“${escape(project.name)}”以确认<input id="delete-project-name" required autocomplete="off" spellcheck="false"></label><button class="btn danger" type="submit">永久删除项目</button></form>`),close=modal("永久删除项目",content);
+  const key=crypto.randomUUID(),content=element(`<form><p>确认后将注销此项目的全部平台记录，包括归档会话、历史任务、未决动作和待核对用量，无法恢复。</p><p class="form-hint">本项目的当前执行会被撤销。项目原件目录和外部备份会保留；已经发出的外部动作不会因注销而自动回滚。</p><label class="field">输入项目名称“${escape(project.name)}”以确认<input id="delete-project-name" required autocomplete="off" spellcheck="false"></label><button class="icon-btn danger-text" type="submit" title="确认永久删除项目" aria-label="确认永久删除项目">${icon("trash")}</button></form>`),close=modal("永久删除项目",content);
   content.onsubmit=async event=>{event.preventDefault();const name=$("#delete-project-name",content).value;if(name!==project.name){notify("项目名称不一致，请输入完整项目名称。",true);return;}const button=content.querySelector("button");button.disabled=true;try{await rpc("projects.delete",{project_id:project.id,confirm_name:name,idempotency_key:key});close();await app.reloadProjects({deletedId:project.id});}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
 }
 function sessionSettings(app){

@@ -100,7 +100,13 @@ async function scheduleRefresh(fact){
     return;
   }
   if(fact.kind.startsWith("action.")||fact.kind.startsWith("mcp.call.")){app.onToolEvent?.(fact);return;}
-  if(fact.kind==="agent.saved"){await app.reloadAgents();app.onAgentEvent?.(fact);return;}
+  if(fact.kind==="agent.saved"||fact.kind==="agent.removed"){await app.reloadAgents();await app.onAgentEvent?.(fact);if(["agents","overview"].includes(app.state.page))await app.render();app.refreshFrame();return;}
+  if(fact.kind==="mcp.saved"||fact.kind.startsWith("skill.")){
+    if(!app.state.project||fact.project_id&&fact.project_id!==app.state.project.id)return;
+    const mcp=fact.kind==="mcp.saved",handled=await(mcp?app.onMCPEvent?.(fact):app.onSkillEvent?.(fact));
+    if(!handled){const page=await rpc(mcp?"mcp.list":"skills.list",{project_id:app.state.project.id,limit:100});app.state[mcp?"mcp":"skills"]=page.items;app.refreshFrame();}
+    return;
+  }
   if(fact.kind.startsWith("workflow.")){app.onWorkflowEvent?.(fact);app.onWorkflowRunEvent?.(fact);return;}
   if(!["message.","run.","instance.","session.","artifact."].some(prefix=>fact.kind.startsWith(prefix)))return;
   if(fact.kind.startsWith("session."))sessionsChanged=true;

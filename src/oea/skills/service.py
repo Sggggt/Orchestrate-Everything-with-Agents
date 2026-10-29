@@ -112,9 +112,9 @@ class Skills:
         return {"definition": definition.model_dump(mode="json"), "revision": revision, "sha256": sha}
 
     @staticmethod
-    def scoped(db, skill_id, project_id):
+    def scoped(db, skill_id, project_id, *, include_removed=False):
         require(one(db, "SELECT 1 FROM projects WHERE id=?", (project_id,)), "NOT_FOUND", "Project does not exist")
-        record = one(db, "SELECT * FROM skills WHERE id=? AND removed=0 AND (project_id=? OR project_id IS NULL)", (skill_id, project_id))
+        record = one(db, "SELECT * FROM skills WHERE id=? AND (? OR removed=0) AND (project_id=? OR project_id IS NULL)", (skill_id, int(include_removed), project_id))
         require(record, "PERMISSION_DENIED", "Skill is unavailable or belongs to another project")
         return record
 
@@ -149,22 +149,26 @@ class Skills:
 
     async def _manage(self, skill_id, project_id, expected_revision, *, enabled=None, remove=False):
         def save(db):
-            saved = self.scoped(db, skill_id, project_id)
-            require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "Skill configuration changed")
+            saved = self.scoped(db, skill_id, project_id, include_removed=remove)
             definition = SkillSource.model_validate_json(saved["config_json"])
+            if saved["removed"]:
+                require(expected_revision in {saved["revision"], saved["revision"] - 1}, "REVISION_CONFLICT", "Skill configuration changed")
+                return definition, saved["revision"], True
+            require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "Skill configuration changed")
             definition.enabled = False if remove else enabled
             revision = saved["revision"] + 1
             db.execute("UPDATE skills SET config_json=?,revision=?,removed=?,updated_at=? WHERE id=?", (definition.model_dump_json(), revision, int(remove), now_ms(), skill_id))
             db.execute("INSERT INTO skill_versions SELECT skill_id,?,path,sha256,name,description,? FROM skill_versions WHERE skill_id=? AND revision=?", (revision, now_ms(), skill_id, saved["revision"]))
             event(db, "skill.removed" if remove else "skill.enabled", project_id=definition.project_id, data={"skill_id": skill_id, "revision": revision, "enabled": definition.enabled})
-            return definition, revision
-        definition, revision = await self.host.store.call(save, transaction=True)
+            return definition, revision, False
+        definition, revision, reused = await self.host.store.call(save, transaction=True)
         if remove:
             self.definitions.pop(skill_id, None)
         else:
             self.definitions[skill_id] = (definition, revision)
-        self.host.notify()
-        return {"skill_id": skill_id, "revision": revision, "enabled": definition.enabled, "removed": remove}
+        if not reused:
+            self.host.notify()
+        return {"skill_id": skill_id, "revision": revision, "enabled": definition.enabled, "removed": remove, **({"reused": reused} if remove else {})}
 
     async def set_enabled(self, skill_id: str, project_id: str, enabled: bool, expected_revision: int):
         return await self._manage(skill_id, project_id, expected_revision, enabled=enabled)

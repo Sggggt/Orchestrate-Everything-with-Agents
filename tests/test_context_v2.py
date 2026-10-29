@@ -10,9 +10,23 @@ from oea.contracts.configuration import AgentDefinition, ContextPolicy, Model
 from oea.context.store import ContextStore, estimated_tokens, message_groups
 from oea.contracts.errors import RuntimeFault
 from oea.storage.persistence import Store, encode, one, rows
+from oea.context.views import deduplicate_skills
 
 
 class ContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_skill_body_deduplication_keeps_pairing_and_preserves_distinct_versions(self):
+        messages = []
+        for index, reference in enumerate(("source-one", "source-one", "source-two")):
+            identity = str(index)
+            messages.extend([{"role": "assistant", "tool_calls": [{"id": identity, "function": {"name": "read_skill"}}]},
+                             {"role": "tool", "tool_call_id": identity, "content": encode({"reference": reference, "text": "BODY", "path": "SKILL.md"})}])
+        projected = deduplicate_skills(messages)
+        message_groups(projected)
+        self.assertEqual(sum("BODY" in message.get("content", "") for message in projected), 2)
+        self.assertEqual(sum("BODY" in message.get("content", "") for message in messages), 3)
+        self.assertIn("already_in_context", projected[3]["content"])
+        self.assertIn("BODY", deduplicate_skills(messages[2:4])[1]["content"])
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-context-")
         self.store = Store(Path(self.temporary.name))

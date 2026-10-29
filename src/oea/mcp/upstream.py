@@ -179,7 +179,7 @@ class UpstreamMCP:
             revision = previous["revision"] + 1 if previous else 1
             db.execute("INSERT INTO mcp_servers VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
                 (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
-            event(db, "mcp.saved", project_id=definition.project_id, data={"server_id": definition.id, "revision": revision})
+            event(db, "mcp.saved", project_id=definition.project_id, data={"server_id": definition.id, "revision": revision, "removed": definition.removed})
             return revision
         revision = await self.host.store.call(write, transaction=True)
         self.configurations[definition.id] = (definition, revision)
@@ -230,9 +230,10 @@ class UpstreamMCP:
         definition = MCPServer.model_validate(saved["definition"])
         require(definition.project_id in {None, project_id}, "PERMISSION_DENIED", "MCP service belongs to another project")
         await self.host.projects.get(project_id)
-        require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "MCP configuration changed")
         if definition.removed:
+            require(expected_revision in {saved["revision"], saved["revision"] - 1}, "REVISION_CONFLICT", "MCP configuration changed")
             return saved
+        require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "MCP configuration changed")
         return await self.save(definition.model_copy(update={"removed": True, "enabled": False}), expected_revision=expected_revision)
 
     @staticmethod
@@ -428,6 +429,7 @@ class UpstreamMCP:
         intent = await self.host.store.call(lambda db: one(db, "SELECT * FROM tool_intents WHERE id=?", (intent_id,)))
         require(intent is not None and intent["name"] == name,
                 "PERMISSION_DENIED", "Controller intent does not grant this tool", call_id=intent_id)
+        self.host.assert_project_available(intent["project_id"])
         require(intent["cancel_requested_at"] is None, "CALL_CANCELLED", "Controller intent no longer permits dispatch", call_id=intent_id)
         binding = json.loads(intent["binding_json"])
         saved = await self.get(binding["server_id"])
@@ -442,6 +444,7 @@ class UpstreamMCP:
     async def call(self, server_id: str, tool_name: str, arguments: dict, idempotency_key: str, *, project_id: str,
                    consumer_id: str | None = None, wait: bool = True):
         """Try one business tool through the common gateway and original receipt."""
+        self.host.assert_project_available(project_id)
         task = asyncio.current_task()
         self.calling[task] = project_id
         try:
@@ -660,6 +663,7 @@ class UpstreamMCP:
         return await self._discover(server_id, project_id, self.controller_scope(project_id, reader))
 
     async def _discover(self, server_id, project_id, consumer):
+        self.host.assert_project_available(project_id)
         task = asyncio.current_task()
         self.discovering[task] = project_id
         try:

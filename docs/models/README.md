@@ -2,6 +2,14 @@
 
 模型传输、流式解析、请求回执和用量结算。
 
+## 独立连接探测
+
+`agents.probe(agent_id, session_id, idempotency_key, role="main")` 接受独立实例中的精简 Run，返回 RunHandle。通过 `runs.result` 或 `runs.inspect` 读取原结果、失败事实和用量；同键查询沿用原实例和 Run。manager 使用其自己的模型与秘密，并要求协作模式。SDK 提供 `Agent.probe()` / `await Agent.aprobe()`；Web 的主模型与 manager 设置提供“测试模型连接”。
+
+探测仅沿用所选模型，使用短指令、最多 128 输出 token、一次模型调用和独立根预算。它不加载业务 Skill、MCP、函数工具、原件、历史或配置的执行程序，也不更改已保存的 Agent。它仍使用正式模型动作、授权与回执，不自动重试。正常业务工作继续满足原有 required 和交付契约。
+
+`agents.check` 仍只核对配置，不产生模型费用。连接响应只证明所选模型能够响应，工具可用性和实际业务效果另行验证。输入统计区分本地估算、供应商报告、缓存命中和未决估算；不得把预算上限或失败暂记值当成实际消费。
+
 源码：[src/oea/models/](../../src/oea/models/)
 
 ## Python 接口

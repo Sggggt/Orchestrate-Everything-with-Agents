@@ -8,7 +8,7 @@ from typing import Literal
 
 
 from oea.catalog.service import need
-from oea.contracts.configuration import AgentDefinition, manager_snapshot
+from oea.contracts.configuration import AgentDefinition, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, manager_snapshot
 from oea.contracts.domain import Artifact, RunHandle, RunResult, RunSpec
 from oea.contracts.measurement import content_view
 from oea.contracts.errors import RuntimeFault, require
@@ -19,16 +19,20 @@ class Runs:
     def __init__(self, host):
         self.host = host
 
-    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None):
+    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False):
         """Join acceptance to an existing message or workflow transaction."""
         identity = new_id("run")
-        fingerprint = hashlib.sha256(encode({"spec": spec.model_dump(mode="json", exclude_defaults=True), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}).encode("utf-8")).hexdigest()
+        intent = {"spec": spec.model_dump(mode="json", exclude_defaults=True), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}
+        if model_probe:
+            intent["model_probe"] = True
+        fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
         instance = need(db, "instances", spec.instance_id)
         previous = one(db, "SELECT * FROM runs WHERE instance_id=? AND idempotency_key=?", (spec.instance_id, spec.idempotency_key))
         if previous:
             require(previous["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Run key has different input or ownership")
             return previous, True
         need(db, "projects", instance["project_id"])
+        self.host.assert_project_available(instance["project_id"])
         definition = AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
         require(definition.enabled, "AGENT_DISABLED", "Agent is disabled")
         session = need(db, "sessions", instance["session_id"])
@@ -42,8 +46,15 @@ class Runs:
         if instance["role"] == "manager":
             require(session["mode"] == "collaborative" and definition.manager is not None, "MANAGER_UNAVAILABLE", "Manager is not enabled")
             snapshot = manager_snapshot(definition)
-        else:
+        elif not model_probe:
             snapshot = self.host.skills.pin(db, snapshot, instance["project_id"])
+        if model_probe:
+            snapshot = snapshot.model_copy(update={
+                "model": snapshot.model.model_copy(update={"max_output_tokens": min(snapshot.model.max_output_tokens, 128)}),
+                "instructions": Instructions(system="Reply READY to verify the model connection."), "tools": Tools(), "skills": (),
+                "workspace": Workspace(), "context": ContextPolicy(input_tokens=2048),
+                "execution": Execution(budget=Budget(max_model_calls=1, max_input_tokens=2048, max_output_tokens=128, max_tool_calls=1,
+                                                     max_elapsed_seconds=300))})
         parent = need(db, "runs", spec.parent_run_id) if spec.parent_run_id else None
         if parent:
             parent_instance = need(db, "instances", parent["instance_id"])
@@ -78,7 +89,8 @@ class Runs:
                    (identity, spec.instance_id, root_run_id, root_workflow_run_id, spec.parent_run_id, workflow_run_id, budget_id,
                     encode(self.host.redact(spec.input)), spec.idempotency_key, fingerprint, instance["role"], now_ms(), now_ms(), snapshot.model_dump_json(), source_message_id))
         event(db, "run.accepted", project_id=instance["project_id"], session_id=instance["session_id"], instance_id=instance["id"], run_id=identity,
-              data={"root_run_id": root_run_id, "root_workflow_run_id": root_workflow_run_id, "workflow_run_id": workflow_run_id, "budget_id": budget_id})
+              data={"root_run_id": root_run_id, "root_workflow_run_id": root_workflow_run_id, "workflow_run_id": workflow_run_id, "budget_id": budget_id,
+                    **({"purpose": "model_probe"} if model_probe else {})})
         self.host.artifacts.assign(db, identity, instance, spec.artifact_ids, parent)
         db.execute("UPDATE runs SET policy_json=?,artifact_count=? WHERE id=?", (spec.policy.model_dump_json(), len(spec.artifact_ids), identity))
         return need(db, "runs", identity), False

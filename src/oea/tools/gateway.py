@@ -177,6 +177,7 @@ class ToolGateway:
         db.execute("UPDATE actions SET state='completed',result_json=?,error_json=NULL,updated_at=? WHERE id=? AND state!='completed'", (encoded, now_ms(), identity))
         if not db.changes():
             previous = one(db, "SELECT result_json FROM actions WHERE id=?", (identity,))
+            require(previous is not None, "OWNER_DELETED", "The owning work was deleted; its late result was discarded")
             require(previous["result_json"] == encoded, "IDEMPOTENCY_CONFLICT", "An accepted action receipt has a different result")
             return json.loads(previous["result_json"])
         if self.record_progress and run_id is not None and not result.get("isError") and not result.get("truncated"):
@@ -193,6 +194,7 @@ class ToolGateway:
         except asyncio.CancelledError:
             if task.cancelled() and not asyncio.current_task().cancelling():
                 error = await self.store.call(lambda db: one(db, "SELECT error_json FROM actions WHERE id=?", (receipt["id"],)))
+                require(error is not None, "OWNER_DELETED", "The owning work was deleted")
                 raise RuntimeFault(**json.loads(error["error_json"])) from None
             raise
         except TimeoutError:
@@ -232,6 +234,8 @@ class ToolGateway:
             return await self.store.call(lambda db: self._commit(db, receipt, result), transaction=True)
         except BaseException as error:
             previous = await self.store.call(lambda db: one(db, "SELECT state,result_json,error_json FROM actions WHERE id=?", (identity,)))
+            if previous is None:
+                raise RuntimeFault("OWNER_DELETED", "The owning work was deleted; its late result was discarded") from error
             if previous["state"] == "completed":
                 return json.loads(previous["result_json"])
             if identity not in self.started and isinstance(error, RuntimeFault) and error.code == "STALE_ACTION":

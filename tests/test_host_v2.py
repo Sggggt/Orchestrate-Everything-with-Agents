@@ -149,6 +149,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.host.agents.get("worker")
         definition = AgentDefinition.model_validate(saved["definition"])
         definition.model.credential_ref = "env:OEA_TEST_SCHEMA_KEY"
+        definition.tools.loading = "eager"
         definition.tools.functions = ("unsafe_query",)
         with patch.dict("os.environ", {"OEA_TEST_SCHEMA_KEY": secret}):
             await self.host.agents.save(definition, expected_revision=1)

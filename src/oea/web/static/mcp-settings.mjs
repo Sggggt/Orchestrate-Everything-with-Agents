@@ -28,7 +28,7 @@ export async function manageMCP(app,root){
     };
     const load=async(more=false)=>{const page=await rpc("mcp.list",{project_id:project.id,limit:25,...(more?{cursor:state.mcpCursor}:{})});state.mcpServers=more?[...state.mcpServers,...page.items.map(component.view)]:page.items.map(component.view);state.mcpCursor=page.cursor;if(app.state.project?.id===project.id){app.state.mcp=more?[...app.state.mcp,...page.items]:page.items;app.refreshFrame();}};
     const showRemove=(saved,after)=>{
-      const content=element(`<div><p>移除 ${escape(saved.name)} 后，将停止接受新调用。历史、凭据与源目录会保留。</p><button class="btn danger" id="confirm-mcp-remove">移除服务</button></div>`),close=modal("移除 MCP 服务",content);
+      const content=element(`<div><p>移除 ${escape(saved.name)} 后，将停止接受新调用。历史、凭据与源目录会保留。</p><button class="icon-btn danger-text" id="confirm-mcp-remove" title="确认删除 MCP 服务" aria-label="确认删除 MCP 服务">${icon("trash")}</button></div>`),close=modal("移除 MCP 服务",content);
       $("#confirm-mcp-remove",content).onclick=async event=>{event.target.disabled=true;try{await rpc("mcp.remove",{project_id:project.id,server_id:saved.id,expected_revision:saved.revision});close();await after();notify("服务已移除，历史和源目录已保留。");}catch(error){notify(error.message,true);event.target.disabled=false;}};
     };
     const showImport=async()=>{
@@ -52,7 +52,9 @@ export async function manageMCP(app,root){
     };
     const showSDK=async()=>modal("连接 Codex 与开发 SDK",element(`<div><p>使用 oea mcp 连接现有宿主。控制入口为 platform_guide 和 platform_call；业务工具仍需明确授权。</p><pre class="v2-pre">${escape('oea mcp --data-dir <external-state-directory>')}</pre><div class="markdown">${markdown('```python\nfrom oea import PlatformClient\n\nasync with PlatformClient.from_data_dir(data_dir) as client:\n    result = await client.call("host.status")\n```')}</div></div>`));
     component=createMCPDirectory({state,escape,icon,badge:value=>`<span class="badge ${escape(value)}">${escape(({CONNECTED:"已连接",CONNECTING:"连接中",DISCONNECTED:"未连接",SUCCEEDED:"完成",FAILED:"失败",UNCERTAIN:"待核对",RUNNING:"执行中",QUEUED:"已接受"})[value]||value)}</span>`,markdown,rpc,toast:notify,render:draw,loadBootstrap:load,showCredential,showSDK,showImport,showRemove,showToolTrial:(server,tool)=>showMCPTrial(app,project.id,server,tool,async()=>{await load();draw();}),time:date});
-    entry={load,draw};projects.set(project.id,entry);
+    const refresh=async fact=>{if(!current())return false;if(fact.data.removed&&state.mcpId===fact.data.server_id){state.mcpEpoch++;state.mcpDraft=null;state.mcpDetail=null;state.mcpId=null;}await load();draw();return true;};
+    entry={load,draw,refresh};projects.set(project.id,entry);
   }
+  app.onMCPEvent=fact=>entry.refresh(fact);
   await entry.load();entry.draw();
 }

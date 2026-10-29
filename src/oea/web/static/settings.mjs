@@ -1,11 +1,17 @@
-import { $,escape,icon,rpc,element,modal,notify,empty } from "./ui.mjs";
+import { $,escape,icon,rpc,element,modal,notify,empty,confirmRemoval } from "./ui.mjs";
 import { defaults,formField,getAt,setAt,schemaAt } from "./configuration-form.mjs";
 
 const drafts=new Map();let selected=null,tab=0,createRequested=false;
+const probes=new Map();
 export function selectSettingsAgent(id,create=false){if(id)selected=id;tab=0;createRequested=create;}
+export function clearRemovedAgent(app,id){drafts.delete(app.state.project.id+":"+id);if(selected===id)selected=null;}
+export async function removeAgent(app,id,revision){
+  const result=await app.rpc("agents.remove",{agent_id:id,project_id:app.state.project.id,expected_revision:revision});
+  clearRemovedAgent(app,id);await app.reloadAgents();return result;
+}
 const groups=[
   ["职责与模型","定义清楚的职责，选择实际使用的模型。",[["model"],["instructions"]]],
-  ["工具与 Skills","只绑定工作真正需要的能力；必需 Skill 会在执行前加载。",[["tools"],["skills"]]],
+  ["工具与 Skills","业务工具参数默认按需加载；Skill 先提供目录，必需正文在执行前加载。",[["tools"],["skills"]]],
   ["上下文与记忆","保留原文引用，控制模型的活跃输入与阶段记忆。",[["context"]]],
   ["工作目录与环境","项目原件与实例工作目录分开，恢复时继续使用原实例目录。",[["workspace"]]],
   ["执行与交付","选择执行图，设置交付要求与累计费用、时间预算。",[["execution"]]],
@@ -44,10 +50,27 @@ export async function renderSettings(app,root){
     $("#save-status",form).textContent=draft.dirty?"有未保存的修改":"已保存 · 修订 "+draft.revision;
     $("#check-agent",form).disabled=draft.revision===0;
     $("#check-agent",form).onclick=async()=>{try{const check=await rpc("agents.check",{agent_id:selected,project_id:s.project.id});$("#config-check",form).innerHTML=configurationCheck(check);}catch(error){notify(error.message,true);}};
+    const remove=element(`<button type="button" class="icon-btn danger-text" title="删除 Agent" aria-label="删除 Agent">${icon("trash")}</button>`);
+    remove.disabled=draft.revision===0;$(".v2-actions",form).prepend(remove);
+    remove.onclick=()=>{const id=draft.definition.id;confirmRemoval("删除 Agent",`删除 ${draft.definition.name} 后将停止接受新工作。历史任务、回执、产物和源文件保留；未结束或待核对的工作会阻止删除。`,async()=>{await removeAgent(app,id,draft.revision);await renderSettings(app,root);notify("Agent 已删除，历史和文件已保留。");});};
+    if(tab===0||tab===5){
+      const role=tab===0?"main":"manager",key=s.project.id+":"+selected+":"+role;
+      const button=element('<button type="button" class="btn small">测试模型连接</button>');
+      button.disabled=draft.revision===0||!s.session||(role==="manager"&&!draft.definition.manager);
+      $(".v2-actions",form).prepend(button);
+      button.onclick=async()=>{button.disabled=true;let probe=probes.get(key);if(!probe){probe={idempotency_key:crypto.randomUUID(),agent_id:selected,session_id:s.session.id,role};probes.set(key,probe);}try{
+        probe.handle=probe.handle||await rpc("agents.probe",{agent_id:probe.agent_id,session_id:probe.session_id,role:probe.role,idempotency_key:probe.idempotency_key});
+        $("#config-check",form).textContent="模型探测已提交："+probe.handle.id;
+        const result=await rpc("runs.result",{run_id:probe.handle.id,timeout:30});
+        const usage=result.usage.provider_reported;
+        $("#config-check",form).textContent=`模型连接已响应 · 输入 ${usage.input_tokens??"未知"} token · 输出 ${usage.output_tokens??"未知"} token · ${probe.handle.id}`;
+        probes.delete(key);
+      }catch(error){$("#config-check",form).textContent=error.message+(probe.handle?" · "+probe.handle.id:"");if(error.run_id&&error.code!=="RESULT_PENDING")probes.delete(key);}finally{button.disabled=false;button.textContent=probes.has(key)?"查看探测结果":"测试模型连接";}};
+    }
     form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector("button[type=submit]");button.disabled=true;try{let saved=await rpc("agents.save",{definition:draft.definition,expected_revision:draft.revision});draft.revision=saved.revision;draft.definition=saved.definition;for(const [role,value]of Object.entries(draft.secrets)){if(value&&(role!=="manager"||draft.definition.manager)){const credential=await rpc("agents.set_credential",{agent_id:selected,project_id:s.project.id,role,value,expected_revision:draft.revision});draft.revision=credential.revision;const model=role==="main"?draft.definition.model:draft.definition.manager.model;model.credential_ref=credential.credential_ref;}}draft.secrets={};draft.dirty=false;await app.reloadAgents();notify("配置已保存，新工作将使用保存的能力。已撤销的权限立即生效。");await renderSettings(app,root);}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   }
   renderBody();
   if(createRequested){createRequested=false;newAgent(app,root);}
-  app.onAgentEvent=()=>{if(s.page!=="agent-settings"||!root.isConnected)return;const current=selected&&draftFor(app,selected);if(current?.dirty){const status=$("#save-status",root);if(status)status.textContent="服务端配置已更新；当前草稿保留，保存时将核对修订。";}else renderSettings(app,root);};
+  app.onAgentEvent=fact=>{if(fact?.kind==="agent.removed")clearRemovedAgent(app,fact.data.agent_id);if(s.page!=="agent-settings"||!root.isConnected)return;const current=selected&&draftFor(app,selected);if(current?.dirty){const status=$("#save-status",root);if(status)status.textContent="服务端配置已更新；当前草稿保留，保存时将核对修订。";}else renderSettings(app,root);};
 }
 function newAgent(app,root){const form=element('<form><div class="field"><label for="agent-name">Agent 名称</label><input id="agent-name" required maxlength="80"></div><div class="field"><label for="agent-id">稳定标识</label><input id="agent-id" required pattern="[a-z][a-z0-9_-]{0,63}" placeholder="例如 reviewer"><small>使用小写字母、数字、下划线或连字符。</small></div><p><button class="btn primary">创建配置草稿</button></p></form>');const close=modal("新建 Agent",form);form.onsubmit=event=>{event.preventDefault();const identity=$("#agent-id",form).value;if(app.state.agents.some(row=>row.definition.id===identity)){notify("此标识已存在，请选择已有 Agent 或使用新标识。",true);return;}const definition=defaults(app.state.schema,app.state.schema);Object.assign(definition,{id:identity,name:$("#agent-name",form).value,project_id:app.state.project.id});drafts.set(app.state.project.id+":"+identity,{definition,revision:0,dirty:true,secrets:{}});selected=identity;tab=0;close();renderSettings(app,root);};}

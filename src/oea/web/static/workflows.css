@@ -1,5 +1,7 @@
 /* Workflow studio uses the workspace design tokens and local, buildless assets. */
-.wf-page { height:100%; min-height:680px; padding:28px 30px 22px; display:flex; flex-direction:column; gap:22px; }
+.page-body:has(.wf-page) { overflow:hidden; scrollbar-gutter:auto; }
+.page-body:has(.wf-page) > #page { height:100%; min-height:0; }
+.wf-page { height:100%; min-height:0; overflow:hidden; padding:28px 30px 22px; display:flex; flex-direction:column; gap:22px; }
 .wf-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; flex-shrink:0; }
 .wf-heading h1 { margin:0 0 8px; font-size:26px; font-weight:650; letter-spacing:-.8px; }
 .wf-heading p:not(.eyebrow) { margin:0; color:var(--muted); font-size:12px; }
@@ -50,8 +52,9 @@
 .wf-add-node.template { color:#b18347; }
 .wf-palette-end { margin-left:auto; display:flex; gap:2px; }
 .wf-palette-end .icon-btn { width:27px; height:29px; font-size:21px; color:var(--muted); }
-.wf-edit-body { position:relative; flex:1; min-height:340px; display:flex; overflow:hidden; }
-.wf-canvas { position:relative; flex:1; min-width:0; min-height:340px; overflow:hidden; background-color:#f7f8fc; background-image:radial-gradient(#d9d7e6 .8px,transparent .8px); background-size:18px 18px; cursor:grab; touch-action:none; }
+.wf-editor-header, .wf-tabs, .wf-palette, .wf-history-strip { flex-shrink:0; }
+.wf-edit-body { position:relative; flex:1; min-height:0; display:flex; overflow:hidden; }
+.wf-canvas { position:relative; flex:1; min-width:0; min-height:0; overflow:hidden; background-color:#f7f8fc; background-image:radial-gradient(#d9d7e6 .8px,transparent .8px); background-size:18px 18px; cursor:grab; touch-action:none; }
 .wf-canvas:focus-visible { outline-offset:-3px; }
 .wf-canvas.panning,.wf-canvas.panning * { cursor:grabbing; }
 .wf-canvas.connecting { cursor:crosshair; }
@@ -102,13 +105,13 @@
 .wf-canvas-caption { position:absolute; bottom:11px; right:14px; font-size:7px; letter-spacing:1.1px; color:#b4afc1; pointer-events:none; }
 .wf-connect-hint { position:absolute; top:14px; left:14px; right:14px; display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid #d7cff3; background:#fcfbff; color:var(--accent-dark); padding:9px 12px; border-radius:8px; font-size:11px; z-index:5; }
 .wf-connect-hint .text-link { font-size:10px; }
-.wf-inspector { display:none; width:266px; min-width:266px; background:var(--panel); border-left:1px solid var(--line); flex-direction:column; min-height:0; z-index:6; }
+.wf-inspector { display:none; width:266px; min-width:266px; height:100%; flex-shrink:0; overflow:hidden; background:var(--panel); border-left:1px solid var(--line); flex-direction:column; min-height:0; z-index:6; }
 .inspector-open > .wf-inspector { display:flex; }
-.wf-inspector > header { display:flex; align-items:center; gap:8px; min-height:56px; padding:11px 14px; border-bottom:1px solid var(--line); }
+.wf-inspector > header { display:flex; align-items:center; gap:8px; min-height:56px; flex-shrink:0; padding:11px 14px; border-bottom:1px solid var(--line); }
 .wf-inspector h2 { font-size:12px; font-weight:600; margin:0; }
 .wf-inspector h3 { font-size:11px; margin:17px 0 10px; font-weight:600; }
 .wf-inspector-close { margin-left:auto; width:24px; height:24px; }
-.wf-inspector-body { flex:1; min-height:0; overflow:auto; padding:16px 14px; scrollbar-width:thin; }
+.wf-inspector-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; padding:16px 14px; scrollbar-width:thin; }
 .wf-inspector-body .field { font-size:11px; gap:7px; margin-bottom:15px; }
 .wf-inspector-body .field input,.wf-inspector-body .field textarea,.wf-inspector-body .field select { font-size:11px; padding:9px 10px; min-height:34px; width:100%; min-width:0; }
 .wf-inspector-body textarea { min-height:125px; resize:vertical; line-height:1.7; }

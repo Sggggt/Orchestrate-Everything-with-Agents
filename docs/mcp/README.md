@@ -65,3 +65,5 @@
 `mcp.codex_candidates(project_id, config_path, cursor=0, limit=25)` 只读取显式选择的本机 TOML，分页返回服务元数据，不返回凭据，也不建立连接。`mcp.import_codex(project_id, config_path, server_names)` 只保存选定注册项；环境与请求头的非空秘密值写入 vault，已有 ID 返回 skipped，不覆盖原配置。控制 MCP、动态认证、远程执行器和仅有工具拒绝列表的注册项需要手动配置；结果分别列出 imported、skipped 与 errors。
 
 `mcp.remove(server_id, project_id, expected_revision)` 保存 removed=true、enabled=false；源目录、秘密、旧目录快照和动作回执保留。`mcp.list` 默认隐藏已移除项，显式 include_removed=true 可读取；get、tools 的显式旧版本和调用历史仍可读取。移除不伪造在途动作的取消事实。
+
+前端服务卡片与详情提供删除，无需连接或读取源目录。外部 MCP 通过同一 remove 操作删除；mcp.saved 事件携带 removed，前端据此关闭已删除项的编辑状态并刷新目录。重复删除可使用原修订或删除后修订；关联 Agent 配置引用保留，由用户显式调整。

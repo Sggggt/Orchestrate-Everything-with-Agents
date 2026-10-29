@@ -81,6 +81,26 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("version", result)
         self.assertFalse((data / "oea.sqlite").exists())
 
+    async def test_external_mcp_can_remove_all_three_registrations_without_starting_business_tools(self):
+        from oea import AgentDefinition, MCPServer, SkillSource
+        await self.host.projects.create("Project", project_id="p")
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p"))
+        await self.host.mcp.save(MCPServer(id="service", project_id="p", command=("not-installed",)))
+        source = self.root / "skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text("Read original evidence.", encoding="utf-8")
+        await self.host.skills.register(SkillSource(id="guide", path=source, project_id="p"))
+        (source / "SKILL.md").unlink()
+        source.rmdir()
+        async with self.connected():
+            for area, key, identity in (("agents", "agent_id", "worker"), ("mcp", "server_id", "service"), ("skills", "skill_id", "guide")):
+                guide = await self.client.call_tool("platform_guide", {"consumer_id": "deletion", "area": area, "action": "remove"})
+                self.assertFalse(guide.isError)
+                result = await self.call(area + ".remove", {key: identity, "project_id": "p", "expected_revision": 1}, consumer="deletion")
+                self.assertFalse(result.isError)
+                self.assertEqual(value(await self.call(area + ".list", {"project_id": "p"}, consumer="deletion"))["items"], [])
+        self.assertEqual(self.host.mcp.connections, {})
+
     async def check_discovery(self):
         catalog = await self.client.list_tools()
         self.assertEqual({tool.name for tool in catalog.tools}, {"platform_guide", "platform_call"})

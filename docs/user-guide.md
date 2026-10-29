@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 2.0.3, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 2.0.4, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -490,7 +490,7 @@ The bridge connects to the existing OEA host; it does not create a new workspace
 
 Archive a session through its settings when you want it removed from the active list. Restore it through the current project's recycle bin. Closing a tab and archiving a session have different effects.
 
-Project deletion is permanent for its platform records and requires the exact project name. It is blocked while related execution or unresolved state makes deletion unsafe. It does not automatically remove original input directories, external work directories or offline backups. Review the affected project before confirming deletion.
+Project deletion requires the exact project name and takes priority over former work and ledger states. It revokes project work and permanently removes all owned platform records, unresolved usage and graph checkpoints. Already-issued external effects are not undone, and late results cannot recreate records. Original input directories, external work directories and offline backups remain. Review the affected project before confirming deletion; reuse the original request key if cleanup is interrupted.
 
 ### Stop, back up and update
 

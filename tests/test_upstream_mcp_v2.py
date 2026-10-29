@@ -16,6 +16,7 @@ from oea.runtime.host import Host
 from oea.storage.persistence import one, rows
 from oea.mcp.upstream import alias
 from oea.tools.functions import tool
+from oea.tools.discovery import search
 
 
 SERVER = '''
@@ -81,11 +82,18 @@ class ToolModel:
 
     async def complete(self, model, messages, **options):
         self.calls += 1
-        if any(message["role"] == "tool" for message in messages):
+        if any(call["function"]["name"].startswith("mcp_") for message in messages for call in message.get("tool_calls", ())):
             if self.after_tool:
                 await self.after_tool()
             return Completion(text="Observed", usage={"prompt_tokens": 30, "completion_tokens": 2})
-        name = next(tool["function"]["name"] for tool in options["tools"] if tool["function"]["name"].startswith("mcp_"))
+        name = next((tool["function"]["name"] for tool in options["tools"] if tool["function"]["name"].startswith("mcp_")), None)
+        if name is None:
+            results = [json.loads(message["content"]) for message in messages if message["role"] == "tool"]
+            page = next((value for value in reversed(results) if value.get("items")), None)
+            arguments = {"name": page["items"][0]["name"]} if page else {"query": ""}
+            return Completion(tool_calls=({"id": "discover-" + str(self.calls), "type": "function", "function": {
+                "name": "tool_guide", "arguments": json.dumps(arguments)}},),
+                finish_reason="tool_calls", usage={"prompt_tokens": 30, "completion_tokens": 2})
         if self.before_call:
             await self.before_call(name)
         return Completion(tool_calls=({"id": "business", "type": "function", "function": {"name": name, "arguments": '{"value":37}'}},),
@@ -127,6 +135,8 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
         catalog = await self.host.mcp.discover("business", "p")
         self.assertEqual(len(catalog["tools"]), 5)
         self.assertTrue(all(value["spec"]["cancellation"] == "none" for value in catalog["tools"]))
+        found = search(self.host.tools, [value["spec"]["name"] for value in catalog["tools"]], query="echo")
+        self.assertEqual([item["source"] for item in found["items"]], ["business/echo"])
         run = await self.submit()
         self.assertEqual((await self.host.runs.result(run.id, timeout=10)).text, "Observed")
         receipts = await self.host.store.call(lambda db: rows(db, "SELECT * FROM actions WHERE run_id=? AND name LIKE 'mcp_%'", (run.id,)))
@@ -306,7 +316,7 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(settle_ready.wait(), 5)
                 replay = await self.host.runs.confirm_action(receipt["id"], "p", "confirmed-once", "Independent file read verified the external value is 37", "completed", result=actual)
                 self.assertTrue(replay["reused"])
-                self.assertEqual(self.host.model_api.calls, 1)
+                self.assertEqual(self.host.model_api.calls, 3)
                 await self.host.runs.resume(run.id, "continue-after-verification")
                 await asyncio.wait_for(model_ready.wait(), 5)
                 writer = self.host.active[run.id]

@@ -1,3 +1,4 @@
+import { icon } from "./ui.mjs";
 import { markdown } from "./markdown.mjs";
 
 const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -65,7 +66,7 @@ function editorNode(value, schema, focus) {
   return `<div class="value-node" data-value-type="${escape(type)}" data-value-focus="${escape(focus)}" ${childSchema ? `data-value-child-schema="${escape(JSON.stringify(childSchema))}"` : ""} ${schema?.enum ? 'data-value-enum="true"' : ""}><div class="value-node-toolbar">${declaredType || schema?.enum ? `<span>${escape(names[type] || type)}</span>` : `<select data-value-kind aria-label="字段类型">${Object.entries(names).filter(([key]) => key !== "integer").map(([key, label]) => `<option value="${key}" ${key === type ? "selected" : ""}>${label}</option>`).join("")}</select>`}</div>${body}</div>`;
 }
 function entry(key, value, schema, focus, parent, required = false, fixed = false) {
-  return `<div class="value-entry">${parent === "object" ? `<label class="value-key">${schema?.title ? `<span>${escape(schema.title)}</span>` : ""}<input data-value-key aria-label="字段名称" data-focus="${escape(focus)}-key" value="${escape(key)}" ${fixed ? "readonly" : ""} required>${required ? '<small>必填</small>' : ""}</label>` : '<span class="value-item-label">列表项</span>'}${schema?.description ? `<div class="form-hint">${content(schema.description)}</div>` : ""}${editorNode(value, schema, focus)}${required ? "" : '<button type="button" class="text-link danger-text" data-value-remove aria-label="移除此字段">移除</button>'}</div>`;
+  return `<div class="value-entry">${parent === "object" ? `<label class="value-key">${schema?.title ? `<span>${escape(schema.title)}</span>` : ""}<input data-value-key aria-label="字段名称" data-focus="${escape(focus)}-key" value="${escape(key)}" ${fixed ? "readonly" : ""} required>${required ? '<small>必填</small>' : ""}</label>` : '<span class="value-item-label">列表项</span>'}${schema?.description ? `<div class="form-hint">${content(schema.description)}</div>` : ""}${editorNode(value, schema, focus)}${required ? "" : '<button type="button" class="icon-btn danger-text" data-value-remove title="移除此字段" aria-label="移除此字段">${icon("trash")}</button>'}</div>`;
 }
 export function readEditor(root) {
   const node = root.matches(".value-node") ? root : root.querySelector(":scope > .value-node");

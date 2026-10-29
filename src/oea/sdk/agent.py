@@ -165,6 +165,16 @@ class Agent:
     async def arun(self, text, **options):
         return await self.instance().arun(text, **options)
 
+    async def aprobe(self, *, idempotency_key=None, role="main", timeout=300):
+        """Check the saved model in isolated work with no business capabilities."""
+        await self._ensure()
+        handle = await self._call("agents.probe", {"agent_id": self.definition.id, "session_id": self._session_id,
+                                  "idempotency_key": idempotency_key or new_id("probe"), "role": role})
+        return RunResult.model_validate(await self._call("runs.result", {"run_id": handle["id"], "timeout": timeout}))
+
+    def probe(self, **options):
+        return self._sync(lambda: self.aprobe(**options))
+
     def stream(self, text, **options):
         return self.instance().stream(text, **options)
 

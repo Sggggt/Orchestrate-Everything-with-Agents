@@ -31,7 +31,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.host.aclose()
         self.temporary.cleanup()
 
-    async def test_controller_preparation_blocks_only_its_own_project(self):
+    async def test_project_deletion_revokes_only_its_own_controller_preparation(self):
         entered, release = asyncio.Event(), asyncio.Event()
         async def pending(*args, **kwargs):
             entered.set()
@@ -41,14 +41,14 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(self.host.mcp.call("example", "echo", {}, "one", project_id="p", consumer_id="controller"))
             try:
                 await asyncio.wait_for(entered.wait(), 5)
-                with self.assertRaises(RuntimeFault) as busy:
-                    await self.host.projects.delete("p", "Primary", "delete-p")
-                self.assertEqual(busy.exception.code, "PROJECT_BUSY")
                 deleted = await self.host.projects.delete("q", "Other", "delete-q")
                 self.assertTrue(deleted["deleted"])
+                self.assertFalse(task.done())
+                self.assertTrue((await self.host.projects.delete("p", "Primary", "delete-p"))["deleted"])
+                self.assertTrue(task.cancelled())
             finally:
                 release.set()
-                await task
+                await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(self.host.mcp.calling, {})
         self.assertTrue((await self.host.projects.delete("p", "Primary", "delete-p"))["deleted"])
 

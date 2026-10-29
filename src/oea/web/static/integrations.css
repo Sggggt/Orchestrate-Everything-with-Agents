@@ -679,10 +679,18 @@
 .skill-registry-card:hover, .mcp-card:hover { background: #fafbfe; border-color: var(--line); transform: none; box-shadow: none; }
 .skill-registry-card h3 { display: inline-block; font-size: 16px; margin: 0 0 8px 12px; vertical-align: middle; }
 .skill-registry-card .integration-avatar { display: inline-flex; vertical-align: middle; }
+.skill-card-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.skill-card-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; flex: 1; min-width: 0; }
+.skill-registry-card .skill-card-title h3 { margin: 0; min-width: 0; max-width: 100%; }
+.skill-card-title .text-link { text-align: left; overflow-wrap: anywhere; }
+.skill-card-title .badge, .skill-card-head > .icon-btn { flex-shrink: 0; }
+.skill-detail-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.skill-detail-title h1 { margin: 0; }
 .mcp-description { min-height: 0; font-size: 14px; color: var(--muted); }
 .mcp-name { color: var(--ink); font-size: 16px; }
 .mcp-type, .mcp-card-metrics, .document-foot { font-size: 12px; color: var(--muted); }
 .mcp-card footer { border: 0; padding-top: 12px; margin-top: 10px; }
+.mcp-card-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
 .integration-banner { background: transparent; border: 0; border-left: 3px solid #c8bff0; border-radius: 0; padding: 12px 18px; margin: 22px 0; }
 .integration-banner h2 { font-size: 15px; color: var(--ink); }
 .integration-banner p { font-size: 13px; color: var(--muted); }
@@ -729,3 +737,6 @@
 
 .integration-error { width: fit-content; max-width: 76ch; padding: 10px 0; border: 0; border-radius: 0; background: transparent; }
 .mcp-history article { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+@media (max-width: 760px) {
+  .integration-grid, .mcp-grid { grid-template-columns: minmax(0, 1fr); }
+}

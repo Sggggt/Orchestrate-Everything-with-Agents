@@ -11,7 +11,7 @@ from oea.orchestration.types import WorkflowBuilder, WorkflowGraph
 from oea.mcp.upstream import MCPServer
 from oea.skills.service import SkillSource
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 
 __all__ = ["Agent", "AgentInstance", "AgentDefinition", "Model", "Instructions", "Tools", "ToolKit", "tool", "FunctionTool",
            "ToolProvider", "ToolSpec", "SkillBinding", "ContextPolicy", "Workspace", "Execution", "Delivery", "Budget",

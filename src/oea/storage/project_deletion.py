@@ -3,7 +3,7 @@
 import json
 
 from oea.contracts.errors import require
-from oea.storage.persistence import event, now_ms, one
+from oea.storage.persistence import event, now_ms, one, rows
 
 
 INSTANCES = "SELECT id FROM instances WHERE project_id=:project_id"
@@ -31,7 +31,7 @@ def deletion_receipt(db, project_id: str, key_hash: str, input_hash: str):
 
 
 def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_hash: str, *, assert_inactive) -> dict:
-    """Delete one idle aggregate atomically; retain only its deletion receipts."""
+    """Delete every owned record regardless of its former execution or ledger state."""
     previous = deletion_receipt(db, project_id, key_hash, input_hash)
     if previous is not None:
         return previous
@@ -40,14 +40,10 @@ def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_
     require(confirm_name == project["name"], "CONFIRMATION_REQUIRED", "Confirm the current project name to delete it permanently")
     assert_inactive(project_id)
     params = {"project_id": project_id}
-    busy = one(db, f"""
-        SELECT 'run' AS kind,id,state FROM runs WHERE id IN ({RUNS}) AND state NOT IN ('completed','failed','cancelled')
-        UNION ALL SELECT 'workflow',id,state FROM workflow_runs WHERE id IN ({WORKFLOW_RUNS}) AND state NOT IN ('completed','failed','cancelled')
-        UNION ALL SELECT 'action',id,state FROM actions WHERE id IN ({ACTIONS}) AND state NOT IN ('completed','failed')
-        UNION ALL SELECT 'usage',id,state FROM usage WHERE run_id IN ({RUNS}) AND state IN ('reserved','needs_review')
-        LIMIT 1
-    """, params)
-    require(busy is None, "PROJECT_BUSY", "Complete or reconcile this project's active work before deleting it", details=busy or {})
+    pending = one(db, f"SELECT (SELECT COUNT(*) FROM actions WHERE id IN ({ACTIONS}) AND state NOT IN ('completed','failed')) AS actions,"
+                      f"(SELECT COUNT(*) FROM usage WHERE run_id IN ({RUNS}) AND state IN ('reserved','needs_review')) AS usage", params)
+    threads = [row["id"] for row in rows(db, f"SELECT id FROM runs WHERE id IN ({RUNS})", params)]
+    threads.extend("workflow:" + row["id"] for row in rows(db, f"SELECT id FROM workflow_runs WHERE id IN ({WORKFLOW_RUNS})", params))
     # Runs, messages and workflows contain intentional cross references. Defer their
     # checks until this one aggregate has been removed; foreign keys remain enabled.
     db.execute("PRAGMA defer_foreign_keys=ON")
@@ -104,7 +100,8 @@ def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_
     for statement in statements:
         db.execute(statement, params)
         count += db.changes()
-    receipt = {"project_id": project_id, "deleted": True, "deleted_at": now_ms(), "records_deleted": count}
+    receipt = {"project_id": project_id, "deleted": True, "deleted_at": now_ms(), "records_deleted": count,
+               "pending_actions_discarded": pending["actions"], "unsettled_usage_discarded": pending["usage"]}
     event(db, "project.deleted", project_id=project_id,
-          data={"key_sha256": key_hash, "input_sha256": input_hash, "receipt": receipt})
+          data={"key_sha256": key_hash, "input_sha256": input_hash, "receipt": receipt, "cleanup_threads": threads})
     return receipt

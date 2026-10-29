@@ -61,3 +61,9 @@ export function modal(title,content,{size="default"}={}) {
   backdrop.querySelector("input,textarea,select,button")?.focus();return close;
 }
 export function empty(title,text,action="") {return `<div class="v2-empty"><img class="brand-mark" src="/assets/mark.svg" alt=""><h2>${escape(title)}</h2><p>${escape(text)}</p>${action}</div>`;}
+export function confirmRemoval(title,message,action) {
+  const content=element(`<div><p>${escape(message)}</p><button type="button" class="icon-btn danger-text" data-confirm-remove title="确认删除" aria-label="确认删除">${icon("trash")}</button></div>`),close=modal(title,content);
+  const button=$("[data-confirm-remove]",content);
+  button.onclick=async()=>{button.disabled=true;try{await action();close();}catch(error){notify(error.message,true);button.disabled=false;}};
+  return close;
+}

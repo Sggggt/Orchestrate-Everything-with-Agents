@@ -77,6 +77,7 @@ class MCPBinding(Configuration):
 
 
 class Tools(Configuration):
+    loading: Literal["deferred", "eager"] = "deferred"
     local: tuple[Literal["read_file", "search_files", "write_file", "edit_file", "run_command", "read_image", "publish_artifact"], ...] = ()
     mcp: tuple[MCPBinding, ...] = ()
     functions: tuple[str, ...] = ()
@@ -198,6 +199,7 @@ class AgentDefinition(Configuration):
     name: str = Field(min_length=1, max_length=80)
     project_id: str | None = None
     enabled: bool = True
+    removed: bool = Field(default=False, json_schema_extra={"readOnly": True})
     description: str = Field(default="", max_length=640)
     model: Model = Field(default_factory=Model)
     instructions: Instructions = Field(default_factory=Instructions)

@@ -240,6 +240,7 @@ class Workflows:
                 require(previous["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Workflow key has different work or ownership")
                 return previous, True
             need(db, "projects", project_id)
+            self.host.assert_project_available(project_id)
             require(definition["state"] == "active", "WORKFLOW_NOT_ACTIVE", "Restore the workflow before accepting new work")
             require(expected_revision is None or definition["revision"] == expected_revision, "REVISION_CONFLICT", "Workflow definition changed")
             from pydantic import ValidationError as GraphValidationError

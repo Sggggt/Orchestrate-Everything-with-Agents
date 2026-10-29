@@ -45,6 +45,10 @@ async with PlatformClient.from_data_dir(data_dir) as client:
 
 Lookup is lazy. Each new Run uses the service's accepted configuration snapshot; the wrapper does not rewrite the Agent or its secrets. Global definitions require an explicit project or session. An owned, closed SDK state directory can be reopened with `state_dir`; command execution there additionally requires `allow_commands=True`. Connecting to an existing host preserves its own command grant and lifecycle. Default SDK instance identities survive display-name changes.
 
+Use `agent.probe(idempotency_key="connection-1")` or `await agent.aprobe(...)` for a connection-only check. It creates isolated work with short instructions, no business tools or Skills, at most 128 output tokens and one model attempt. The result retains the normal usage and action receipts. `role="manager"` selects the manager's independent model in a collaborative session. Reuse the original key to inspect an interrupted submission. A successful response establishes model connectivity, not business correctness.
+
+Function and MCP parameter schemas load on demand by default. The model uses `tool_guide` to search short descriptions and select an exact tool; the following request includes its complete native schema. Configure `Tools(loading="eager", ...)` for a small fixed toolset that needs all schemas immediately. Discovery does not change permissions, SDK tool invocation, or action identities. See [tool discovery](tools/README.md#模型按需发现).
+
 ## Typed function tools
 
 Function tools run synchronous callables in a thread and declare `cancellation="none"` by default. A Python thread can continue after its caller leaves; the original action remains observable until the callable returns. Only coroutine functions can explicitly declare `cancellation="cooperative"`, and must finish their cleanup before propagating cancellation. `owned_process` is reserved for providers that manage and observe an actual process tree.

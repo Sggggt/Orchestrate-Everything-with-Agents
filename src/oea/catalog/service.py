@@ -5,10 +5,12 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import Literal
 
 import apsw
 
-from oea.contracts.configuration import AgentDefinition
+from oea.contracts.configuration import AgentDefinition, CapabilityUse, UsePolicy
+from oea.contracts.domain import RunHandle, RunSpec
 from oea.catalog import reading
 from oea.contracts.errors import RuntimeFault, require
 from oea.storage.persistence import encode, event, new_id, now_ms, one, rows
@@ -37,6 +39,7 @@ class Projects:
         require(folder is None or Path(folder).is_dir(), "PROJECT_UNAVAILABLE", "Project folder is unavailable")
         identity = project_id or new_id("project")
         def write(db):
+            self.host.assert_project_available(identity)
             previous = one(db, "SELECT * FROM projects WHERE id=?", (identity,))
             if previous:
                 require(previous["name"] == name and previous["folder"] == folder, "IDEMPOTENCY_CONFLICT", "Project ID has different configuration")
@@ -56,6 +59,7 @@ class Projects:
         require(0 < len(name.strip()) <= 80, "INVALID_REQUEST", "Project name must contain 1 to 80 characters")
         def write(db):
             need(db, "projects", project_id)
+            self.host.assert_project_available(project_id)
             db.execute("UPDATE projects SET name=? WHERE id=?", (name.strip(), project_id))
             event(db, "project.updated", project_id=project_id)
             return need(db, "projects", project_id)
@@ -64,7 +68,7 @@ class Projects:
         return self.view(value)
 
     async def delete(self, project_id: str, confirm_name: str, idempotency_key: str):
-        """Permanently delete idle platform records; retain original files and backups."""
+        """Revoke project work and delete every owned record, including unresolved ledgers."""
         require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 256 and idempotency_key.strip(),
                 "INVALID_REQUEST", "Use a stable project deletion key")
         require(isinstance(confirm_name, str) and 0 < len(confirm_name) <= 80,
@@ -74,7 +78,9 @@ class Projects:
         previous = await self.host.store.call(lambda db: deletion_receipt(db, project_id, key_hash, input_hash))
         if previous is None:
             try:
-                await self.host.assert_project_idle(project_id)
+                current = await self.get(project_id)
+                require(confirm_name == current["name"], "CONFIRMATION_REQUIRED", "Confirm the current project name to delete it permanently")
+                await self.host.prepare_project_deletion(project_id)
             except RuntimeFault:
                 # Another caller may have committed this same request while the
                 # host's actual-work check was waiting. Read its receipt once.
@@ -85,12 +91,15 @@ class Projects:
             try:
                 value = await self.host.store.call(lambda db: delete_project(db, project_id, confirm_name, key_hash, input_hash, assert_inactive=self.host.assert_project_inactive), transaction=True)
             except apsw.ConstraintError:
+                self.host.project_deletion_scopes.pop(project_id, None)
                 raise RuntimeFault("PROJECT_REFERENCED", "Other platform records still reference this project; its deletion was rolled back") from None
         else:
             value = previous
         exists = await self.host.store.call(lambda db: one(db, "SELECT 1 FROM projects WHERE id=?", (project_id,)))
         if exists is None:
             await self.host.on_project_deleted(project_id)
+        else:
+            self.host.project_deletion_scopes.pop(project_id, None)
         self.host.notify()
         return value
 
@@ -106,6 +115,7 @@ class Agents:
 
     async def save(self, definition: AgentDefinition, *, expected_revision: int | None = None):
         definition = AgentDefinition.model_validate(definition)
+        require(not definition.removed, "INVALID_REQUEST", "Use agents.remove to delete an Agent")
         workspace = definition.workspace
         absolute = lambda path: path.expanduser().resolve() if path is not None else None
         workspace = workspace.model_copy(update={"project": absolute(workspace.project), "work": absolute(workspace.work),
@@ -119,6 +129,7 @@ class Agents:
             if previous:
                 require(previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Agent cannot change its project")
                 require(expected_revision is None or expected_revision == previous["revision"], "REVISION_CONFLICT", "Agent configuration changed")
+                require(not json.loads(previous["config_json"]).get("removed"), "AGENT_REMOVED", "Deleted Agent identities cannot be reused")
                 revision = previous["revision"] + 1
                 db.execute("UPDATE agent_definitions SET config_json=?,revision=?,updated_at=? WHERE id=?",
                            (definition.model_dump_json(), revision, now_ms(), definition.id))
@@ -138,18 +149,43 @@ class Agents:
         row = await self.host.store.call(lambda db: need(db, "agent_definitions", agent_id))
         return {"definition": json.loads(row["config_json"]), "revision": row["revision"]}
 
-    async def list(self, project_id: str, *, cursor: int = 0, limit: int = 25):
+    async def list(self, project_id: str, *, cursor: int = 0, limit: int = 25, include_removed: bool = False):
         require(type(limit) is int and 1 <= limit <= 100 and type(cursor) is int and 0 <= cursor < 2**63, "INVALID_REQUEST", "Use a bounded page")
         def read(db):
             need(db, "projects", project_id)
-            return rows(db, "SELECT rowid AS position,* FROM agent_definitions WHERE (project_id=? OR project_id IS NULL) AND rowid>? ORDER BY rowid LIMIT ?",
-                        (project_id, cursor, limit + 1))
+            return rows(db, "SELECT rowid AS position,* FROM agent_definitions WHERE (project_id=? OR project_id IS NULL) AND rowid>? AND (? OR COALESCE(json_extract(config_json,'$.removed'),0)=0) ORDER BY rowid LIMIT ?",
+                        (project_id, cursor, int(include_removed), limit + 1))
         values = await self.host.store.call(read)
         return {"items": [{"position": row["position"], "revision": row["revision"], "definition": json.loads(row["config_json"])} for row in values[:limit]],
                 "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
     async def schema(self):
         return AgentDefinition.model_json_schema()
+
+    async def remove(self, agent_id: str, project_id: str, expected_revision: int):
+        """Delete the active registration, retaining completed work and source files."""
+        self.host.assert_open()
+        def write(db):
+            need(db, "projects", project_id)
+            saved = need(db, "agent_definitions", agent_id)
+            definition = AgentDefinition.model_validate_json(saved["config_json"])
+            require(definition.project_id in {None, project_id}, "PERMISSION_DENIED", "Agent belongs to another project")
+            if definition.removed:
+                require(expected_revision in {saved["revision"], saved["revision"] - 1}, "REVISION_CONFLICT", "Agent configuration changed")
+                return saved["revision"], True
+            require(expected_revision == saved["revision"], "REVISION_CONFLICT", "Agent configuration changed")
+            pending = one(db, "SELECT r.id,r.state FROM runs r JOIN instances i ON i.id=r.instance_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
+            require(not pending, "AGENT_IN_USE", "Finish or cancel the Agent's pending work and inspect unresolved actions before deletion", details=pending or {})
+            revision = saved["revision"] + 1
+            definition = definition.model_copy(update={"enabled": False, "removed": True})
+            db.execute("UPDATE agent_definitions SET config_json=?,revision=?,updated_at=? WHERE id=?", (definition.model_dump_json(), revision, now_ms(), agent_id))
+            event(db, "agent.removed", project_id=definition.project_id, data={"agent_id": agent_id, "revision": revision})
+            return revision, False
+        revision, reused = await self.host.store.call(write, transaction=True)
+        self.host.definitions.pop(agent_id, None)
+        if not reused:
+            self.host.notify()
+        return {"agent_id": agent_id, "revision": revision, "removed": True, "enabled": False, "reused": reused}
 
     async def set_credential(self, agent_id: str, project_id: str, role: str, value: str, expected_revision: int):
         """Write a model secret without returning its value or reusing a live reference."""
@@ -169,6 +205,22 @@ class Agents:
         model.credential_ref = reference
         result = await self.save(definition, expected_revision=expected_revision)
         return {"agent_id": agent_id, "role": role, "configured": bool(value), "revision": result["revision"], "credential_ref": reference}
+
+    async def probe(self, agent_id: str, session_id: str, idempotency_key: str, *, role: Literal["main", "manager"] = "main"):
+        """Accept one isolated model connection probe with persistent usage and receipts."""
+        require(0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "A model probe needs a stable key")
+        def accept(db):
+            name = "model-probe-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
+            instance = self.host.instances._create(db, session_id, agent_id, name=name, role=role)
+            spec = RunSpec(instance_id=instance["id"], input="READY", idempotency_key=idempotency_key,
+                           policy=UsePolicy(tools=CapabilityUse(allowed=()), skills=CapabilityUse(allowed=())))
+            return self.host.runs._submit(db, spec, model_probe=True)
+        self.host.assert_open()
+        row, reused = await self.host.store.call(accept, transaction=True)
+        self.host.launch(row["id"])
+        self.host.notify()
+        return RunHandle(id=row["id"], instance_id=row["instance_id"], root_run_id=row["root_run_id"],
+                         root_workflow_run_id=row["root_workflow_run_id"], budget_id=row["budget_id"], state=row["state"], reused=reused)
 
     async def check(self, agent_id: str, *, project_id: str | None = None):
         """Inspect saved capabilities without issuing a model or tool request."""

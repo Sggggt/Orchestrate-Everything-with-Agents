@@ -1,6 +1,8 @@
+import { icon } from "./ui.mjs";
+
 // Rendering follows the server's configuration schema; labels are presentation.
 export const labels = {
-  id:"标识",name:"名称",description:"职责说明",enabled:"启用",model:"模型",base_url:"API 地址",credential_ref:"密钥来源引用",
+  id:"标识",name:"名称",description:"职责说明",enabled:"启用",model:"模型",base_url:"API 地址",credential_ref:"密钥来源引用",loading:"工具参数加载",
   system:"职责与系统指令",agent_md:"Agent 运行指令",temperature:"温度",reasoning_effort:"推理强度",max_output_tokens:"单次最大输出 token",
   context_window_tokens:"模型上下文窗口",token_parameter:"供应商输出参数",timeout_seconds:"请求超时（秒）",local:"本地工具",functions:"Python 函数工具",
   mcp:"MCP 服务绑定",server_id:"服务标识",tools:"允许的工具",skills:"Skills",path:"目录",required:"执行前必需",input_tokens:"工作输入 token",
@@ -83,7 +85,7 @@ export function formField({schema,root,get,set,name,path=[],changed=()=>{},basic
       const entries=document.createElement("div"); entries.className="schema-entries";
       (value||[]).forEach((entry,index)=>{
         const card=formField({schema:spec.items,root,get:()=>get()?.[index],set:item=>{const next=copy(get()||[]); next[index]=item; set(next);},name:labels[name]+" "+(index+1),path:[...path,index],changed});
-        const remove=document.createElement("button"); remove.type="button"; remove.className="btn btn-small"; remove.textContent="移除";
+        const remove=document.createElement("button"); remove.type="button"; remove.className="icon-btn danger-text"; remove.innerHTML=icon("trash"); remove.title="移除此项"; remove.setAttribute("aria-label","移除此项");
         remove.addEventListener("click",()=>{update((get()||[]).filter((_,i)=>i!==index)); box.replaceWith(formField({schema,root,get,set,name,path,changed}));}); card.append(remove); entries.append(card);
       });
       const add=document.createElement("button"); add.type="button"; add.className="btn btn-small"; add.textContent="添加 "+title;

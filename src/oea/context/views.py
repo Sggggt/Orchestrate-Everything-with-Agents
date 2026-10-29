@@ -9,6 +9,25 @@ from oea.storage.persistence import encode
 BODY_FIELDS = {"text", "stdout", "stderr", "content"}
 
 
+def deduplicate_skills(messages):
+    """Keep one visible body per immutable Skill source, retaining paired receipts."""
+    reads, seen, result = set(), set(), []
+    for message in messages:
+        for call in message.get("tool_calls", ()):
+            if call["function"]["name"] == "read_skill":
+                reads.add(call["id"])
+        if message["role"] == "tool" and message.get("tool_call_id") in reads:
+            value = json.loads(message["content"])
+            if isinstance(value, dict) and value.get("reference") and value.get("text"):
+                if value["reference"] in seen:
+                    value = {key: item for key, item in value.items() if key != "text"}
+                    message = {**message, "content": encode({**value, "already_in_context": True})}
+                else:
+                    seen.add(value["reference"])
+        result.append(message)
+    return result
+
+
 def tool_reference(value, reference):
     if not isinstance(value, dict):
         return {"content_view": content_view("excerpt", source_ref=reference)}

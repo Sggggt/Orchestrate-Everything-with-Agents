@@ -7,7 +7,7 @@ from oea.contracts.errors import RuntimeFault, require
 from oea.contracts.measurement import estimated_tokens, estimate_input, measurement, content_view, content_integrity
 from oea.storage.persistence import encode, new_id, now_ms, one, rows
 from oea.context.selection import Group, select_views
-from oea.context.views import reference_message, tool_reference, unresolved
+from oea.context.views import deduplicate_skills, reference_message, tool_reference, unresolved
 
 
 CONVERSATION = """SELECT c.id,c.position,c.run_id,
@@ -365,7 +365,7 @@ class ContextStore:
         # Reapply the current secret boundary before estimating historical
         # content; a value may have become protected since it was recorded.
         messages = self.redact([json.loads(row["body_json"]) for row in records])
-        view = assemble(memory, messages)
+        view = deduplicate_skills(assemble(memory, messages))
         estimate = estimate_input(view, tools)
         before = estimate["input_tokens"]
 
@@ -409,7 +409,7 @@ class ContextStore:
                 records = records[count_messages:]
         tail = [message for index, mode in enumerate(chosen.modes) if mode != "summary"
                 for message in (groups[index] if mode == "full" else references[index])]
-        view = assemble(memory, tail)
+        view = deduplicate_skills(assemble(memory, tail))
         final = estimate if chosen.summarized == 0 and all(mode == "full" for mode in chosen.modes) else estimate_input(view, tools)
         require(final["input_tokens"] <= budget, "MODEL_CONTEXT_BUDGET", "Selected history and memory exceed the effective input budget",
                 origin="local", stage="context_selection", measurement=measurement("model_input_tokens", final["input_tokens"], "token", "heuristic_estimate", limit=budget, limit_source="effective_input_budget"))

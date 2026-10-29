@@ -84,7 +84,7 @@ class Host:
         for name in sorted(MANAGER_TOOLS):
             self.tools.register(CoordinationTool(self, name))
         for area, service, names in (("projects", self.projects, ("create", "get", "list", "update", "delete")),
-                                     ("agents", self.agents, ("save", "get", "list", "schema", "check", "set_credential")),
+                                     ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
                                      ("instances", self.instances, ("create", "get", "list", "history", "mark_read")),
                                      ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "attempts", "result", "resume", "cancel", "confirm_action")),
@@ -122,7 +122,7 @@ class Host:
             if self.model_api is None:
                 self.model_api = ModelAPI(self.transport, secret=self.secret, redact=self.redact)
             definitions = await self.store.call(lambda db: rows(db, "SELECT config_json FROM agent_definitions"))
-            self.definitions = {definition.id: definition for definition in (AgentDefinition.model_validate_json(row["config_json"]) for row in definitions)}
+            self.definitions = {definition.id: definition for definition in (AgentDefinition.model_validate_json(row["config_json"]) for row in definitions) if not definition.removed}
             await self.mcp.open()
             await self.skills.open()
             self.saver_scope = AsyncSqliteSaver.from_conn_string(str(self.root / "graphs.sqlite"))
@@ -166,9 +166,12 @@ class Host:
         from oea.runtime.projects import assert_project_inactive
         assert_project_inactive(self, project_id)
 
-    async def assert_project_idle(self, project_id):
-        from oea.runtime.projects import assert_project_idle
-        await assert_project_idle(self, project_id)
+    async def prepare_project_deletion(self, project_id):
+        from oea.runtime.projects import prepare_project_deletion
+        await prepare_project_deletion(self, project_id)
+
+    def assert_project_available(self, project_id):
+        require(project_id not in self.project_deletion_scopes, "PROJECT_DELETING", "Project deletion has revoked new work")
 
     async def on_project_deleted(self, project_id):
         from oea.runtime.projects import on_project_deleted
@@ -244,7 +247,10 @@ class Host:
         if self.closing or self.tools.has_inflight(run_id):
             return
         context = self.active.get(run_id)
-        row = await self.store.call(lambda db: need(db, "runs", run_id))
+        row = await self.store.call(lambda db: one(db, "SELECT * FROM runs WHERE id=?", (run_id,)))
+        if row is None:
+            self.reviewing.discard(run_id)
+            return
         if row["state"] != "needs_review":
             self.reviewing.discard(run_id)
             return
@@ -300,6 +306,7 @@ class Host:
 
     async def authorize_model(self, context):
         self.assert_open()
+        self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
         model = current.model
@@ -316,6 +323,7 @@ class Host:
         self.assert_open()
         context = self.active.get(run_id)
         require(context is not None, "STALE_RUN", "Run no longer owns tool access", run_id=run_id)
+        self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
         if name == PROGRAM_TOOL:

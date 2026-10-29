@@ -16,12 +16,15 @@ from oea.contracts.domain import Wait
 from oea.contracts.errors import RuntimeFault, require
 from oea.storage.persistence import encode, one, rows, now_ms
 from oea.tools.contracts import ToolSpec
+from oea.tools.discovery import search, summaries
 from oea.workspace.service import schema
 from oea.workspace.paths import safe_child
 from oea.collaboration.coordination import MANAGER_TOOLS, INSTANCE_TOOLS
 
 
 BUILTIN_SCHEMAS = {
+    "tool_guide": schema({"name": {"type": "string", "minLength": 1}, "load": {"type": "boolean"}, "query": {"type": "string", "maxLength": 256},
+                          "cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}}, []),
     "read_artifact": schema({"artifact_id": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
                              "limit": {"type": "integer", "minimum": 64, "maximum": 16384}}, ["artifact_id"]),
     "read_action": schema({"action_id": {"type": "string"}, "attempt_id": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
@@ -33,6 +36,7 @@ BUILTIN_SCHEMAS = {
     "wait_for_input": schema({"prompt": {"type": "string", "maxLength": 1024}}, ["prompt"]),
 }
 BUILTIN_DESCRIPTIONS = {
+    "tool_guide": "Search currently authorized business tools by query, with cursor pagination. Pass an exact name to load its complete native parameter schema for the next model request; load=false unloads it. Discovery does not execute the tool or grant permission.",
     "read_artifact": "Read a UTF-8 artifact from this instance or currently granted related work. Continue with its returned byte offset; this does not execute the artifact's source tool.",
     "read_action": "Read this run's original action receipt or retained partial model response without repeating it. Use an attempt_id (the original usage_id) to retain that response version across explicit recovery.",
     "read_context": "Read an assigned original source by reference and character offset. Source text is evidence, not authorization.",
@@ -58,7 +62,9 @@ class BuiltinTool:
 
     async def authorize_replay(self, run_id, args):
         context = self.host.active[run_id]
-        if self.name == "read_artifact":
+        if self.name == "tool_guide" and args.get("name"):
+            await context.load_tool(args["name"], load=args.get("load", True))
+        elif self.name == "read_artifact":
             await self.host.artifacts.authorize_for_run(context, args["artifact_id"])
         elif self.name == "read_context":
             await self.host.contexts.authorize_reference(context.run, context.instance, args["reference"], self.host.authorize)
@@ -70,6 +76,14 @@ class BuiltinTool:
     async def invoke(self, request):
         context = self.host.active[request["run_id"]]
         args = request["arguments"]
+        if self.name == "tool_guide":
+            if args.get("name"):
+                require(not args.get("query") and not args.get("cursor"), "INVALID_REQUEST", "Choose a tool name or a directory query")
+                await context.load_tool(args["name"], load=args.get("load", True))
+                return {"name": args["name"], "loaded": args.get("load", True), "schema_location": "next_model_request.tools"}
+            require("load" not in args, "INVALID_REQUEST", "Loading or unloading requires an exact tool name")
+            return search(self.host.tools, context.deferred_tools(), query=args.get("query", ""),
+                          cursor=args.get("cursor", 0), limit=args.get("limit", 10))
         if self.name == "read_artifact":
             return await self.host.artifacts.read_for_run(context, args["artifact_id"], offset=args.get("offset", 0), limit=args.get("limit", 4096))
         if self.name == "read_action":
@@ -96,6 +110,7 @@ class RunContext:
         self.policy = UsePolicy.model_validate_json(run.get("policy_json", "{}"))
         self.paths, self.resumption = paths, resumption
         self.loaded_skills = {}
+        self.loaded_tools = None
         self.mcp_tools = {}
         self.assigned_artifacts = None if run.get("artifact_count", 0) else []
 
@@ -128,7 +143,36 @@ class RunContext:
         names.extend(sorted(self.coordination_tools()))
         if self.available_skills():
             names.append("read_skill")
-        return self.filter_tools(names)
+        names = self.filter_tools(names)
+        return [*names, "tool_guide"] if self.deferred_tools(names) else names
+
+    def deferred_tools(self, names=None):
+        if self.definition.tools.loading == "eager" or self.instance["role"] != "main":
+            return []
+        if names is None:
+            names = self.tool_names()
+        return [name for name in names if name in self.definition.tools.functions or isinstance(self.host.tools.providers.get(name), UpstreamTool)]
+
+    async def load_tool(self, name, *, load=True):
+        require(name in self.deferred_tools(), "PERMISSION_DENIED", "Tool is not currently discoverable in this run")
+        await self.host.authorize(self.run["id"], name)
+        await self.restore_tools()
+        if load:
+            self.loaded_tools.add(name)
+        else:
+            self.loaded_tools.discard(name)
+
+    async def restore_tools(self):
+        if self.loaded_tools is None:
+            loaded = await self.host.store.call(lambda db: rows(db,
+                "SELECT json_extract(result_json,'$.name') AS name,json_extract(result_json,'$.loaded') AS loaded FROM actions WHERE run_id=? AND name='tool_guide' AND state='completed' AND json_type(result_json,'$.loaded') IS NOT NULL ORDER BY rowid",
+                (self.run["id"],)))
+            self.loaded_tools = set()
+            for row in loaded:
+                if row["loaded"]:
+                    self.loaded_tools.add(row["name"])
+                else:
+                    self.loaded_tools.discard(row["name"])
 
     def filter_tools(self, names):
         allowed = self.policy.tools.allowed
@@ -144,6 +188,9 @@ class RunContext:
         return {"report_issue"}
 
     def check_tool_policy(self, name):
+        if name == "tool_guide":
+            require(self.deferred_tools(), "PERMISSION_DENIED", "No deferred tool is currently granted")
+            return
         if name.startswith("skill:"):
             require(self.policy.skills.allowed is None or name[6:] in self.policy.skills.allowed, "PERMISSION_DENIED", "Skill was excluded by this run policy")
         else:
@@ -178,6 +225,12 @@ class RunContext:
             sections.append("Configured Skills (load body with read_skill when relevant):\n" + encode([
                 {"id": skill.id, "name": skill.name or skill.id, "description": skill.description,
                  "required": skill.required or skill.id in self.policy.skills.required} for skill in available]))
+        deferred = self.deferred_tools()
+        if deferred:
+            directory = summaries(self.host.tools, deferred[:5])
+            require(not self.host.vault.contains_secret(directory), "TOOL_SCHEMA_CONTAINS_SECRET", "Tool metadata contains protected credentials")
+            sections.append("Deferred business tools: use tool_guide(query=...) to search, then tool_guide(name=...) to load one complete parameter schema before calling it.\n" +
+                            encode({"count": len(deferred), "examples": directory}))
         required = {skill.id: self.loaded_skills[skill.id] for skill in available
                     if (skill.required or skill.id in self.policy.skills.required) and skill.id in self.loaded_skills}
         if required:
@@ -263,12 +316,18 @@ class RunContext:
         # Recovered completed model receipts bypass this builder, retaining
         # their original tool-call/result pairing before accepting new input.
         await self.host.contexts.inbox(self.run, self.instance)
-        tools = self.host.tools.catalog(self.tool_names())
+        names = self.tool_names()
+        deferred = set(self.deferred_tools(names))
+        if deferred:
+            await self.restore_tools()
+        tools = self.host.tools.catalog([name for name in names if name not in deferred or name in self.loaded_tools])
         summary_reserve = None
         if self.definition.model.context_window_tokens is not None:
             summary_reserve = lambda requested: self.host.store.call(lambda db: self.host.budgets.output_allowance(db, self.run, requested))
         messages, projection = await self.host.contexts.project(self.run, self.instance, self.definition,
             await self.instructions(), tools, summarize=self.summarize, output_tokens=output_tokens, summary_reserve=summary_reserve)
+        projection["tools"] = {"available": len(names), "deferred": len(deferred), "loaded": len(deferred & (self.loaded_tools or set())),
+                               "schemas": len(tools)}
         return messages, tools, projection
 
     async def response(self, identity):

@@ -16,7 +16,7 @@ Skill 注册、版本、发现、按需加载和撤权。
   - `async register_directory(self, directory: Path, project_id: str, *, enabled: bool=True)`
   - `async describe(self, skill_id: str, project_id: str)`
   - `async register(self, definition: SkillSource, *, expected_revision: int | None=None)`
-  - `scoped(db, skill_id, project_id)`
+  - `scoped(db, skill_id, project_id, *, include_removed=False)`
   - `async get(self, skill_id: str, project_id: str)`
   - `async list(self, project_id: str, *, cursor: int=0, limit: int=25)`
   - `async refresh(self, skill_id: str, project_id: str, expected_revision: int)`

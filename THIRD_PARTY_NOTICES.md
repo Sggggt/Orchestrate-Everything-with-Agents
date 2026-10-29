@@ -2,7 +2,7 @@
 
 ## DeepSeek Harness
 
-The Unicode-safe head/tail retention approach in `oea.context_store.prune_text` is adapted from the tool-result pruning design in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), revision `5badb15009ae1756c3afe0ae0cef1faafc290ccc`, `packages/compaction/compaction-tool-result-pruner/src/index.ts` (SHA-256 `2890f336ca42f9d8259794eebbc4a9423f69a7394c41796b9981216ed29ed536`). OEA uses Python, UTF-8 input budgets, and durable original-evidence references. It does not include the Cordis runtime.
+The Unicode-safe head/tail retention approach in `oea.context.store.prune_text` is adapted from the tool-result pruning design in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), revision `5badb15009ae1756c3afe0ae0cef1faafc290ccc`, `packages/compaction/compaction-tool-result-pruner/src/index.ts` (SHA-256 `2890f336ca42f9d8259794eebbc4a9423f69a7394c41796b9981216ed29ed536`). OEA uses Python, UTF-8 input budgets, and durable original-evidence references. It does not include the Cordis runtime.
 
 MIT License
 

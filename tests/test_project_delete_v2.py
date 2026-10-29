@@ -14,6 +14,7 @@ from oea.runtime.host import Host
 from oea.mcp.upstream import MCPServer
 from oea.skills.service import SkillSource
 from oea.storage.persistence import one, rows
+from oea.tools.contracts import ToolSpec
 
 
 class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
@@ -109,9 +110,11 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
         return await self.host.projects.delete("p", options.get("confirm_name", "Example"), options.get("idempotency_key", "delete-key"))
 
     async def test_deletes_complete_aggregate_and_preserves_other_project_global_and_files(self):
+        signal = self.host.run_signal("p-run")
         before_other = await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS n FROM runs WHERE id='other-run'")["n"])
         receipt = await self.delete()
         self.assertTrue(receipt["deleted"])
+        self.assertTrue(signal.is_set())
         self.assertGreater(receipt["records_deleted"], 20)
         def check(db):
             self.assertIsNone(one(db, "SELECT * FROM projects WHERE id='p'"))
@@ -174,21 +177,19 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS n FROM events WHERE project_id='p' AND kind='project.deleted'")["n"]), 1)
 
-    async def test_unfinished_unknown_work_and_control_uploads_refuse_deletion(self):
-        scenarios = (("runs", "p-run", "accepted"), ("runs", "p-run", "running"), ("runs", "p-run", "waiting"), ("runs", "p-run", "needs_review"),
-                     ("workflow_runs", "p-workflow_run", "waiting"), ("workflow_runs", "p-workflow_run", "needs_review"),
-                     ("actions", "p-control", "intent"), ("actions", "p-control", "dispatched"), ("actions", "p-control", "needs_review"),
-                     ("usage", "p-usage", "reserved"), ("usage", "p-usage", "needs_review"))
-        for table, identity, state in scenarios:
-            previous = await self.host.store.call(lambda db: one(db, "SELECT state FROM " + table + " WHERE id=?", (identity,))["state"])
-            await self.host.store.call(lambda db: db.execute("UPDATE " + table + " SET state=? WHERE id=?", (state, identity)), transaction=True)
-            try:
-                with self.subTest(table=table, state=state), self.assertRaises(RuntimeFault) as busy:
-                    await self.delete()
-                self.assertEqual(busy.exception.code, "PROJECT_BUSY")
-                self.assertEqual((await self.host.projects.get("p"))["name"], "Example")
-            finally:
-                await self.host.store.call(lambda db: db.execute("UPDATE " + table + " SET state=? WHERE id=?", (previous, identity)), transaction=True)
+    async def test_confirmed_deletion_revokes_unfinished_work_and_discards_unsettled_ledgers(self):
+        def pending(db):
+            db.execute("UPDATE runs SET state='needs_review' WHERE id='p-run'")
+            db.execute("UPDATE workflow_runs SET state='waiting' WHERE id='p-workflow_run'")
+            db.execute("UPDATE actions SET state='needs_review' WHERE id='p-control'")
+            db.execute("UPDATE usage SET state='needs_review' WHERE id='p-usage'")
+        await self.host.store.call(pending, transaction=True)
+        receipt = await self.delete()
+        self.assertTrue(receipt["deleted"])
+        self.assertEqual(receipt["pending_actions_discarded"], 1)
+        self.assertEqual(receipt["unsettled_usage_discarded"], 1)
+        self.assertIsNone(await self.host.store.call(lambda db: one(db, "SELECT * FROM usage WHERE id='p-usage'")))
+        self.assertEqual((await self.host.runs.get("other-run"))["state"], "completed")
 
     async def test_unstarted_upload_and_control_metadata_are_removable_and_other_work_is_unrelated(self):
         await self.host.store.call(lambda db: db.execute("INSERT INTO artifact_uploads SELECT 'pending-upload',project_id,session_id,consumer_id,'pending-key',input_hash,name,bytes,sha256,media_type,created_at FROM artifact_uploads WHERE id='p-upload'"), transaction=True)
@@ -246,7 +247,7 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_key_commit_during_idle_check_is_read_back(self):
         second_entered, first_finished = asyncio.Event(), asyncio.Event()
-        original_idle, original_cleanup = self.host.assert_project_idle, self.host.on_project_deleted
+        original_idle, original_cleanup = self.host.prepare_project_deletion, self.host.on_project_deleted
         count = 0
         async def idle(project_id):
             nonlocal count
@@ -260,38 +261,34 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
         async def cleanup(project_id):
             await original_cleanup(project_id)
             first_finished.set()
-        with patch.object(self.host, "assert_project_idle", idle), patch.object(self.host, "on_project_deleted", cleanup):
+        with patch.object(self.host, "prepare_project_deletion", idle), patch.object(self.host, "on_project_deleted", cleanup):
             first, second = await asyncio.wait_for(asyncio.gather(self.delete(), self.delete()), timeout=10)
         self.assertEqual(first, second)
 
-    async def test_live_discovery_blocks_its_project_but_not_other_projects(self):
+    async def test_deletion_cancels_only_its_project_discovery(self):
         entered, release = asyncio.Event(), asyncio.Event()
+        count = 0
         async def list_tools(**options):
-            entered.set()
+            nonlocal count
+            count += 1
+            if count == 2:
+                entered.set()
             await release.wait()
             return SimpleNamespace(tools=[], nextCursor=None)
         connection = SimpleNamespace(session=SimpleNamespace(list_tools=list_tools))
         with patch.object(self.host.mcp, "connection", new_callable=AsyncMock, return_value=connection):
             task = asyncio.create_task(self.host.mcp.discover("p-server", "p"))
-            try:
-                await asyncio.wait_for(entered.wait(), timeout=5)
-                with self.assertRaises(RuntimeFault) as busy:
-                    await self.delete()
-                self.assertEqual(busy.exception.code, "PROJECT_BUSY")
-            finally:
-                release.set()
-                await task
-            entered.clear()
-            release.clear()
-            task = asyncio.create_task(self.host.mcp.discover("other-server", "other"))
+            other = asyncio.create_task(self.host.mcp.discover("other-server", "other"))
             try:
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 self.assertTrue((await self.delete())["deleted"])
+                self.assertTrue(task.cancelled())
+                self.assertFalse(other.done())
             finally:
                 release.set()
-                await task
+                await asyncio.gather(task, other, return_exceptions=True)
 
-    async def test_live_upload_is_busy_and_completed_bytes_remain_after_project_deletion(self):
+    async def test_deletion_cancels_live_upload_without_publishing_partial_bytes(self):
         payload = b"generated upload"
         upload = await self.host.artifacts.begin_upload("p", "new.txt", len(payload), hashlib.sha256(payload).hexdigest(), "live-upload", consumer_id="controller")
         entered, release = asyncio.Event(), asyncio.Event()
@@ -302,31 +299,27 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(self.host.artifacts.write_upload(upload["id"], "p", chunks(), consumer_id="controller"))
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
-            with self.assertRaises(RuntimeFault) as busy:
-                await self.delete()
-            self.assertEqual(busy.exception.code, "PROJECT_BUSY")
+            self.assertTrue((await self.delete())["deleted"])
+            self.assertTrue(task.cancelled())
         finally:
             release.set()
-            await task
-        self.assertTrue((await self.delete())["deleted"])
-        self.assertEqual((self.host.root / "artifacts" / upload["id"]).read_bytes(), payload)
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertFalse((self.host.root / "artifacts" / upload["id"]).exists())
 
-    async def test_terminal_row_does_not_hide_an_unfinished_host_job(self):
+    async def test_deletion_stops_an_unfinished_host_job_even_if_its_row_is_terminal(self):
         release = asyncio.Event()
         task = asyncio.create_task(release.wait())
         self.host.jobs["p-run"] = task
         try:
-            with self.assertRaises(RuntimeFault) as busy:
-                await self.delete()
-            self.assertEqual(busy.exception.code, "PROJECT_BUSY")
+            self.assertTrue((await self.delete())["deleted"])
+            self.assertTrue(task.cancelled())
         finally:
             release.set()
-            await task
+            await asyncio.gather(task, return_exceptions=True)
             self.host.jobs.pop("p-run", None)
-        self.assertTrue((await self.delete())["deleted"])
 
 
-    async def test_control_call_preparation_blocks_deletion_before_an_action_exists(self):
+    async def test_deletion_cancels_controller_preparation_before_an_action_exists(self):
         entered, release = asyncio.Event(), asyncio.Event()
         async def preparing(*args, **options):
             entered.set()
@@ -336,13 +329,71 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(self.host.mcp.call("p-server", "example", {}, "preparation-key", project_id="p", consumer_id="controller"))
             try:
                 await asyncio.wait_for(entered.wait(), timeout=5)
-                with self.assertRaises(RuntimeFault) as busy:
-                    await self.delete()
-                self.assertEqual(busy.exception.code, "PROJECT_BUSY")
+                self.assertTrue((await self.delete())["deleted"])
+                self.assertTrue(task.cancelled())
             finally:
                 release.set()
-                await task
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_late_uncancellable_call_cannot_recreate_deleted_records(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        class DelayedTool:
+            def describe(self):
+                return ToolSpec(name="delayed", side_effects="external", cancellation="none")
+            async def invoke(self, request):
+                entered.set()
+                await release.wait()
+                return {"observed": True}
+        self.host.register_tool(DelayedTool())
+        await self.host.store.call(lambda db: db.execute("UPDATE runs SET state='running' WHERE id='p-run'"), transaction=True)
+        with patch.object(self.host.tools, "authorize", new_callable=AsyncMock), patch.object(self.host.tools, "record_usage", None):
+            call = asyncio.create_task(self.host.tools.invoke("p-run", "delayed", {}, "delayed-call"))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                receipt = await self.delete()
+                self.assertTrue(receipt["deleted"])
+                self.assertEqual(receipt["pending_actions_discarded"], 1)
+                self.assertFalse(call.done())
+                release.set()
+                with self.assertRaises(RuntimeFault) as retired:
+                    await call
+                self.assertEqual(retired.exception.code, "OWNER_DELETED")
+                self.assertEqual(await self.host.store.call(lambda db: rows(db, "SELECT * FROM actions WHERE run_id='p-run'")), [])
+                self.assertEqual(await self.host.store.call(lambda db: [row["kind"] for row in rows(db, "SELECT kind FROM events WHERE project_id='p'")]), ["project.deleted"])
+            finally:
+                release.set()
+                await asyncio.gather(call, return_exceptions=True)
+
+    async def test_checkpoint_cleanup_can_resume_after_primary_deletion_commits(self):
+        await self.host.saver.conn.execute("INSERT INTO checkpoints(thread_id,checkpoint_ns,checkpoint_id,type,checkpoint,metadata) VALUES('p-run','','checkpoint','json',?,?)", (b"{}", b"{}"))
+        await self.host.saver.conn.execute("INSERT INTO checkpoints(thread_id,checkpoint_ns,checkpoint_id,type,checkpoint,metadata) VALUES('other-run','','checkpoint','json',?,?)", (b"{}", b"{}"))
+        await self.host.saver.conn.commit()
+        with patch.object(self.host.saver, "adelete_thread", new_callable=AsyncMock, side_effect=RuntimeError("Interrupted cleanup")):
+            with self.assertRaises(RuntimeError):
+                await self.delete()
+        self.assertIsNone(await self.host.store.call(lambda db: one(db, "SELECT * FROM projects WHERE id='p'")))
+        pending = await self.host.store.call(lambda db: one(db, "SELECT json_extract(data_json,'$.cleanup_threads') AS threads FROM events WHERE project_id='p'"))
+        self.assertIn("p-run", pending["threads"])
+        await self.host.aclose()
+        self.host = await Host(self.root / "state").__aenter__()
+        self.addAsyncCleanup(self.host.aclose)
         self.assertTrue((await self.delete())["deleted"])
+        async with self.host.saver.conn.execute("SELECT thread_id FROM checkpoints ORDER BY thread_id") as cursor:
+            self.assertEqual(await cursor.fetchall(), [("other-run",)])
+        self.assertIsNone((await self.host.store.call(lambda db: one(db, "SELECT json_extract(data_json,'$.cleanup_threads') AS threads FROM events WHERE project_id='p'")))["threads"])
+
+    async def test_wrong_confirmation_does_not_cancel_current_work(self):
+        task = asyncio.create_task(asyncio.Event().wait())
+        self.host.jobs["p-run"] = task
+        try:
+            with self.assertRaises(RuntimeFault):
+                await self.delete(confirm_name="Wrong")
+            self.assertFalse(task.done())
+            self.assertNotIn("p", self.host.project_deletion_scopes)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self.host.jobs.pop("p-run", None)
 
 
 if __name__ == "__main__":

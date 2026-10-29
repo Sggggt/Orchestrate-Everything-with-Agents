@@ -130,6 +130,7 @@ class Artifacts:
     async def write_upload(self, upload_id, project_id, chunks, *, consumer_id):
         """Receive authenticated bounded chunks; only validated bytes become visible."""
         self.host.assert_open()
+        self.host.assert_project_available(project_id)
         task = asyncio.current_task()
         self.receiving.add(task)
         self.receiving_projects[task] = project_id

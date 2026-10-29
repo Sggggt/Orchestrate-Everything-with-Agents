@@ -133,6 +133,15 @@ test("active sessions, paginated archive restoration and confirmed project delet
     await settle(()=>app.state.session===null&&app.state.openTabs.length===0);
     assert.deepEqual(app.state.sessions,[]);
   });
+  await t.test("external registration deletion events refresh Agent, MCP and Skill directories",async()=>{
+    app.state.page="overview";
+    for(const [field,kind,data] of [["agents","agent.removed",{agent_id:"gone"}],["mcp","mcp.saved",{server_id:"gone",removed:true}],["skills","skill.removed",{skill_id:"gone"}]]){
+      app.state[field]=[{definition:{id:"gone"}}];
+      streams.at(-1).onmessage({data:JSON.stringify({kind:"event",position:2,event:{kind,project_id:"p",data}})});
+      await settle(()=>app.state[field].length===0);
+      assert.ok(calls.some(value=>value.operation===({agents:"agents.list",mcp:"mcp.list",skills:"skills.list"})[field]));
+    }
+  });
   await t.test("project deletion requires the exact name and clears the deleted scope",async()=>{
     storage.set("oea-session:p","old");storage.set("oea-events:p","10");app.state.openTabs=["old-tab"];
     action("project-settings");const settings=dialogs.at(-1);assert.doesNotMatch(settings.content.innerHTML,/归档项目|恢复项目/);
