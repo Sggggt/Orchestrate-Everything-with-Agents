@@ -49,8 +49,10 @@ class Budgets:
         require(budget is not None, "BUDGET_UNAVAILABLE", "Run has no cost budget")
         policy = json.loads(budget["policy_json"])
         started = budget["started_at"] or now_ms()
-        require(now_ms() - started < policy["max_elapsed_seconds"] * 1000,
-                "BUDGET_EXHAUSTED", "Work elapsed-time budget is exhausted", run_id=run["id"])
+        elapsed = (now_ms() - started) / 1000
+        require(elapsed < policy["max_elapsed_seconds"],
+                "BUDGET_EXHAUSTED", "Work elapsed-time budget is exhausted", run_id=run["id"],
+                evidence_ref={"budget_id": budget["id"]}, details={"dimension": "elapsed_seconds", "remaining": max(0, policy["max_elapsed_seconds"] - elapsed)})
         if budget["started_at"] is None:
             db.execute("UPDATE budgets SET started_at=? WHERE id=?", (started, budget["id"]))
         return budget, policy
@@ -72,17 +74,19 @@ class Budgets:
             return previous["output_tokens"]
         budget, policy = self._check(db, run)
         usage = one(db, "SELECT COUNT(*) AS calls,COALESCE(SUM(input_tokens),0) AS input,COALESCE(SUM(output_tokens),0) AS output FROM usage WHERE budget_id=? AND kind='model'", (budget["id"],))
-        require(usage["calls"] < policy["max_model_calls"], "BUDGET_EXHAUSTED", "Work model-call budget is exhausted")
-        require(usage["input"] + input_tokens <= policy["max_input_tokens"], "BUDGET_EXHAUSTED", "Work input-token budget is exhausted")
+        require(usage["calls"] < policy["max_model_calls"], "BUDGET_EXHAUSTED", "Work model-call budget is exhausted", evidence_ref={"budget_id": budget["id"]}, details={"dimension": "model_calls", "remaining": max(0, policy["max_model_calls"] - usage["calls"]), "requested": 1})
+        require(usage["input"] + input_tokens <= policy["max_input_tokens"], "BUDGET_EXHAUSTED", "Work input-token budget is exhausted", evidence_ref={"budget_id": budget["id"]}, details={"dimension": "input_tokens", "remaining": max(0, policy["max_input_tokens"] - usage["input"]), "requested": input_tokens})
         remaining = min(output_tokens, policy["max_output_tokens"] - usage["output"])
-        require(remaining > 0, "BUDGET_EXHAUSTED", "Work output-token budget is exhausted")
-        activity = one(db, "SELECT stalled_model_calls FROM run_activity WHERE run_id=?", (run["id"],))
+        require(remaining > 0, "BUDGET_EXHAUSTED", "Work output-token budget is exhausted", evidence_ref={"budget_id": budget["id"]}, details={"dimension": "output_tokens", "remaining": max(0, remaining)})
+        activity = one(db, "SELECT * FROM run_activity WHERE run_id=?", (run["id"],))
+        blocker = json.loads(activity["blocker_json"]) if activity and activity["blocker_json"] else {}
         require(purpose == "summary" or not activity or activity["stalled_model_calls"] < policy["max_stalled_model_calls"],
-                "NO_PROGRESS", "Work has no new successful action or delivery evidence")
+                "NO_PROGRESS", "Work has no new successful action or delivery evidence", cause=blocker or None,
+                evidence_ref=blocker.get("evidence_ref"), details={"repeated": activity["blocker_repeats"] if activity else 0})
         db.execute("INSERT INTO usage VALUES(?,?,?,?,?,'model','reserved',?,NULL,?,1,?)",
                    (identity, budget["id"], run["id"], None, purpose, input_tokens, remaining, now_ms()))
         if purpose != "summary":
-            db.execute("INSERT INTO run_activity VALUES(?,1) ON CONFLICT(run_id) DO UPDATE SET stalled_model_calls=stalled_model_calls+1", (run["id"],))
+            db.execute("INSERT INTO run_activity(run_id,stalled_model_calls) VALUES(?,1) ON CONFLICT(run_id) DO UPDATE SET stalled_model_calls=stalled_model_calls+1", (run["id"],))
         return remaining
 
     @staticmethod
@@ -102,7 +106,7 @@ class Budgets:
     def tool(self, db, run, identity, name):
         budget, policy = self._check(db, run)
         count = one(db, "SELECT COUNT(*) AS count FROM usage WHERE budget_id=? AND kind='tool'", (budget["id"],))["count"]
-        require(count < policy["max_tool_calls"], "BUDGET_EXHAUSTED", "Work tool-call budget is exhausted")
+        require(count < policy["max_tool_calls"], "BUDGET_EXHAUSTED", "Work tool-call budget is exhausted", evidence_ref={"budget_id": budget["id"]}, details={"dimension": "tool_calls", "remaining": max(0, policy["max_tool_calls"] - count), "requested": 1})
         db.execute("INSERT INTO usage VALUES(?,?,?,?,?,'tool','settled',0,0,0,0,?)",
                    (identity, budget["id"], run["id"], identity, name, now_ms()))
 
@@ -117,69 +121,86 @@ class Budgets:
         fingerprint = hashlib.sha256(encode({"source": source, "evidence": evidence}).encode("utf-8")).hexdigest()
         db.execute("INSERT OR IGNORE INTO run_progress VALUES(?,?,?,?)", (run_id, fingerprint, source, now_ms()))
         if db.changes():
-            db.execute("INSERT INTO run_activity VALUES(?,0) ON CONFLICT(run_id) DO UPDATE SET stalled_model_calls=0", (run_id,))
+            db.execute("INSERT INTO run_activity(run_id,stalled_model_calls) VALUES(?,0) ON CONFLICT(run_id) DO UPDATE SET stalled_model_calls=0,blocker_json=NULL,blocker_signature=NULL,blocker_repeats=0", (run_id,))
+
+    @staticmethod
+    def blocked(db, run_id, error, signature):
+        db.execute("INSERT INTO run_activity(run_id,blocker_json,blocker_signature,blocker_repeats) VALUES(?,?,?,1) "
+                   "ON CONFLICT(run_id) DO UPDATE SET blocker_json=excluded.blocker_json,"
+                   "blocker_repeats=CASE WHEN blocker_signature=excluded.blocker_signature THEN blocker_repeats+1 ELSE 1 END,"
+                   "blocker_signature=excluded.blocker_signature", (run_id, encode(error), signature))
+
+    @staticmethod
+    def annotate_stop(db, run_id, fault):
+        if fault.code in {"BUDGET_EXHAUSTED", "EXECUTION_STEP_LIMIT"}:
+            activity = one(db, "SELECT blocker_json,blocker_repeats FROM run_activity WHERE run_id=?", (run_id,))
+            if activity and activity["blocker_json"]:
+                fault.identity["cause"] = json.loads(activity["blocker_json"])
+                fault.details["blocker_repeats"] = activity["blocker_repeats"]
+
+    @staticmethod
+    def read(db, budget_id):
+        budget = one(db, "SELECT * FROM budgets WHERE id=?", (budget_id,))
+        require(budget is not None, "NOT_FOUND", "Budget does not exist")
+        entries = rows(db, """WITH evidence AS (
+            SELECT u.*,COALESCE(f.input_json,a.input_json) AS metadata,
+            CASE WHEN f.id IS NOT NULL THEN f.result_json ELSE a.result_json END AS receipt
+            FROM usage u LEFT JOIN actions a ON a.id=u.action_id LEFT JOIN model_failures f ON f.id=u.id WHERE u.budget_id=?
+        ), facts AS (
+            SELECT *,COALESCE(json_extract(receipt,'$.usage.prompt_tokens'),json_extract(receipt,'$.usage.input_tokens')) AS provider_input,
+            COALESCE(json_extract(receipt,'$.usage.completion_tokens'),json_extract(receipt,'$.usage.output_tokens')) AS provider_output,
+            COALESCE(json_extract(receipt,'$.usage.prompt_tokens_details.cached_tokens'),json_extract(receipt,'$.usage.input_tokens_details.cached_tokens'),json_extract(receipt,'$.usage.cached_input_tokens')) AS provider_cache,
+            json_extract(metadata,'$.attempt.send_started') AS sent,
+            json_extract(metadata,'$.attempt.response_received') AS responded,
+            json_extract(metadata,'$.attempt.generation_completed') AS generated,
+            json_extract(metadata,'$.attempt.outcome') AS outcome,
+            json_extract(metadata,'$.attempt.attempt_id') AS attempt_id
+            FROM evidence
+        ) SELECT kind,purpose,state,estimated,COUNT(*) AS calls,COUNT(cached_input_tokens) AS cache_reports,
+            SUM(input_tokens) AS input_tokens,SUM(cached_input_tokens) AS cached_input_tokens,SUM(output_tokens) AS output_tokens,
+            COUNT(CASE WHEN typeof(provider_input)='integer' AND provider_input>=0 THEN 1 END) AS input_reports,
+            SUM(CASE WHEN typeof(provider_input)='integer' AND provider_input>=0 THEN provider_input END) AS reported_input_tokens,
+            COUNT(CASE WHEN typeof(provider_output)='integer' AND provider_output>=0 THEN 1 END) AS output_reports,
+            SUM(CASE WHEN typeof(provider_output)='integer' AND provider_output>=0 THEN provider_output END) AS reported_output_tokens,
+            COUNT(CASE WHEN typeof(provider_cache)='integer' AND provider_cache>=0 AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache<=provider_input THEN 1 END) AS reported_cache_calls,
+            SUM(CASE WHEN typeof(provider_cache)='integer' AND provider_cache>=0 AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache<=provider_input THEN provider_cache END) AS reported_cache_tokens,
+            SUM(CASE WHEN typeof(provider_cache)='integer' AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache>provider_input THEN 1 ELSE 0 END) AS invalid_cache_reports,
+            SUM(CASE WHEN outcome='failed' AND sent=0 THEN 1 ELSE 0 END) AS rejected_before_send,
+            COUNT(sent) AS send_coverage,COUNT(responded) AS response_coverage,COUNT(outcome) AS terminal_coverage,
+            SUM(CASE WHEN responded=1 THEN 1 ELSE 0 END) AS responses_received,
+            SUM(CASE WHEN generated=1 THEN 1 ELSE 0 END) AS generation_completed,
+            SUM(CASE WHEN outcome='failed' THEN 1 ELSE 0 END) AS failed,
+            COUNT(attempt_id) AS known_attempts
+            FROM facts GROUP BY kind,purpose,state,estimated""", (budget_id,))
+        policy = json.loads(budget["policy_json"])
+        models = [entry for entry in entries if entry["kind"] == "model"]
+        usage = {"model_calls": sum(entry["calls"] for entry in models), "tool_calls": sum(entry["calls"] for entry in entries if entry["kind"] == "tool"),
+                 "input_tokens": sum(entry["input_tokens"] for entry in models), "output_tokens": sum(entry["output_tokens"] for entry in models)}
+        reported_cache = sum(entry["cached_input_tokens"] or 0 for entry in models)
+        usage["cached_input_tokens"] = reported_cache if all(entry["cache_reports"] == entry["calls"] for entry in models) else None
+        def reported(metric, coverage):
+            count = sum(entry[coverage] for entry in models)
+            return sum(entry[metric] or 0 for entry in models) if count else None
+        provider = {"basis": "provider_reported", "input_tokens": reported("reported_input_tokens", "input_reports"),
+                    "output_tokens": reported("reported_output_tokens", "output_reports"), "cached_input_tokens": reported("reported_cache_tokens", "reported_cache_calls"),
+                    "coverage": {"input_calls": sum(entry["input_reports"] for entry in models), "output_calls": sum(entry["output_reports"] for entry in models),
+                                 "cache_calls": sum(entry["reported_cache_calls"] for entry in models)},
+                    "invalid_cache_reports": sum(entry["invalid_cache_reports"] for entry in models)}
+        def bucket(state, estimated=None):
+            values = [entry for entry in models if entry["state"] == state and (estimated is None or entry["estimated"] == estimated)]
+            return {"input_tokens": sum(entry["input_tokens"] for entry in values), "output_tokens": sum(entry["output_tokens"] for entry in values),
+                    "model_calls": sum(entry["calls"] - entry["rejected_before_send"] for entry in values)}
+        estimated = bucket("settled", 1)
+        pending = bucket("needs_review")
+        attempts = {"total": usage["model_calls"], **{key: sum(entry[key] for entry in models) for key in
+                    ("rejected_before_send", "responses_received", "generation_completed", "failed", "known_attempts", "send_coverage", "response_coverage", "terminal_coverage")}}
+        attempts["historical_unknown"] = attempts["total"] - attempts["known_attempts"]
+        reserved = {"input_tokens": sum(entry["input_tokens"] for entry in models if entry["state"] == "reserved"),
+                    "output_tokens": sum(entry["output_tokens"] for entry in models if entry["state"] == "reserved")}
+        return {"id": budget["id"], "project_id": budget["project_id"], "session_id": budget["session_id"], "root_run_id": budget["root_run_id"], "root_workflow_run_id": budget["root_workflow_run_id"], "started_at": budget["started_at"],
+                "policy": policy, "usage": usage, "provider_reported": provider, "estimated": estimated, "reserved": reserved, "needs_review": pending, "attempts": attempts,
+                "remaining": {key: max(0, policy["max_" + key] - usage[key]) for key in ("model_calls", "tool_calls", "input_tokens", "output_tokens")},
+                "estimated_model_calls": estimated["model_calls"], "breakdown": entries}
 
     async def get(self, budget_id: str):
-        def read(db):
-            budget = one(db, "SELECT * FROM budgets WHERE id=?", (budget_id,))
-            require(budget is not None, "NOT_FOUND", "Budget does not exist")
-            entries = rows(db, """WITH evidence AS (
-                SELECT u.*,COALESCE(f.input_json,a.input_json) AS metadata,
-                CASE WHEN f.id IS NOT NULL THEN f.result_json ELSE a.result_json END AS receipt
-                FROM usage u LEFT JOIN actions a ON a.id=u.action_id LEFT JOIN model_failures f ON f.id=u.id WHERE u.budget_id=?
-            ), facts AS (
-                SELECT *,COALESCE(json_extract(receipt,'$.usage.prompt_tokens'),json_extract(receipt,'$.usage.input_tokens')) AS provider_input,
-                COALESCE(json_extract(receipt,'$.usage.completion_tokens'),json_extract(receipt,'$.usage.output_tokens')) AS provider_output,
-                COALESCE(json_extract(receipt,'$.usage.prompt_tokens_details.cached_tokens'),json_extract(receipt,'$.usage.input_tokens_details.cached_tokens'),json_extract(receipt,'$.usage.cached_input_tokens')) AS provider_cache,
-                json_extract(metadata,'$.attempt.send_started') AS sent,
-                json_extract(metadata,'$.attempt.response_received') AS responded,
-                json_extract(metadata,'$.attempt.generation_completed') AS generated,
-                json_extract(metadata,'$.attempt.outcome') AS outcome,
-                json_extract(metadata,'$.attempt.attempt_id') AS attempt_id
-                FROM evidence
-            ) SELECT kind,purpose,state,estimated,COUNT(*) AS calls,COUNT(cached_input_tokens) AS cache_reports,
-                SUM(input_tokens) AS input_tokens,SUM(cached_input_tokens) AS cached_input_tokens,SUM(output_tokens) AS output_tokens,
-                COUNT(CASE WHEN typeof(provider_input)='integer' AND provider_input>=0 THEN 1 END) AS input_reports,
-                SUM(CASE WHEN typeof(provider_input)='integer' AND provider_input>=0 THEN provider_input END) AS reported_input_tokens,
-                COUNT(CASE WHEN typeof(provider_output)='integer' AND provider_output>=0 THEN 1 END) AS output_reports,
-                SUM(CASE WHEN typeof(provider_output)='integer' AND provider_output>=0 THEN provider_output END) AS reported_output_tokens,
-                COUNT(CASE WHEN typeof(provider_cache)='integer' AND provider_cache>=0 AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache<=provider_input THEN 1 END) AS reported_cache_calls,
-                SUM(CASE WHEN typeof(provider_cache)='integer' AND provider_cache>=0 AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache<=provider_input THEN provider_cache END) AS reported_cache_tokens,
-                SUM(CASE WHEN typeof(provider_cache)='integer' AND typeof(provider_input)='integer' AND provider_input>=0 AND provider_cache>provider_input THEN 1 ELSE 0 END) AS invalid_cache_reports,
-                SUM(CASE WHEN outcome='failed' AND sent=0 THEN 1 ELSE 0 END) AS rejected_before_send,
-                COUNT(sent) AS send_coverage,COUNT(responded) AS response_coverage,COUNT(outcome) AS terminal_coverage,
-                SUM(CASE WHEN responded=1 THEN 1 ELSE 0 END) AS responses_received,
-                SUM(CASE WHEN generated=1 THEN 1 ELSE 0 END) AS generation_completed,
-                SUM(CASE WHEN outcome='failed' THEN 1 ELSE 0 END) AS failed,
-                COUNT(attempt_id) AS known_attempts
-                FROM facts GROUP BY kind,purpose,state,estimated""", (budget_id,))
-            policy = json.loads(budget["policy_json"])
-            models = [entry for entry in entries if entry["kind"] == "model"]
-            usage = {"model_calls": sum(entry["calls"] for entry in models), "tool_calls": sum(entry["calls"] for entry in entries if entry["kind"] == "tool"),
-                     "input_tokens": sum(entry["input_tokens"] for entry in models), "output_tokens": sum(entry["output_tokens"] for entry in models)}
-            reported_cache = sum(entry["cached_input_tokens"] or 0 for entry in models)
-            usage["cached_input_tokens"] = reported_cache if all(entry["cache_reports"] == entry["calls"] for entry in models) else None
-            def reported(metric, coverage):
-                count = sum(entry[coverage] for entry in models)
-                return sum(entry[metric] or 0 for entry in models) if count else None
-            provider = {"basis": "provider_reported", "input_tokens": reported("reported_input_tokens", "input_reports"),
-                        "output_tokens": reported("reported_output_tokens", "output_reports"), "cached_input_tokens": reported("reported_cache_tokens", "reported_cache_calls"),
-                        "coverage": {"input_calls": sum(entry["input_reports"] for entry in models), "output_calls": sum(entry["output_reports"] for entry in models),
-                                     "cache_calls": sum(entry["reported_cache_calls"] for entry in models)},
-                        "invalid_cache_reports": sum(entry["invalid_cache_reports"] for entry in models)}
-            def bucket(state, estimated=None):
-                values = [entry for entry in models if entry["state"] == state and (estimated is None or entry["estimated"] == estimated)]
-                return {"input_tokens": sum(entry["input_tokens"] for entry in values), "output_tokens": sum(entry["output_tokens"] for entry in values),
-                        "model_calls": sum(entry["calls"] - entry["rejected_before_send"] for entry in values)}
-            estimated = bucket("settled", 1)
-            pending = bucket("needs_review")
-            attempts = {"total": usage["model_calls"], **{key: sum(entry[key] for entry in models) for key in
-                        ("rejected_before_send", "responses_received", "generation_completed", "failed", "known_attempts", "send_coverage", "response_coverage", "terminal_coverage")}}
-            attempts["historical_unknown"] = attempts["total"] - attempts["known_attempts"]
-            reserved = {"input_tokens": sum(entry["input_tokens"] for entry in models if entry["state"] == "reserved"),
-                        "output_tokens": sum(entry["output_tokens"] for entry in models if entry["state"] == "reserved")}
-            return {"id": budget["id"], "project_id": budget["project_id"], "session_id": budget["session_id"], "root_run_id": budget["root_run_id"], "root_workflow_run_id": budget["root_workflow_run_id"], "started_at": budget["started_at"],
-                    "policy": policy, "usage": usage, "provider_reported": provider, "estimated": estimated, "reserved": reserved, "needs_review": pending, "attempts": attempts,
-                    "remaining": {key: max(0, policy["max_" + key] - usage[key]) for key in ("model_calls", "tool_calls", "input_tokens", "output_tokens")},
-                    "estimated_model_calls": estimated["model_calls"], "breakdown": entries}
-        return await self.store.call(read)
+        return await self.store.call(lambda db: self.read(db, budget_id))

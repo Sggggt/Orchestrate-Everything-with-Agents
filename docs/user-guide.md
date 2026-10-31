@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 2.0.4, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 2.1.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 

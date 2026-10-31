@@ -211,6 +211,8 @@ Saved work retains the graph name and version. Register that version before open
 
 The default Agent graph derives its loop boundary from the selected root budget. Definition defaults do not impose another per-Agent model-call quota on shared work. `Execution.max_steps` is an optional explicit flow bound; custom code graphs use a 512-step default when it is omitted.
 
+`runs.resume` and `workflows.resume` accept `execution_limits={"max_steps": 1024}` to adjust the next invocation's LangGraph super-step limit. Values range from 1 to 100000; omission retains the last accepted effective value. The original budget, graph version and completed action receipts remain in force. `EXECUTION_STEP_LIMIT` identifies the effective limit and checkpoint. Reusing a resume key with a different adjustment is an idempotency conflict.
+
 ## Business MCP
 
 Tool and delivery schemas must bundle their referenced definitions. Validation resolves local and built-in schema resources without fetching network URLs or files. Tool metadata that reflects known credentials is rejected before it can enter a public catalog or model request; legitimate parameter names such as `api_key` retain their schemas. MCP aliases always require the owning service binding and current project grant, including when an alias is mistakenly placed in a function-name list.

@@ -86,7 +86,7 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
             "INSERT INTO workflow_step_failures VALUES(:step,'failed-hash','failed',NULL,'{}',1)",
             "INSERT INTO workflow_map_members VALUES(:step,0,:instance,:run,NULL)",
             "INSERT INTO run_progress VALUES(:run,'progress','fixture',1)",
-            "INSERT INTO run_activity VALUES(:run,0)",
+            "INSERT INTO run_activity(run_id,stalled_model_calls) VALUES(:run,0)",
             "INSERT INTO mcp_servers VALUES(:server,:project,:server_json,1,1)",
             "INSERT INTO mcp_catalogs VALUES(:server,1,'[]',1)",
             "INSERT INTO run_mcp_bindings VALUES(:run,:server,1)",
@@ -108,6 +108,17 @@ class ProjectDeletionTests(unittest.IsolatedAsyncioTestCase):
 
     async def delete(self, **options):
         return await self.host.projects.delete("p", options.get("confirm_name", "Example"), options.get("idempotency_key", "delete-key"))
+
+    async def test_schema_used_only_by_another_projects_archived_attempt_is_preserved(self):
+        def seed(db):
+            db.execute("INSERT INTO tool_contracts VALUES('archived-contract','{}')")
+            db.execute("UPDATE actions SET input_json=json_object('projection',json_object('tool_contracts',json_object('example','archived-contract'))) WHERE id='p-action'")
+            db.execute("UPDATE model_failures SET input_json=json_object('projection',json_object('tool_contracts',json_object('example','archived-contract'))) WHERE id='other-usage'")
+        await self.host.store.call(seed, transaction=True)
+        await self.delete()
+        self.assertIsNotNone(await self.host.store.call(lambda db: one(db, "SELECT * FROM tool_contracts WHERE id='archived-contract'")))
+        await self.host.projects.delete("other", "Other", "delete-other")
+        self.assertIsNone(await self.host.store.call(lambda db: one(db, "SELECT * FROM tool_contracts WHERE id='archived-contract'")))
 
     async def test_deletes_complete_aggregate_and_preserves_other_project_global_and_files(self):
         signal = self.host.run_signal("p-run")

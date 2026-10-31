@@ -54,6 +54,12 @@ class RunHandle(Configuration):
     reused: bool = False
 
 
+class RunDisplay(Configuration):
+    title: str = Field(default="", max_length=120)
+    stage: str = Field(default="", max_length=120)
+    item_label: str = Field(default="", max_length=120)
+
+
 class RunSpec(Configuration):
     instance_id: str
     input: str | dict
@@ -62,6 +68,7 @@ class RunSpec(Configuration):
     budget_id: str | None = None
     policy: UsePolicy = Field(default_factory=UsePolicy)
     artifact_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    display: RunDisplay = Field(default_factory=RunDisplay)
 
     @field_validator("artifact_ids")
     @classmethod

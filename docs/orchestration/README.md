@@ -14,6 +14,10 @@
 
 ## Python 接口
 
+`runs.resume` 与 `workflows.resume` 共用 `ResumeExecutionLimits`，只调整 `max_steps`（1..100000）。省略时沿用最近已接受限额；同键异限额冲突，成功输出、原预算及动作键保留。步数耗尽返回 `EXECUTION_STEP_LIMIT`，单位为 LangGraph super-step。
+
+默认图通过 `recover_context` 处理已确认的窗口拒绝：原 attempt 已终结、无正文或工具调用、未取消且授权与预算有效，只有新投影持久化且实际减量后才重试一次。次数随图状态保存，沿用逻辑动作并归档原 attempt。未知发送、超时、断线、无减量和预算不足不自动重发。自定义图需显式接入该能力。
+
 - `orchestration/graphs/default.py`：`AgentState`
 - `orchestration/graphs/default.py`：`AgentExecutionContext`
   - `async prepare(self, state: AgentState)`
@@ -110,7 +114,7 @@
   - `config(run_id, definition)`
   - `launch(self, run_id, *, restart=False)`
   - `async finish(self, run_id, state, *, error=None, wait=None, result_ref=None)`
-  - `async resume(self, workflow_run_id: str, idempotency_key: str, *, project_id: str, input: str | dict | None=None, interrupt_id: str | None=None, node_id: str | None=None)`
+  - `async resume(self, workflow_run_id: str, idempotency_key: str, *, project_id: str, input: str | dict | None=None, interrupt_id: str | None=None, node_id: str | None=None, execution_limits: ResumeExecutionLimits | None=None)`
   - `async cancel(self, workflow_run_id: str, *, project_id: str)`
   - `async open(self)`
   - `async aclose(self)`
@@ -150,3 +154,7 @@
 依赖模块：catalog、contracts、runtime、stdio、storage、tools。
 
 跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+
+默认 Agent 图的窗口拒绝路径为 `model → recover_context → model`，只在确认拒绝后进入，正常路径不增加节点或模型调用。重试标记位于原图状态，恢复证据位于原事件记录。工作流与 Agent 的 `execution_limits.max_steps` 都表示每次 LangGraph 调用的 super-step 上限。
+
+Agent 节点以 `title` 和节点 ID 生成 Run 的展示元信息。Map 的可选 `item_label` 使用原模板作用域解析为最多 120 字符的文本，缺省使用条目序号；这些名称不需要模型调用，不改变原 Run ID、版本或验收结论。

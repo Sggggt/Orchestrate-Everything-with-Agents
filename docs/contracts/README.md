@@ -2,6 +2,8 @@
 
 共享配置、领域类型、错误与 Schema 校验。构造和导入不启动宿主。
 
+`contracts/paging.py` 统一结果分页及响应正文页的边界；`contracts/execution.py` 提供公开的 `ResumeExecutionLimits`。`RunSpec.display` 使用 `RunDisplay` 保存确定性的任务标题、阶段和条目标签。操作参数与工具校验复用安全字段诊断，不回显提交值。
+
 源码：[src/oea/contracts/](../../src/oea/contracts/)
 
 ## Python 接口

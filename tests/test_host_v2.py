@@ -395,6 +395,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["state"], "cancelled")
         self.assertIsNotNone(status["cancel_requested_at"])
         self.assertIsNotNone(status["stopped_at"])
+        self.assertTrue(status["stop_confirmed"])
+        self.assertFalse(status["in_flight"])
         self.assertIsNotNone(captured[0].returncode)
         receipt = await self.host.store.call(lambda db: one(db, "SELECT * FROM actions WHERE run_id=? AND name='run_command'", (handle.id,)))
         self.assertEqual(receipt["state"], "completed")

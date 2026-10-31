@@ -5,6 +5,7 @@ import { avatar } from "./workbench-shell.mjs";
 import { showRun,showAction } from "./runs.mjs";
 import { uploadArtifact } from "./artifact-directory.mjs";
 import { observeRun,liveStates } from "./run-stream.mjs";
+import { streamMarkdown } from "./stream-markdown.mjs";
 
 const drafts=new Map(),attachments=new Map();
 let active=null;
@@ -87,7 +88,7 @@ export async function renderConversation(app,root){
   function drawState(){
     const latest=runs[0],running=runs.find(run=>liveStates.has(run.state));
     $("#conversation-state",root).innerHTML=latest?badge(latest.state):"";
-    $("#conversation-runs",root).innerHTML=runs.map(run=>`<button class="task-mini" data-conversation-run="${escape(run.id)}"><span class="title">${escape(run.goal||"工作目标")}</span><span class="task-mini-meta">${badge(run.state)}<time>${date(run.created_at)}</time></span></button>`).join("")||'<p class="form-hint">暂无任务。</p>';
+    $("#conversation-runs",root).innerHTML=runs.map(run=>`<button class="task-mini" data-conversation-run="${escape(run.id)}"><span class="title">${escape(run.display?.title||run.goal||"工作目标")}</span><span class="task-mini-meta">${badge(run.state)}<time>${date(run.created_at)}</time></span></button>`).join("")||'<p class="form-hint">暂无任务。</p>';
     $("#older-runs",root).hidden=runCursor==null;
     $("#conversation-notice",root).innerHTML=latest&&!running?`${diagnosisHTML(latest.error)}<div class="conversation-run-footer">${badge(latest.state)}<button class="text-link" data-conversation-run="${escape(latest.id)}">任务详情${icon("chevron")}</button></div>`:"";
     for(const button of root.querySelectorAll("[data-conversation-run]"))button.onclick=()=>showRun(app,button.dataset.conversationRun);
@@ -98,7 +99,7 @@ export async function renderConversation(app,root){
     if((running?.id||null)!==streamId){
       stream?.close();stream=null;streamId=running?.id||null;
       if(running||latest?.state==="completed"){liveValue=null;live.innerHTML="";}
-      if(running)stream=observeRun({runId:running.id,projectId,listeners:app.runListeners,onSync:queueRefresh,onChange:value=>{
+      if(running)stream=observeRun({runId:running.id,projectId,listeners:app.runListeners,readResponse:params=>rpc("runs.response",params),onSync:queueRefresh,onChange:value=>{
         if(!current())return;
         liveValue=value;preserveScroll(drawLive,false,true);
       }});
@@ -107,7 +108,15 @@ export async function renderConversation(app,root){
   function drawLive(){
     if(!liveValue)return;
     const value=liveValue,saved=value.actionId&&entries.some(entry=>entry.action_id===value.actionId);
-    live.innerHTML=`${value.text&&!saved?`<div class="message-text live-response">${markdown(value.text)}</div>`:""}${value.note?`<div class="stream-label" role="status">${value.connected&&(!value.run||liveStates.has(value.run.state))?'<span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>':icon("activity")}<span>${escape(value.note)}</span></div>`:""}`;
+    if(!live.querySelector(".live-response")){
+      live.innerHTML='<div class="message-text live-response"></div><div class="stream-label" role="status"></div>';
+      live.renderText=streamMarkdown(live.querySelector(".live-response"));
+    }
+    const body=live.querySelector(".live-response"),label=live.querySelector(".stream-label");
+    body.hidden=!value.text||saved;
+    if(!body.hidden)live.renderText(value.text,value.actionId+":"+value.attemptId);
+    const note=value.note?`${value.connected&&(!value.run||liveStates.has(value.run.state))?'<span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>':icon("activity")}<span>${escape(value.note)}</span>`:"";
+    if(label.innerHTML!==note)label.innerHTML=note;
   }
   function queueRefresh(){if(!closed&&refreshTimer===null)refreshTimer=setTimeout(()=>{refreshTimer=null;refresh().catch(error=>notify(error.message,true));},100);}
   async function refresh(){

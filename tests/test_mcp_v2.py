@@ -67,6 +67,22 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         async with self.connected():
             await self.check_discovery()
 
+    async def test_invalid_fields_match_local_registry_through_stdio_and_http(self):
+        cases = [("results.read", {"result_ref": "missing", "limit": 0}),
+                 ("results.read", {"result_ref": "missing", "json_pointer": "/" * 513}),
+                 ("runs.resume", {"run_id": "missing", "idempotency_key": "resume", "execution_limits": {"max_steps": 100001}})]
+        async with self.connected():
+            for operation, params in cases:
+                with self.subTest(operation=operation, field=next(reversed(params))):
+                    result = await self.call(operation, params)
+                    self.assertTrue(result.isError)
+                    text = "".join(item.text for item in result.content if item.type == "text")
+                    transported = json.loads(text[text.index('{"error"'):])["error"]
+                    with self.assertRaises(RuntimeFault) as caught:
+                        await self.host.registry.call(operation, params)
+                    self.assertEqual(transported["details"]["errors"], caught.exception.details["errors"])
+                    self.assertEqual(transported["stage"], "operation.validate")
+
     async def test_default_mcp_home_connects_to_existing_host_without_a_directory_argument(self):
         # The isolated home supplies the same metadata as the explicitly selected host.
         home = self.root / "standard-home"

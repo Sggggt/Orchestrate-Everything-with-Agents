@@ -44,16 +44,22 @@ def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_
                       f"(SELECT COUNT(*) FROM usage WHERE run_id IN ({RUNS}) AND state IN ('reserved','needs_review')) AS usage", params)
     threads = [row["id"] for row in rows(db, f"SELECT id FROM runs WHERE id IN ({RUNS})", params)]
     threads.extend("workflow:" + row["id"] for row in rows(db, f"SELECT id FROM workflow_runs WHERE id IN ({WORKFLOW_RUNS})", params))
+    contracts = [row["contract_id"] for row in rows(db,
+        f"SELECT contract_id FROM run_tool_state WHERE run_id IN ({RUNS}) AND contract_id IS NOT NULL UNION "
+        f"SELECT contract_id FROM action_contracts WHERE action_id IN ({ACTIONS}) UNION "
+        f"SELECT j.value AS contract_id FROM actions a,json_each(a.input_json,'$.projection.tool_contracts') j WHERE a.run_id IN ({RUNS}) UNION "
+        f"SELECT j.value AS contract_id FROM model_failures f JOIN actions a ON a.id=f.action_id,json_each(f.input_json,'$.projection.tool_contracts') j WHERE a.run_id IN ({RUNS})", params)]
     # Runs, messages and workflows contain intentional cross references. Defer their
     # checks until this one aggregate has been removed; foreign keys remain enabled.
     db.execute("PRAGMA defer_foreign_keys=ON")
     statements = (
         "DELETE FROM result_refs WHERE project_id=:project_id",
+        "DELETE FROM result_snapshots WHERE project_id=:project_id",
+        f"DELETE FROM run_tool_state WHERE run_id IN ({RUNS})",
         "DELETE FROM imported_transcript WHERE history_position IN (SELECT position FROM imported_history WHERE project_id=:project_id)",
         "DELETE FROM imported_links WHERE EXISTS(SELECT 1 FROM imported_history h WHERE h.project_id=:project_id AND h.migration_id=imported_links.migration_id AND h.table_name=imported_links.table_name AND CAST(json_extract(h.row_json,'$.id') AS TEXT)=imported_links.source_id)",
         "DELETE FROM imported_history WHERE project_id=:project_id",
         f"DELETE FROM skill_bodies WHERE sha256 IN (SELECT sha256 FROM skill_versions WHERE skill_id IN ({SKILLS})) AND sha256 NOT IN (SELECT sha256 FROM skill_versions WHERE skill_id NOT IN ({SKILLS}))",
-        f"DELETE FROM tool_contracts WHERE id IN (SELECT contract_id FROM action_contracts WHERE action_id IN ({ACTIONS})) AND id NOT IN (SELECT contract_id FROM action_contracts WHERE action_id NOT IN ({ACTIONS}))",
         f"DELETE FROM model_failures WHERE id IN (SELECT id FROM usage WHERE run_id IN ({RUNS}))",
         f"DELETE FROM action_resolutions WHERE action_id IN ({ACTIONS})",
         f"DELETE FROM action_contracts WHERE action_id IN ({ACTIONS})",
@@ -99,6 +105,13 @@ def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_
     count = 0
     for statement in statements:
         db.execute(statement, params)
+        count += db.changes()
+    for identity in contracts:
+        db.execute("DELETE FROM tool_contracts WHERE id=? AND NOT EXISTS(SELECT 1 FROM action_contracts WHERE contract_id=?) "
+                   "AND NOT EXISTS(SELECT 1 FROM run_tool_state WHERE contract_id=?) "
+                   "AND NOT EXISTS(SELECT 1 FROM actions a,json_each(a.input_json,'$.projection.tool_contracts') j WHERE j.value=?) "
+                   "AND NOT EXISTS(SELECT 1 FROM model_failures f,json_each(f.input_json,'$.projection.tool_contracts') j WHERE j.value=?)",
+                   (identity, identity, identity, identity, identity))
         count += db.changes()
     receipt = {"project_id": project_id, "deleted": True, "deleted_at": now_ms(), "records_deleted": count,
                "pending_actions_discarded": pending["actions"], "unsettled_usage_discarded": pending["usage"]}

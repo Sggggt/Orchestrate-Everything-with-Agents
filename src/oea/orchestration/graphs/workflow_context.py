@@ -30,6 +30,8 @@ class WorkflowContext:
 
     async def step(self, node, state, arguments, *, unblocked=False):
         self.host.assert_open()
+        if node.type == "map" and not arguments.get("config", {}).get("item_label"):
+            arguments["config"].pop("item_label", None)
         versions = {identity: state.get("versions", {}).get(identity) for identity in arguments.get("refs", {})}
         fingerprint = hashlib.sha256(encode({"arguments": arguments, "source_versions": versions}).encode("utf-8")).hexdigest()
         key = node.id + ":" + str(self.iteration(node, state))
@@ -250,7 +252,8 @@ class WorkflowContext:
             instance = await self.host.instances.create(self.run["session_id"], arguments["agent_id"], name=self.run["id"] + ":" + node.id, role=arguments["role"])
             value = arguments["input"]
             value = value if isinstance(value, (str, dict)) else {"value": value}
-            handle = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input=value, idempotency_key=step["operation_key"], policy=arguments["policy"]), workflow_run_id=self.run["id"])
+            handle = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input=value, idempotency_key=step["operation_key"], policy=arguments["policy"],
+                display={"title": node.title or node.id, "stage": node.id}), workflow_run_id=self.run["id"])
             await self.save(node, step, "waiting", {"kind": "run", "run_id": handle.id, "instance_id": instance["id"]})
         return {"refs": {node.id: step["id"]}, "dispatch": {node.id: {"step_id": step["id"], "iteration": self.iteration(node, state)}}}
 
@@ -285,7 +288,10 @@ class WorkflowContext:
             value = resolve(node.config.input, await self.scope(refs, node.config.input, item=items[index], index=index, versions=versions))
             value = value if isinstance(value, (str, dict)) else {"value": value}
             instance = await self.host.instances.create(self.run["session_id"], node.config.agent_id, name=self.run["id"] + ":" + node.id + ":" + str(index))
-            spec = RunSpec(instance_id=instance["id"], input=value, idempotency_key=step["operation_key"] + ":" + str(index), policy=node.config.policy)
+            label = resolve(node.config.item_label, await self.scope(refs, node.config.item_label, item=items[index], index=index, versions=versions)) if node.config.item_label else str(index + 1)
+            require(isinstance(label, str) and len(label) <= 120, "WORKFLOW_MAP_INVALID", "Map item label must be text of at most 120 characters")
+            spec = RunSpec(instance_id=instance["id"], input=value, idempotency_key=step["operation_key"] + ":" + str(index), policy=node.config.policy,
+                display={"title": node.title or node.id, "stage": node.id, "item_label": label})
             def accept(db):
                 run, _ = self.host.runs._submit(db, spec, workflow_run_id=self.run["id"])
                 db.execute("INSERT OR IGNORE INTO workflow_map_members VALUES(?,?,?,?,NULL)", (step["id"], index, instance["id"], run["id"]))

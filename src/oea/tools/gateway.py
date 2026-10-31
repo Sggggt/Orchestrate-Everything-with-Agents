@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from jsonschema import ValidationError
 
 from oea.contracts.errors import RuntimeFault, require
+from oea.contracts.measurement import estimated_tokens
 from oea.storage.persistence import encode, event, new_id, now_ms, one
-from oea.contracts.schema_validation import check_schema, schema_validator, validate_value
+from oea.contracts.schema_validation import check_schema, schema_validator, validate_value, validate_contract
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class ToolGateway:
         self.providers = {}
         self.validators = {}
         self.contracts = {}
+        self.schema_costs = {}
         self.inflight = {}
         self.names = {}
         self.owners = {}
@@ -48,6 +50,7 @@ class ToolGateway:
         self.validators[spec.name] = tuple(schema_validator(schema) for schema in (spec.input_schema, spec.output_schema))
         encoded = encode(spec)
         self.contracts[spec.name] = (hashlib.sha256(encoded.encode("utf-8")).hexdigest(), encoded)
+        self.schema_costs[self.contracts[spec.name][0]] = estimated_tokens(self.catalog([spec.name])[0])
 
     def catalog(self, names):
         result = []
@@ -60,20 +63,35 @@ class ToolGateway:
 
     def prepare(self, name, arguments):
         require(name in self.providers, "TOOL_UNAVAILABLE", "Tool is not bound to this host")
+        validate_contract(self.validators[name][0], arguments, tool=name, contract_hash=self.contracts[name][0])
         try:
-            validate_value(self.validators[name][0], arguments)
             encoded = encode(arguments)
-        except (ValidationError, TypeError, ValueError):
-            raise RuntimeFault("INVALID_REQUEST", "Tool input must be JSON matching its schema") from None
+        except (TypeError, ValueError):
+            raise RuntimeFault("INVALID_REQUEST", "Tool input must be finite JSON", origin="local", stage="tool.validate",
+                               tool=name, details={"errors": [{"path": [], "type": "json", "message": "Use finite JSON values"}]}) from None
         # Snapshot the external input once; receipt and provider see one value.
         snapshot = json.loads(encoded)
         bind = getattr(self.providers[name], "bind_arguments", None)
         bound = bind(snapshot) if bind is not None else None
         return PreparedTool(name, snapshot, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest(), bound)
 
-    async def invoke(self, run_id, name, arguments, operation_key):
+    async def invoke(self, run_id, name, arguments, operation_key, *, contract_hash=None, model_step=None):
         await self.authorize(run_id, name)
-        return await self._invoke(run_id, self.prepare(name, arguments), operation_key)
+        if contract_hash is not None and self.contracts.get(name, (None,))[0] != contract_hash:
+            def original(db):
+                self.guard(db, run_id, None)
+                return one(db, "SELECT * FROM actions WHERE run_id=? AND operation_key=?", (run_id, operation_key))
+            previous = await self.store.call(original)
+            if previous and previous["state"] == "completed":
+                require(previous["name"] == name and previous["input_hash"] == hashlib.sha256(encode(arguments).encode("utf-8")).hexdigest(),
+                        "IDEMPOTENCY_CONFLICT", "Action key has different input")
+                authorize_replay = getattr(self.providers[name], "authorize_replay", None)
+                if authorize_replay is not None:
+                    await authorize_replay(run_id, arguments)
+                return json.loads(previous["result_json"])
+            raise RuntimeFault("TOOL_CONTRACT_CHANGED", "Tool contract changed after the model request", origin="local", stage="tool.validate",
+                               tool=name, contract_hash=contract_hash, run_id=run_id)
+        return await self._invoke(run_id, self.prepare(name, arguments), operation_key, model_step=model_step)
 
     async def invoke_intent(self, intent_id, prepared, operation_key, *, wait=True):
         require(self.authorize_intent is not None, "PERMISSION_DENIED", "Controller tool intents are unavailable")
@@ -91,7 +109,7 @@ class ToolGateway:
                     "CALL_CANCELLED", "Controller intent no longer permits dispatch", call_id=intent_id)
         return owner
 
-    async def _invoke(self, run_id, prepared, operation_key, *, intent_id=None, wait=True):
+    async def _invoke(self, run_id, prepared, operation_key, *, intent_id=None, wait=True, model_step=None):
         name, arguments, encoded, digest = prepared.name, prepared.arguments, prepared.encoded, prepared.fingerprint
         provider, spec = self.providers[name], self.providers[name].describe()
 
@@ -112,6 +130,8 @@ class ToolGateway:
             contract_id, contract = self.contracts[name]
             db.execute("INSERT OR IGNORE INTO tool_contracts VALUES(?,?)", (contract_id, contract))
             db.execute("INSERT INTO action_contracts VALUES(?,?)", (identity, contract_id))
+            if model_step is not None:
+                db.execute("UPDATE run_tool_state SET last_used_step=?,revision=revision+1 WHERE run_id=? AND name=?", (model_step, run_id, name))
             event(db, "action.accepted", run_id=run_id, intent_id=intent_id, data={"action_id": identity, "tool": name})
             return one(db, "SELECT * FROM actions WHERE id=?", (identity,)), True
 
@@ -170,7 +190,7 @@ class ToolGateway:
     def _commit(self, db, receipt, result):
         name, identity, run_id = receipt["name"], receipt["id"], receipt["run_id"]
         result = json.loads(encode(result))
-        validate_value(self.validators[name][1], result)
+        validate_contract(self.validators[name][1], result, code="TOOL_RESULT_INVALID", stage="tool.output", tool=name)
         require(isinstance(result, dict), "TOOL_RESULT_INVALID", "Tool results require a JSON object envelope")
         result = self.redact(result)
         encoded = encode(result)

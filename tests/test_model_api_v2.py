@@ -10,7 +10,7 @@ import httpx
 
 from oea.contracts.configuration import Model
 from oea.contracts.errors import RuntimeFault
-from oea.models.api import ModelAPI, ModelFailure
+from oea.models.api import ModelAPI, ModelFailure, ModelCancelled
 
 
 def frame(value):
@@ -87,6 +87,21 @@ class ModelAPITests(unittest.IsolatedAsyncioTestCase):
             await api.complete(self.model(), [{"role": "user", "content": "Read"}])
         self.assertEqual(caught.exception.code, "MODEL_STREAM_INTERRUPTED")
         self.assertEqual(caught.exception.partial.text, partial)
+
+    async def test_cancellation_keeps_received_text_and_unexecuted_tool_fragments(self):
+        ready = asyncio.Event()
+        stream = Stream([frame({"choices": [{"delta": {"content": "retained", "tool_calls": [{"index": 0, "id": "call", "function": {"name": "read_context", "arguments": "{"}}]}}]})], open_tail=True)
+        api = await self.make(stream)
+        async def observed(value):
+            ready.set()
+        task = asyncio.create_task(api.complete(self.model(), [{"role": "user", "content": "Read"}], emit=observed))
+        await asyncio.wait_for(ready.wait(), 1)
+        task.cancel()
+        with self.assertRaises(ModelCancelled) as caught:
+            await task
+        self.assertEqual(caught.exception.partial.text, "retained")
+        self.assertEqual(caught.exception.partial.tool_calls[0]["function"]["arguments"], "{")
+        self.assertTrue(stream.closed)
 
     async def test_http_error_keeps_original_safe_provider_detail(self):
         stream = Stream([json.dumps({"error": {"code": "invalid_parameter", "param": "tools", "message": "unit-credential was rejected"}}).encode()])

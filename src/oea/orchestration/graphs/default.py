@@ -6,6 +6,7 @@ from typing import Literal, Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
+from oea.contracts.errors import RuntimeFault
 
 
 class AgentState(TypedDict, total=False):
@@ -14,7 +15,10 @@ class AgentState(TypedDict, total=False):
     step: int
     response_id: str
     action_keys: list[str]
-    decision: Literal["tools", "model", "deliver", "wait"]
+    decision: Literal["tools", "model", "deliver", "wait", "recover_context"]
+    context_failure: dict
+    context_recovery: dict
+    context_retries: int
     wait: dict
     result_ref: str
     program_ref: str
@@ -23,6 +27,7 @@ class AgentState(TypedDict, total=False):
 class AgentExecutionContext(Protocol):
     async def prepare(self, state: AgentState) -> dict: ...
     async def call_model(self, state: AgentState) -> dict: ...
+    async def recover_context(self, state: AgentState) -> dict: ...
     async def execute_tools(self, state: AgentState) -> dict: ...
     async def observe(self, state: AgentState) -> dict: ...
     async def deliver(self, state: AgentState) -> dict: ...
@@ -40,7 +45,16 @@ async def prepare(state: AgentState, runtime: Runtime[AgentGraphContext]):
 
 
 async def model(state: AgentState, runtime: Runtime[AgentGraphContext]):
-    return await runtime.context.oea.call_model(state)
+    try:
+        return await runtime.context.oea.call_model(state)
+    except RuntimeFault as error:
+        if error.code != "MODEL_CONTEXT_REJECTED" or state.get("context_retries", 0):
+            raise
+        return {"decision": "recover_context", "context_failure": error.as_dict()}
+
+
+async def recover_context(state: AgentState, runtime: Runtime[AgentGraphContext]):
+    return await runtime.context.oea.recover_context(state)
 
 
 async def tools(state: AgentState, runtime: Runtime[AgentGraphContext]):
@@ -64,11 +78,12 @@ def compile_agent_graph(checkpointer):
     if checkpointer is None:
         raise ValueError("The default Agent requires a persistent checkpointer")
     builder = StateGraph(AgentState, context_schema=AgentGraphContext)
-    for name, node in (("prepare", prepare), ("model", model), ("tools", tools), ("observe", observe), ("deliver", deliver), ("wait", wait)):
+    for name, node in (("prepare", prepare), ("model", model), ("recover_context", recover_context), ("tools", tools), ("observe", observe), ("deliver", deliver), ("wait", wait)):
         builder.add_node(name, node)
     builder.add_edge(START, "prepare")
     builder.add_edge("prepare", "model")
-    builder.add_conditional_edges("model", lambda state: state["decision"], {"tools": "tools", "deliver": "deliver", "wait": "wait"})
+    builder.add_conditional_edges("model", lambda state: state["decision"], {"tools": "tools", "deliver": "deliver", "wait": "wait", "recover_context": "recover_context"})
+    builder.add_edge("recover_context", "model")
     builder.add_edge("tools", "observe")
     builder.add_conditional_edges("observe", lambda state: state.get("decision", "model"), {"model": "model", "wait": "wait"})
     builder.add_edge("wait", "model")

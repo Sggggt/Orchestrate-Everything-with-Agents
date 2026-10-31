@@ -49,6 +49,10 @@
 
 目录保留 MCP 的服务与原始工具名，便于检索不透明的原生别名。当前阶段不再需要的参数可用 `tool_guide(name="exact_name", load=false)` 卸载；卸载不删除原动作或结果。加载和卸载都沿原 Run 回执恢复。
 
-选择事实保存在成功的 `tool_guide` 动作中，恢复从原 Run 回执读取，不重新执行业务工具；新的 Run 重新选择。每轮目录、Schema 与实际执行取当前授权交集。Run 的允许列表列出实际工具名，发现工具只辅助读取已获准能力；它不扩大授权，也不替代必需工具的成功回执。
+选择状态与事件同事务保存在 `run_tool_state`，原 `tool_guide` 回执保留；恢复核验当前契约和授权，新的 Run 重新选择。每轮目录、Schema 与实际执行取当前授权交集。Run 的允许列表列出实际工具名，发现工具只辅助读取已获准能力；它不扩大授权，也不替代必需工具的成功回执。
+
+`tools.schema_budget_tokens` 是延迟业务 Schema 的软驻留目标，默认 `min(8192, context.input_tokens/4)`。下一次请求准备时按压力和最近使用情况卸载；刚加载的工具至少获得一次请求机会。`tool_guide(name="exact_name", pin=true)` 保护已授权工具免于自动卸载，`eager` 保持全量加载。必要的大 Schema 可以超过软目标，但完整请求必须满足硬输入边界。模型请求记录实际契约哈希，生成调用后的契约变化返回 `TOOL_CONTRACT_CHANGED`。
+
+参数错误保留最多五项安全字段诊断，不回显原输入。执行前拒绝与工具结果同事务记录 `tool.rejected`，关联原模型响应、调用和契约；重放不重复事件，不伪造工具派发或用量。
 
 `tools/discovery.py` 负责确定性、有界搜索，不调用模型。`RunContext.model_input` 的投影记录 available/deferred/loaded/schemas 数量；估算包含实际发送的 Schema。该机制使用普通原生工具列表更新，不要求供应商支持专有延迟字段。

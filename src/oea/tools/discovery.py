@@ -22,7 +22,10 @@ def search(gateway, names, *, query="", cursor=0, limit=10):
     found = []
     for item in summaries(gateway, names):
         text = (item["name"] + " " + item.get("source", "") + " " + gateway.providers[item["name"]].describe().description).casefold()
-        score = sum(term in text for term in terms)
+        name, source = item["name"].casefold(), item.get("source", "").casefold()
+        score = sum(8 if term == name else 4 if term in name else 2 if term in source else 1 if term in text else 0 for term in terms)
+        if query.strip().casefold() == name:
+            score += 100
         if not terms or score:
             found.append((score, item))
     found.sort(key=lambda entry: (-entry[0], entry[1]["name"]))

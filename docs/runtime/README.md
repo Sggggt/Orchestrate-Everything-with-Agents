@@ -66,7 +66,7 @@
   - `async action(self, action_id: str, *, offset: int=0, limit: int=8192, attempt_id: str | None=None)`
   - `async attempts(self, action_id: str, project_id: str, *, cursor: int=0, limit: int=25)`
   - `async result(self, run_id: str, *, timeout: float=0)`
-  - `async resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None=None, refresh_model: bool=True, refresh_capabilities: bool=True)`
+  - `async resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None=None, refresh_model: bool=True, refresh_capabilities: bool=True, execution_limits: ResumeExecutionLimits | None=None)`
   - `async cancel(self, run_id: str)`
   - `async confirm_action(self, action_id: str, project_id: str, idempotency_key: str, evidence: str, outcome: Literal['completed', 'not_applied'], *, result: dict | None=None)`
 
@@ -88,6 +88,14 @@
 
 ## 原回执与诊断
 
+`runs.resume` 接受可选 `execution_limits={"max_steps": ...}`（1..100000）；省略沿用最近接受的值。该值限制每次 LangGraph 调用的 super-step，不重置原根预算。恢复键同时绑定限额变化、原失败与检查点。`EXECUTION_STEP_LIMIT` 提供实际限额、图版本及检查点；`NO_PROGRESS` 等停止原因并列保留最近阻断 `cause` 和 `evidence_ref`。
+
+取消请求、仍在途和已确认停止分别以 `in_flight`、`stop_confirmed`、`stopped_at` 展示。旧 attempt 的迟到结果只结算其原回执，不能改写新 attempt 或复活已注销项目。
+
 runs.action 在同一 attempt_id 上续读，返回 offset_unit、content_view 和 attempt_facts；runs.attempts 的当前与归档项使用同一事实口径。结果与错误保留稳定 action_id 和独立 attempt_id，摘要包装错误的 diagnostic 指向原始原因及回执。读取不会重发动作，恢复仍复核当前授权与状态。
+
+`runs.response` 按原 action/attempt 读取正文，续页带首个响应的 `version`。运行中可读取进程内有界快照，终结后读取已保存事实；宿主重启后未保存部分明确标为 `unsaved_gap`。旧连接更新不能改写新 attempt。`runs.inspect.model_input` 给出最近业务模型投影的输入估算、工具 Schema 成本、加载数量、缩减前后值及供应商输入偏差。
+
+默认图只对已确认的 `MODEL_CONTEXT_REJECTED` 进入 `recover_context`。原尝试须终结且没有正文和工具调用；降低输入目标后，只有实际更小且已持久记录的投影可以沿原模型动作自动重试一次。原失败与 usage 归档保留。超时、流中断、未决副作用、取消及预算不足不授权自动重发；自定义图不自动插入恢复节点。
 
 产物页以字节续读。命令日志的完整性根据同一 Run 的原动作回执和精确 artifact ID 核对；原始捕获已截断时，即使下载了整个保存文件，也不能宣称原始输出完整。未知历史来源保留 unknown。

@@ -69,6 +69,36 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.gateway.invoke("r", "submit", {"count": 3}, "submit-1"), {"count": 3})
         self.assertEqual(submissions, [3])
 
+    async def test_changed_contract_receipt_replay_keeps_source_and_run_authorization(self):
+        class Provider:
+            spec = ToolSpec(name="read_source")
+            allowed = True
+            calls = 0
+            def describe(inner):
+                return inner.spec
+            async def invoke(inner, request):
+                inner.calls += 1
+                return {"text": "Original evidence"}
+            async def authorize_replay(inner, run_id, arguments):
+                require(inner.allowed, "PERMISSION_DENIED", "Source permission was revoked")
+        provider = Provider()
+        self.gateway.register(provider)
+        original_hash = self.gateway.contracts["read_source"][0]
+        await self.gateway.invoke("r", "read_source", {}, "original")
+        self.gateway.providers.pop("read_source")
+        provider.spec = ToolSpec(name="read_source", description="Updated metadata")
+        self.gateway.register(provider)
+        provider.allowed = False
+        with self.assertRaises(RuntimeFault) as denied:
+            await self.gateway.invoke("r", "read_source", {}, "original", contract_hash=original_hash)
+        self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
+        provider.allowed = True
+        await self.store.call(lambda db: db.execute("UPDATE runs SET cancel_requested_at=1 WHERE id='r'"), transaction=True)
+        with self.assertRaises(RuntimeFault) as cancelled:
+            await self.gateway.invoke("r", "read_source", {}, "original", contract_hash=original_hash)
+        self.assertEqual(cancelled.exception.code, "STALE_RUN")
+        self.assertEqual(provider.calls, 1)
+
     async def test_concurrent_replay_joins_original_action(self):
         started, release = asyncio.Event(), asyncio.Event()
         submissions = []

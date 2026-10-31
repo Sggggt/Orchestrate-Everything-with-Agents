@@ -78,6 +78,7 @@ class MCPBinding(Configuration):
 
 class Tools(Configuration):
     loading: Literal["deferred", "eager"] = "deferred"
+    schema_budget_tokens: int | None = Field(default=None, ge=1)
     local: tuple[Literal["read_file", "search_files", "write_file", "edit_file", "run_command", "read_image", "publish_artifact"], ...] = ()
     mcp: tuple[MCPBinding, ...] = ()
     functions: tuple[str, ...] = ()

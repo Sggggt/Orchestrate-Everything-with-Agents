@@ -87,12 +87,12 @@ class Host:
                                      ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
                                      ("instances", self.instances, ("create", "get", "list", "history", "mark_read")),
-                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "attempts", "result", "resume", "cancel", "confirm_action")),
+                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "attempts", "response", "result", "resume", "cancel", "confirm_action")),
                                      ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),
                                      ("budgets", self.budgets, ("create", "get"))):
             for name in names:
-                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "attempts", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread"})
+                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread"})
         for name in ("send", "get", "list", "mark_read", "unread"):
             self.registry.register("messages." + name, getattr(self.messages, name), read_only=name in {"get", "list", "unread"})
         self.registry.register("host.status", self.status, read_only=True)
@@ -297,6 +297,8 @@ class Host:
                     return
                 if frame["kind"].startswith("run.") or frame["kind"] == "resync":
                     snapshot = await self.runs.get(run_id)
+                    if frame["kind"] == "resync":
+                        yield frame
                 else:
                     yield frame
         finally:
@@ -392,6 +394,8 @@ class Host:
 
     async def _drive(self, run_id):
         from langgraph.types import Command
+        from langgraph.errors import GraphRecursionError
+        from oea.contracts.execution import agent_steps, step_limit_fault
         from oea.orchestration.graphs import AgentGraphContext
 
         def claim(db):
@@ -420,6 +424,7 @@ class Host:
         if claimed is None:
             return
         run, instance, resumption, deadline, budget_policy = claimed
+        graph = config = None
         try:
             definition = AgentDefinition.model_validate_json(run["config_json"])
             graph = self.agent_graphs.resolve(definition.execution)
@@ -429,7 +434,8 @@ class Host:
             self.active[run_id] = context
             await self.mcp.bind(context)
             self.notify()
-            steps = definition.execution.max_steps or (budget_policy["max_model_calls"] * 4 + 16 if definition.execution.graph == "default" else 512)
+            effective = json.loads(resumption["execution_limits_json"]).get("effective", {}) if resumption else {}
+            steps = effective.get("max_steps", agent_steps(definition.execution, budget_policy))
             config = {"configurable": {"thread_id": run_id}, "recursion_limit": steps}
             snapshot = await graph.aget_state(config)
             repair_codes = {"EMPTY_OUTPUT", "OUTPUT_TRUNCATED", "MODEL_REFUSED", "DELIVERY_MISSING", "DELIVERY_INVALID", "REQUIRED_TOOL_UNUSED", "REQUIRED_SKILL_UNUSED"}
@@ -471,7 +477,15 @@ class Host:
         except Exception as error:
             await self.tools.cancel(run_id)
             fault = error if isinstance(error, RuntimeFault) else RuntimeFault("BUDGET_EXHAUSTED", "Work elapsed-time budget is exhausted") if isinstance(error, TimeoutError) else RuntimeFault("EXECUTION_FAILED", "Graph execution failed", details={"cause": type(error).__name__})
+            if isinstance(error, GraphRecursionError):
+                saved = await graph.aget_state(config)
+                fault = step_limit_fault(steps, definition.execution.graph, definition.execution.graph_version, saved.config, run_id=run_id)
+            elif graph is not None and config is not None:
+                saved = await graph.aget_state(config)
+                fault.identity["evidence_ref"] = {**(fault.identity.get("evidence_ref") or {}), "checkpoint": saved.config}
             fault.identity.update(run_id=run_id, instance_id=instance["id"])
+            if fault.code in {"BUDGET_EXHAUSTED", "EXECUTION_STEP_LIMIT"}:
+                await self.store.call(lambda db: self.budgets.annotate_stop(db, run_id, fault))
             await self.finish(run_id, "needs_review" if await self._unresolved(run_id) else "failed", error=fault)
         finally:
             if not self.tools.has_inflight(run_id):

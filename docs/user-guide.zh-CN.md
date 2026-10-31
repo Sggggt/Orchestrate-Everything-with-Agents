@@ -2,7 +2,7 @@
 
 [English](user-guide.md) · 简体中文 · [文档目录](README.md)
 
-本指南适用于 Orchestrate Everything with Agents（OEA）2.0.4，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
+本指南适用于 Orchestrate Everything with Agents（OEA）2.1.0，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
 
 ## 目录
 

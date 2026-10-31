@@ -36,6 +36,12 @@ class ModelFailure(RuntimeFault):
         self.partial = partial
 
 
+class ModelCancelled(asyncio.CancelledError):
+    def __init__(self, partial):
+        super().__init__("Model request was cancelled")
+        self.partial = partial
+
+
 async def sse_data(response, max_bytes=MODEL_SSE_EVENT_MAX_BYTES):
     buffer, fields, event_bytes = b"", [], 0
     async for packet in response.aiter_bytes():
@@ -118,6 +124,11 @@ class ModelAPI:
                     await fact("response_received")
                     if response.status_code >= 400:
                         provider = await provider_error(response, self.redact)
+                        if response.status_code in {400, 413} and provider.get("provider_code") in {"context_length_exceeded", "max_context_length_exceeded"}:
+                            facts["provider_accepted"] = False
+                            raise RuntimeFault("MODEL_CONTEXT_REJECTED", "Model provider rejected the request's context length",
+                                               origin="provider", stage="response", reason="context_length",
+                                               details={"http_status": response.status_code, **provider})
                         raise RuntimeFault("MODEL_HTTP_ERROR", "Model provider returned an error",
                                            retryable=response.status_code in {429, 502, 503, 504},
                                            origin="provider", stage="response", reason="quota" if provider.get("provider_code") in {"insufficient_quota", "quota_exceeded"} else "unknown",
@@ -173,6 +184,8 @@ class ModelAPI:
                             break
                     require(finished, "MODEL_STREAM_INTERRUPTED", "Model stream ended before a completion boundary",
                             details={"partial_text_preview": self.redact("".join(text))[-1600:]})
+        except asyncio.CancelledError:
+            raise ModelCancelled(partial()) from None
         except (httpx.TimeoutException, TimeoutError):
             raise ModelFailure("MODEL_TIMEOUT", "Model request timed out", partial(), origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
         except httpx.HTTPError:

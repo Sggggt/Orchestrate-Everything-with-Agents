@@ -55,17 +55,34 @@ def message_groups(messages):
 
 
 def prune_text(text, token_budget, notice):
-    """Retain a Unicode-safe head and tail after saving the original source.
-
-    Retention design adapted from DeepSeek Harness; see THIRD_PARTY_NOTICES.md.
-    """
-    available = max(0, token_budget - estimated_tokens(notice)) * 3
-    encoded = text.encode("utf-8")
-    if len(encoded) <= available:
+    """Select complete characters at both ends within the UTF-8 estimate budget."""
+    byte_limit = 3 * max(0, token_budget)
+    if len(text) <= byte_limit and len(text.encode("utf-8")) <= byte_limit:
         return text
-    head = available * 3 // 4
-    tail = available - head
-    return encoded[:head].decode("utf-8", errors="ignore") + notice + (encoded[-tail:].decode("utf-8", errors="ignore") if tail else "")
+    remaining = byte_limit - len(notice.encode("utf-8"))
+    if remaining < 0:
+        return ""
+
+    def segment(limit, *, suffix=False):
+        if limit == 0:
+            return ""
+        sample = text[-limit:] if suffix else text[:limit]
+        if sample.isascii():
+            return sample
+        # Search character counts in a bounded end segment, without encoding
+        # or allocating a byte copy of the complete original body.
+        low, high = 0, len(sample)
+        while low < high:
+            count = (low + high + 1) // 2
+            value = sample[-count:] if suffix else sample[:count]
+            if len(value.encode("utf-8")) <= limit:
+                low = count
+            else:
+                high = count - 1
+        return sample[-low:] if suffix and low else sample[:low]
+
+    prefix_limit = remaining * 3 // 4
+    return segment(prefix_limit) + notice + segment(remaining - prefix_limit, suffix=True)
 
 
 class ContextStore:
@@ -142,7 +159,7 @@ class ContextStore:
             return {"reference": reference, "instance_id": instance_id, "revoked": True}
         return await self.store.call(write, transaction=True)
 
-    async def append(self, run, instance, message, key):
+    async def append(self, run, instance, message, key, *, on_insert=None):
         encoded = encode(self.redact(message))
         def write(db):
             previous = one(db, "SELECT position,body_json FROM conversation WHERE id=?", (key,))
@@ -151,7 +168,10 @@ class ContextStore:
                 return previous["position"]
             db.execute("INSERT INTO conversation(id,instance_id,run_id,role,body_json,created_at) VALUES(?,?,?,?,?,?)",
                        (key, instance["id"], run["id"], message["role"], encoded, now_ms()))
-            return db.last_insert_rowid()
+            position = db.last_insert_rowid()
+            if on_insert is not None:
+                on_insert(db, position)
+            return position
         return await self.store.call(write, transaction=True)
 
     async def message(self, instance_id, key):
@@ -195,7 +215,7 @@ class ContextStore:
                     (now_ms(), request["source_message_id"], instance["id"], run["id"]))
         await self.store.call(apply, transaction=True)
 
-    async def tool_result(self, run, instance, policy, call, result, *, action_key=None):
+    async def tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None):
         text = encode(result)
         identity = run["id"] + ":tool:" + call["id"]
         tokens = estimated_tokens(text)
@@ -205,6 +225,8 @@ class ContextStore:
                 require(receipt is not None, "RECEIPT_UNAVAILABLE", "Original tool receipt is unavailable")
                 db.execute("INSERT OR IGNORE INTO conversation(id,instance_id,run_id,role,action_id,tool_call_id,created_at) VALUES(?,?,?,'tool',?,?,?)",
                            (identity, instance["id"], run["id"], receipt["id"], call["id"], now_ms()))
+                if db.changes() and on_insert is not None:
+                    on_insert(db, db.last_insert_rowid())
             await self.store.call(append, transaction=True)
             return {"role": "tool", "tool_call_id": call["id"], "content": text}
         if call["function"]["name"] not in {"read_context", "read_skill", "read_history", "read_action"} and tokens > policy.tool_inline_tokens:
@@ -218,7 +240,7 @@ class ContextStore:
             if estimated_tokens(encoded) < tokens:
                 text = encoded
         message = {"role": "tool", "tool_call_id": call["id"], "content": text}
-        await self.append(run, instance, message, identity)
+        await self.append(run, instance, message, identity, on_insert=on_insert)
         return message
 
     async def history(self, instance_id, *, after=0, limit=20):
@@ -230,11 +252,13 @@ class ContextStore:
         return {"items": [{"id": row["id"], "position": row["position"], "run_id": row["run_id"], "message": json.loads(row["body_json"])} for row in page],
                 "cursor": page[-1]["position"] if len(records) > limit else None}
 
-    async def project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None):
+    async def project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None, prepare_tools=None, input_cap=None):
         policy, model = definition.context, definition.model
         budget = policy.input_tokens
         if model.context_window_tokens is not None:
             budget = min(budget, model.context_window_tokens - (model.max_output_tokens if output_tokens is None else output_tokens) - policy.safety_tokens)
+        if input_cap is not None:
+            budget = min(budget, input_cap)
         limit_source = "context.input_tokens" if model.context_window_tokens is None else "min(context.input_tokens,model.context_window_tokens-output_reserve-safety)"
         require(budget > 0, "MODEL_CONTEXT_BUDGET", "Effective model input budget is empty")
 
@@ -306,6 +330,10 @@ class ContextStore:
             if memory:
                 references.insert(0, "memory:" + memory["id"])
             body = self.redact(summary)
+            previous_cost = estimated_tokens(assemble(memory, archived))
+            new_cost = estimated_tokens(assemble({"id": identity, "body": body}, []))
+            require(new_cost < previous_cost, "CONTEXT_SUMMARY_FAILED", "Memory update did not reduce the selected input",
+                    details={"input_tokens_before": previous_cost, "input_tokens_after": new_cost, "memory_ref": memory["id"] if memory else None})
             def save(db):
                 db.execute("INSERT INTO memories VALUES(?,?,?,?,?,?,?)",
                            (identity, instance["id"], run["id"], through, encode(references), body, now_ms()))
@@ -313,6 +341,8 @@ class ContextStore:
             memory = {"id": identity, "body": body, "through_position": through}
             return chosen, count
 
+        if prepare_tools is not None and len(records) > 256:
+            await prepare_tools(estimate_input(deduplicate_skills(assemble(memory, self.redact([json.loads(row["body_json"]) for row in records]))), tools), int(budget * policy.pressure))
         while len(records) > 256:
             groups, pending = [], set()
             for row in records:
@@ -368,6 +398,11 @@ class ContextStore:
         view = deduplicate_skills(assemble(memory, messages))
         estimate = estimate_input(view, tools)
         before = estimate["input_tokens"]
+        if prepare_tools is not None and before > budget * policy.pressure:
+            original_count = len(tools)
+            await prepare_tools(estimate, int(budget * policy.pressure))
+            if len(tools) != original_count:
+                estimate = estimate_input(view, tools)
 
         def projection(value, selection=None):
             measured = measurement("model_input_tokens", value["input_tokens"], "token", "heuristic_estimate",
@@ -375,10 +410,12 @@ class ContextStore:
             return {**value, "measurement": measured, "budget_tokens": budget, "input_tokens_before": before,
                     "output_reserved_tokens": model.max_output_tokens if output_tokens is None else output_tokens,
                     "memory_ref": memory["id"] if memory else None, "selection": selection,
+                    "history_position": records[-1]["position"] if records else memory["through_position"] if memory else 0,
+                    "history_start": memory["through_position"] if memory else 0,
                     "memory_view": content_view("summarized", source_ref=memory["id"], source_complete=None,
                                                 offset=0, length=memory["through_position"], offset_unit="history_position") if memory else None}
 
-        if before <= budget * policy.pressure:
+        if estimate["input_tokens"] <= budget * policy.pressure:
             return view, projection(estimate)
         groups = message_groups(messages)
         fixed_tokens = estimated_tokens(fixed) + estimate["components"]["tool_schemas"]
@@ -400,7 +437,8 @@ class ContextStore:
             chosen = select_views(candidates, budget - fixed_tokens - policy.memory_tokens - memory_overhead,
                                   recent_turns=policy.recent_turns, allow_summary=True)
         require(chosen is not None, "MODEL_CONTEXT_BUDGET", "Fixed facts and the minimum protected history views exceed the effective input budget",
-                origin="local", stage="context_selection", measurement=measurement("model_input_tokens", before, "token", "heuristic_estimate", limit=budget, limit_source="effective_input_budget"))
+                origin="local", stage="context_selection", measurement=measurement("model_input_tokens", before, "token", "heuristic_estimate", limit=budget, limit_source="effective_input_budget"),
+                details={"components": estimate["components"], "fixed_tokens": fixed_tokens, "memory_tokens": memory_tokens})
         if chosen.summarized:
             archived_groups = groups[:chosen.summarized]
             while archived_groups:
@@ -412,7 +450,7 @@ class ContextStore:
         view = deduplicate_skills(assemble(memory, tail))
         final = estimate if chosen.summarized == 0 and all(mode == "full" for mode in chosen.modes) else estimate_input(view, tools)
         require(final["input_tokens"] <= budget, "MODEL_CONTEXT_BUDGET", "Selected history and memory exceed the effective input budget",
-                origin="local", stage="context_selection", measurement=measurement("model_input_tokens", final["input_tokens"], "token", "heuristic_estimate", limit=budget, limit_source="effective_input_budget"))
+                origin="local", stage="context_selection", measurement=measurement("model_input_tokens", final["input_tokens"], "token", "heuristic_estimate", limit=budget, limit_source="effective_input_budget"), details={"components": final["components"]})
         decision = {"groups": len(groups), "full_groups": chosen.modes.count("full"), "reference_groups": chosen.modes.count("reference"),
                     "summarized_groups": chosen.summarized, "quantum": chosen.quantum, "capacity": chosen.capacity,
                     "fallback": chosen.fallback, "utility": chosen.utility, "policy_revision": "context-selection-v1"}

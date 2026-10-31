@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import json
+from oea.contracts.execution import ResumeExecutionLimits, agent_steps, resume_limits
+from oea.contracts.paging import ResultOffset, ResponseLimit
 from pathlib import Path
 from typing import Literal
 
@@ -22,7 +24,7 @@ class Runs:
     def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False):
         """Join acceptance to an existing message or workflow transaction."""
         identity = new_id("run")
-        intent = {"spec": spec.model_dump(mode="json", exclude_defaults=True), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}
+        intent = {"spec": spec.model_dump(mode="json", exclude_defaults=True, exclude={"display"}), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}
         if model_probe:
             intent["model_probe"] = True
         fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
@@ -92,7 +94,7 @@ class Runs:
               data={"root_run_id": root_run_id, "root_workflow_run_id": root_workflow_run_id, "workflow_run_id": workflow_run_id, "budget_id": budget_id,
                     **({"purpose": "model_probe"} if model_probe else {})})
         self.host.artifacts.assign(db, identity, instance, spec.artifact_ids, parent)
-        db.execute("UPDATE runs SET policy_json=?,artifact_count=? WHERE id=?", (spec.policy.model_dump_json(), len(spec.artifact_ids), identity))
+        db.execute("UPDATE runs SET policy_json=?,artifact_count=?,display_json=? WHERE id=?", (spec.policy.model_dump_json(), len(spec.artifact_ids), encode(self.host.redact(spec.display.model_dump(mode="json"))), identity))
         return need(db, "runs", identity), False
 
     async def submit(self, spec: RunSpec, *, workflow_run_id: str | None = None):
@@ -104,14 +106,24 @@ class Runs:
         return RunHandle(id=row["id"], instance_id=row["instance_id"], root_run_id=row["root_run_id"], root_workflow_run_id=row["root_workflow_run_id"], budget_id=row["budget_id"], state=row["state"], reused=reused)
 
     async def get(self, run_id: str):
-        row = await self.host.store.call(lambda db: need(db, "runs", run_id))
+        return self.observe(await self.host.store.call(lambda db: self.read(db, run_id), transaction="read"))
+
+    def observe(self, value):
+        # Transient task dictionaries belong to the event-loop thread. A saved
+        # stop boundary needs no scan of unrelated live tool actions.
+        value["in_flight"] = value["stopped_at"] is None and (value["id"] in self.host.models.streams.active or self.host.tools.has_inflight(value["id"]))
+        value["stop_confirmed"] = value["stopped_at"] is not None and (value["cancel_requested_at"] is None or value.get("cancellation", {}).get("state") == "confirmed")
+        return value
+
+    def read(self, db, run_id):
+        row = need(db, "runs", run_id)
         value = self.view(row)
         if row["cancel_requested_at"] is not None:
             def scope(db):
                 values = rows(db, "WITH RECURSIVE owned(id) AS (SELECT ? UNION ALL SELECT r.id FROM runs r JOIN owned o ON r.parent_run_id=o.id) SELECT r.state,COUNT(*) AS count FROM runs r JOIN owned o ON o.id=r.id GROUP BY r.state", (run_id,))
                 counts = {item["state"]: item["count"] for item in values}
                 return {"state": "needs_review" if counts.get("needs_review") else "requested" if any(counts.get(state) for state in ("accepted", "running", "waiting")) else "confirmed", "runs": counts}
-            value["cancellation"] = await self.host.store.call(scope)
+            value["cancellation"] = scope(db)
         return value
 
     @staticmethod
@@ -120,6 +132,7 @@ class Runs:
             "error": json.loads(row["error_json"]) if row["error_json"] else None,
             "wait": json.loads(row["wait_json"]) if row["wait_json"] else None,
             "result_available": row["result_json"] is not None,
+            "display": json.loads(row["display_json"]),
         }
 
     async def list(self, session_id: str, *, project_id: str, cursor: int = 0, limit: int = 25, instance_id: str | None = None):
@@ -130,15 +143,68 @@ class Runs:
                 require(need(db, "instances", instance_id)["session_id"] == session_id, "PERMISSION_DENIED", "Instance belongs to another session")
             return rows(db, "SELECT r.rowid AS position,r.*,i.name AS instance_name,i.agent_id,substr(COALESCE(m.body,json_extract(r.input_json,'$')),1,240) AS goal FROM runs r JOIN instances i ON i.id=r.instance_id LEFT JOIN messages m ON m.id=r.source_message_id WHERE i.session_id=? AND (? IS NULL OR i.id=?) AND (?=0 OR r.rowid<?) ORDER BY r.rowid DESC LIMIT ?", (session_id, instance_id, instance_id, cursor, cursor, limit + 1))
         values = await self.host.store.call(read)
-        return {"items": [{**self.view(row), **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal")}} for row in values[:limit]],
+        return {"items": [{**self.observe(self.view(row)), **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal")}} for row in values[:limit]],
             "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
     async def inspect(self, run_id: str):
-        run = await self.get(run_id)
-        actions = await self.host.store.call(lambda db: rows(db, "SELECT a.id,a.name,a.state,a.side_effects,a.error_json,a.result_json IS NOT NULL AS result_available,json_extract(a.input_json,'$.attempt') AS attempt_facts,json_extract(a.result_json,'$.content_view') AS content_view,(SELECT COUNT(*) FROM model_failures f WHERE f.action_id=a.id) AS archived_count FROM actions a WHERE a.run_id=? ORDER BY a.rowid DESC LIMIT 25", (run_id,)))
+        return self.observe(await self.host.store.call(lambda db: self.read_inspection(db, run_id), transaction="read"))
+
+    def read_inspection(self, db, run_id):
+        run = self.read(db, run_id)
+        actions = rows(db, "SELECT a.id,a.name,a.state,a.side_effects,a.error_json,a.result_json IS NOT NULL AS result_available,json_extract(a.input_json,'$.attempt') AS attempt_facts,json_extract(a.result_json,'$.content_view') AS content_view,(SELECT COUNT(*) FROM model_failures f WHERE f.action_id=a.id) AS archived_count FROM actions a WHERE a.run_id=? ORDER BY a.rowid DESC LIMIT 25", (run_id,))
+        rejected = rows(db, "SELECT position,data_json FROM events WHERE run_id=? AND kind='tool.rejected' ORDER BY position DESC LIMIT 25", (run_id,))
+        activity = one(db, "SELECT * FROM run_activity WHERE run_id=?", (run_id,))
+        projection = one(db, "SELECT id,json_extract(input_json,'$.projection') AS projection,json_extract(result_json,'$.input_comparison') AS comparison FROM actions WHERE run_id=? AND name='model.complete' AND json_extract(input_json,'$.purpose')='model' ORDER BY rowid DESC LIMIT 1", (run_id,))
         return {**run, "actions": [{"id": row["id"], "name": row["name"], "state": row["state"],
                                    "side_effects": row["side_effects"], "error": json.loads(row["error_json"]) if row["error_json"] else None, "result_available": bool(row["result_available"]), "archived_count": row["archived_count"], "attempt_facts": json.loads(row["attempt_facts"]) if row["attempt_facts"] else None, "content_view": json.loads(row["content_view"]) if row["content_view"] else None} for row in actions],
-                "artifacts": await self.host.artifacts.for_run(run_id), "budget": await self.host.budgets.get(run["budget_id"])}
+                "rejections": [{"position": row["position"], **json.loads(row["data_json"])} for row in rejected],
+                "activity": {"stalled_model_calls": activity["stalled_model_calls"], "blocker": json.loads(activity["blocker_json"]) if activity["blocker_json"] else None, "blocker_repeats": activity["blocker_repeats"]} if activity else None,
+                "model_input": {"action_id": projection["id"], "projection": json.loads(projection["projection"] or "{}"), "comparison": json.loads(projection["comparison"] or "null")} if projection else None,
+                "artifacts": self.host.artifacts.list_for_run(db, run_id), "budget": self.host.budgets.read(db, run["budget_id"])}
+
+    async def response(self, run_id: str, *, action_id: str | None = None, attempt_id: str | None = None,
+                       version: str | None = None, offset: ResultOffset = 0, limit: ResponseLimit = 16384):
+        """Read one attempt's versioned live text or retained receipt; never resend it."""
+        require(type(offset) is int and 0 <= offset < 2**63 and type(limit) is int and 1 <= limit <= 16384,
+                "INVALID_REQUEST", "Use a bounded response page")
+        require(not version or action_id and attempt_id, "INVALID_REQUEST", "Versioned reads require the original action and attempt")
+        def locate(db):
+            need(db, "runs", run_id)
+            action = one(db, "SELECT id,state,input_json,result_json FROM actions WHERE run_id=? AND name='model.complete' "
+                         "AND (? IS NULL OR id=?) AND json_extract(input_json,'$.purpose')='model' ORDER BY rowid DESC LIMIT 1", (run_id, action_id, action_id))
+            return action
+        action = await self.host.store.call(locate)
+        if not action:
+            require(action_id is None and attempt_id is None, "NOT_FOUND", "Model response does not belong to this run")
+            return {"run_id": run_id, "available": False, "status": "pending", "text": "", "next_offset": None}
+        action_id = action["id"]
+        metadata = json.loads(action["input_json"])
+        attempt_id = attempt_id or metadata.get("attempt", {}).get("attempt_id")
+        live = self.host.models.streams.read(run_id, action_id, attempt_id, version)
+        if live is not None:
+            value = {key: item for key, item in live.items() if key != "text"}
+            text = live["text"]
+        else:
+            def retained(db):
+                record = one(db, "SELECT input_json,result_json FROM model_failures WHERE action_id=? AND id=?", (action_id, attempt_id))
+                if record is None:
+                    require(metadata.get("attempt", {}).get("attempt_id") == attempt_id, "NOT_FOUND", "Model attempt does not belong to this action")
+                    record = action
+                started = one(db, "SELECT position FROM events WHERE run_id=? AND kind='model.started' AND json_extract(data_json,'$.attempt_id')=? ORDER BY position DESC LIMIT 1", (run_id, attempt_id))
+                return record, started["position"] if started else 0
+            record, position = await self.host.store.call(retained)
+            result = json.loads(record["result_json"] or "{}")
+            text = result.get("message", {}).get("content") or ""
+            saved_version = "saved:" + str(attempt_id)
+            require(version in {None, saved_version}, "SOURCE_VERSION_CHANGED", "Read a retained version of the original attempt")
+            value = {"run_id": run_id, "action_id": action_id, "attempt_id": attempt_id, "attempt_position": position,
+                     "block_id": "content", "version": saved_version if record["result_json"] else None,
+                     "sequence": None, "status": "saved" if record["result_json"] else "unavailable",
+                     "unsaved_gap": record["result_json"] is None}
+        require(not self.host.vault.contains_secret(text), "SOURCE_VERSION_UNAVAILABLE", "Response no longer satisfies the current secret policy")
+        require(offset <= len(text), "INVALID_REQUEST", "Response offset is beyond the retained text")
+        return {**value, "available": True, "text": text[offset:offset + limit], "characters": len(text),
+                "offset": offset, "offset_unit": "unicode_codepoint", "next_offset": offset + limit if offset + limit < len(text) else None}
 
     async def action(self, action_id: str, *, offset: int = 0, limit: int = 8192, attempt_id: str | None = None):
         require(0 <= offset < 2**63 and 1 <= limit <= 16384 and (attempt_id is None or 0 < len(attempt_id) <= 256), "INVALID_REQUEST", "Use a bounded action result page")
@@ -242,11 +308,15 @@ class Runs:
             except TimeoutError:
                 raise RuntimeFault("RESULT_PENDING", "Run has not completed", run_id=run_id) from None
 
-    def _resume(self, db, run_id, idempotency_key, *, input=None, refresh_model=True, refresh_capabilities=True, source_message_id=None):
+    def _resume(self, db, run_id, idempotency_key, *, input=None, refresh_model=True, refresh_capabilities=True, source_message_id=None, execution_limits=None):
         require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "Resume needs a stable key")
         encoded_input = encode(self.host.redact(input))
         require(len(encoded_input.encode("utf-8")) <= 1024 * 1024, "INVALID_REQUEST", "Resume large inputs by workspace or context reference")
-        fingerprint = hashlib.sha256(encode({"input": input, "refresh_model": refresh_model, "refresh_capabilities": refresh_capabilities, "source_message_id": source_message_id}).encode("utf-8")).hexdigest()
+        requested_limits = resume_limits(execution_limits)
+        intent = {"input": input, "refresh_model": refresh_model, "refresh_capabilities": refresh_capabilities, "source_message_id": source_message_id}
+        if requested_limits:
+            intent["execution_limits"] = requested_limits
+        fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
         run = need(db, "runs", run_id)
         previous = one(db, "SELECT * FROM run_resumptions WHERE run_id=? AND idempotency_key=?", (run_id, idempotency_key))
         if previous:
@@ -260,6 +330,11 @@ class Runs:
             message = need(db, "messages", source_message_id)
             require(message["session_id"] == instance["session_id"] and message["purpose"] == "reply", "MESSAGE_MISMATCH", "Reply must belong to the original session")
         snapshot = AgentDefinition.model_validate_json(run["config_json"])
+        latest = one(db, "SELECT execution_limits_json FROM run_resumptions WHERE run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,))
+        prior_limits = json.loads(latest["execution_limits_json"]).get("effective", {}) if latest else {}
+        effective = {"max_steps": prior_limits.get("max_steps", agent_steps(snapshot.execution, json.loads(need(db, "budgets", run["budget_id"])["policy_json"]))), **requested_limits}
+        limits_receipt = {"requested": requested_limits, "effective": effective,
+                          "checkpoint": (json.loads(run["error_json"]).get("evidence_ref") or {}).get("checkpoint") if run["error_json"] else None}
         if refresh_model or refresh_capabilities:
             current = AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
             require(instance["role"] != "manager" or current.manager is not None, "MANAGER_UNAVAILABLE", "Manager model was removed")
@@ -282,14 +357,14 @@ class Runs:
         db.execute("UPDATE runs SET state='accepted',error_json=NULL,stopped_at=NULL,config_json=?,updated_at=? WHERE id=?", (snapshot.model_dump_json(), now_ms(), run_id))
         waiting = json.loads(run["wait_json"]) if run["wait_json"] else {}
         position = event(db, "run.resume_requested", instance_id=run["instance_id"], run_id=run_id, data={"has_input": input is not None or source_message_id is not None})
-        db.execute("INSERT INTO run_resumptions(id,run_id,idempotency_key,input_hash,input_json,interrupt_id,applied_at,created_at,event_position,failure_json,source_message_id) VALUES(?,?,?,?,?,?,NULL,?,?,?,?)",
-                   (new_id("resume"), run_id, idempotency_key, fingerprint, encoded_input, waiting.get("interrupt_id"), now_ms(), position, run["error_json"], source_message_id))
+        db.execute("INSERT INTO run_resumptions(id,run_id,idempotency_key,input_hash,input_json,interrupt_id,applied_at,created_at,event_position,failure_json,source_message_id,execution_limits_json) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?)",
+                   (new_id("resume"), run_id, idempotency_key, fingerprint, encoded_input, waiting.get("interrupt_id"), now_ms(), position, run["error_json"], source_message_id, encode(limits_receipt)))
         return run
 
-    async def resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None = None, refresh_model: bool = True, refresh_capabilities: bool = True):
+    async def resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None = None, refresh_model: bool = True, refresh_capabilities: bool = True, execution_limits: ResumeExecutionLimits | None = None):
         self.host.assert_open()
         await self.host.store.call(lambda db: self._resume(db, run_id, idempotency_key, input=input,
-            refresh_model=refresh_model, refresh_capabilities=refresh_capabilities), transaction=True)
+            refresh_model=refresh_model, refresh_capabilities=refresh_capabilities, execution_limits=execution_limits), transaction=True)
         self.host.reviewing.discard(run_id)
         self.host.launch(run_id)
         self.host.notify_run(run_id)

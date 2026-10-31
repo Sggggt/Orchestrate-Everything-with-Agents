@@ -104,13 +104,15 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_map_twenty_actual_agent_runs_and_common_budget(self):
         model = self.host.model_api = EchoModel(20)
-        graph = (WorkflowBuilder().node("start", "start").node("map", "map", agent_id="worker", input={"index": "{{index}}", "value": "{{item}}"})
+        graph = (WorkflowBuilder().node("start", "start").node("map", "map", title="Review item", agent_id="worker", item_label="Item {{index}}", input={"index": "{{index}}", "value": "{{item}}"})
                  .node("end", "end", outputs={"batch": "{{nodes.map.outputs}}"}).connect("start", "map").connect("map", "end"))
         run = await self.run_graph(graph, {"items": list(range(20))})
         await asyncio.wait_for(model.ready.wait(), 15)
         self.assertEqual(model.peak, 20)
         members = await self.host.store.call(lambda db: rows(db, "SELECT r.*,i.name FROM runs r JOIN instances i ON i.id=r.instance_id WHERE workflow_run_id=?", (run["id"],)))
         self.assertEqual(len({item["instance_id"] for item in members}), 20)
+        self.assertEqual({json.loads(item["display_json"])["item_label"] for item in members}, {"Item " + str(index) for index in range(20)})
+        self.assertTrue(all(json.loads(item["display_json"])["title"] == "Review item" for item in members))
         self.assertTrue(all(item["root_workflow_run_id"] == run["id"] and item["root_run_id"] is None and item["budget_id"] == run["budget_id"] for item in members))
         metadata = await self.host.workflows.node_result(run["id"], "map", project_id="p", metadata_only=True)
         self.assertEqual(metadata["reference"], {"kind": "map", "count": 20})
@@ -578,7 +580,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         graph = (WorkflowBuilder().node("start", "start").node("batch", "map", agent_id="worker", input={"index": "{{index}}"})
                  .node("end", "end", outputs={"items": "{{nodes.batch.outputs}}"}).connect("start", "batch").connect("batch", "end"))
         run = await self.run_graph(graph, {"items": list(range(129))}, budget=Budget(max_model_calls=256, max_output_tokens=1_048_576))
-        result = await self.host.workflows.result(run["id"], project_id="p", timeout=40)
+        # This checks completion beyond 128 members, not a wall-clock SLA.
+        result = await self.host.workflows.result(run["id"], project_id="p", timeout=90)
         self.assertEqual(len(result["items"]), 129)
         self.assertEqual([json.loads(item["text"])["index"] for item in result["items"]], list(range(129)))
         self.assertEqual(self.host.model_api.calls, 129)

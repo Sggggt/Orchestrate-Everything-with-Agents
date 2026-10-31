@@ -1,12 +1,12 @@
 import { $,escape,icon,rpc,element,modal,notify,empty,badge,date } from "./ui.mjs";
 import { markdown } from "./markdown.mjs";
-import { usageRows,diagnosisHTML,integrityLabel } from "./diagnostics.mjs";
+import { usageRows,projectionRows,cancellationHTML,diagnosisHTML,integrityLabel } from "./diagnostics.mjs";
 import { compactTitle } from "./presentation.mjs";
 
 export async function renderRuns(app,root){
   const s=app.state;if(!s.session){root.innerHTML=empty("还没有工作会话","先创建会话，再开始一个明确的工作目标。",'<button class="btn primary" id="create-session">新建会话</button>');$("#create-session").onclick=app.createSession;return;}
   const page=await rpc("runs.list",{session_id:s.session.id,project_id:s.project.id,limit:25});if(s.page!=="runs")return;
-  root.className="v2-content";root.innerHTML=`<div class="v2-heading"><div><h1>运行记录</h1><p>读取原回执、核对成果，在原实例中继续工作。</p></div><button class="btn primary" id="new-run">${icon("plus")} 新工作</button></div><div class="v2-run-list">${page.items.map(run=>`<article class="v2-run-card"><div><h3>${escape(run.instance_name)} <small class="v2-muted">${escape(run.agent_id)} · ${run.model_role==="manager"?"manager":"实例"}</small></h3><p>${escape(run.goal||"明确工作意图")}</p><p class="v2-muted">${date(run.created_at)}</p></div><div class="v2-actions">${badge(run.state)}<button class="btn" data-run="${escape(run.id)}">查看工作</button></div></article>`).join("")||empty("开始第一个工作","给 Agent 一个明确目标，交付和错误会保留在这里。")}</div>`;
+  root.className="v2-content";root.innerHTML=`<div class="v2-heading"><div><h1>运行记录</h1><p>读取原回执、核对成果，在原实例中继续工作。</p></div><button class="btn primary" id="new-run">${icon("plus")} 新工作</button></div><div class="v2-run-list">${page.items.map(run=>`<article class="v2-run-card"><div><h3>${escape(run.display?.title||run.instance_name)} <small class="v2-muted">${escape(run.agent_id)} · ${run.model_role==="manager"?"manager":"实例"}</small></h3><p>${escape(run.goal||"明确工作意图")}</p><p class="v2-muted">${date(run.created_at)}</p></div><div class="v2-actions">${badge(run.state)}<button class="btn" data-run="${escape(run.id)}">查看工作</button></div></article>`).join("")||empty("开始第一个工作","给 Agent 一个明确目标，交付和错误会保留在这里。")}</div>`;
   $("#new-run").onclick=()=>newRun(app);for(const button of root.querySelectorAll("[data-run]"))button.onclick=()=>showRun(app,button.dataset.run);
 }
 export async function showRun(app,identity){
@@ -18,13 +18,26 @@ export async function showRun(app,identity){
     if(closed||loading)return;loading=true;
     try{run=await rpc("runs.inspect",{run_id:identity});if(closed)return;
       const summary=app.state.runs.find(value=>value.id===identity),usage=run.budget.usage;
-      $("#run-observation",content).innerHTML=`<div class="run-heading"><h3>${escape(compactTitle(summary?.goal||"工作任务"))}</h3>${badge(run.state)}</div><dl class="v2-kv"><dt>实例</dt><dd>${escape(summary?.instance_name||run.instance_id)}</dd><dt>创建</dt><dd>${date(run.created_at)}</dd><dt>更新</dt><dd>${date(run.updated_at||run.created_at)}</dd>${usageRows(run.budget)}<dt>任务标识</dt><dd>${escape(run.id)}</dd></dl>${diagnosisHTML(run.error)}${run.wait?`<p class="run-wait">${escape(run.wait.prompt||"等待子工作回执")}</p>`:""}`;
+      $("#run-observation",content).innerHTML=`<div class="run-heading"><h3>${escape(compactTitle(run.display?.title||summary?.goal||"工作任务"))}</h3>${badge(run.state)}</div><dl class="v2-kv"><dt>实例</dt><dd>${escape(summary?.instance_name||run.instance_id)}</dd><dt>创建</dt><dd>${date(run.created_at)}</dd><dt>更新</dt><dd>${date(run.updated_at||run.created_at)}</dd>${usageRows(run.budget)}${projectionRows(run.model_input)}${run.display?.item_label?`<dt>条目</dt><dd>${escape(run.display.item_label)}</dd>`:""}<dt>任务标识</dt><dd>${escape(run.id)}</dd></dl>${cancellationHTML(run)}${diagnosisHTML(run.error)}${run.activity?.blocker?`<details><summary>最近阻断原因 · 重复 ${run.activity.blocker_repeats} 次</summary>${diagnosisHTML(run.activity.blocker)}</details>`:""}${run.wait?`<p class="run-wait">${escape(run.wait.prompt||"等待子工作回执")}</p>`:""}${["failed","waiting"].includes(run.state)&&!run.cancel_requested_at?'<button class="btn" id="resume-run">继续原工作</button>':""}`;
+      const resume=$("#resume-run",content);if(resume)resume.onclick=()=>resumeRun(run,render);
       for(const button of content.querySelectorAll("[data-evidence-action]"))button.onclick=()=>showAction(button.dataset.evidenceAction,button.dataset.evidenceAttempt||null);
     }finally{loading=false;}
   }
   $("#refresh-run",content).onclick=()=>render().catch(error=>notify(error.message,true));
   $("#open-run-chat",content).onclick=async()=>{if(!run)return;try{close();await app.openInstance(run.instance_id);}catch(error){notify(error.message,true);}};
   try{await render();}catch(error){if(!closed)$("#run-observation",content).textContent=error.message;notify(error.message,true);}
+}
+function resumeRun(run,refresh){
+  const form=element(`<form><p>沿原检查点和预算继续，已完成的动作保留原回执。</p><label class="field">补充输入<textarea name="input" rows="4" maxlength="1048576"></textarea></label><label class="field">本次图执行步数上限（可选）<input name="max_steps" type="number" min="1" max="100000" step="1" placeholder="沿用最近有效值"></label><p class="form-hint">步数按图的 super-step 计算；累计调用与 token 预算继续生效。</p><button class="btn primary">继续执行</button></form>`);
+  const close=modal("继续原工作",form),key=crypto.randomUUID();
+  form.onsubmit=async event=>{
+    event.preventDefault();const button=form.querySelector("button");button.disabled=true;
+    try{
+      const params={run_id:run.id,idempotency_key:key},input=form.elements.input.value,limit=form.elements.max_steps.value;
+      if(input)params.input=input;if(limit)params.execution_limits={max_steps:Number(limit)};
+      await rpc("runs.resume",params);close();await refresh();
+    }catch(error){notify(error.message,true);}finally{button.disabled=false;}
+  };
 }
 function confirmAction(app,action,refresh){
   const form=element(`<form><p class="v2-muted">先核对外部系统或文件中的真实效果，再记录原动作结果。此操作保存核对证据；后续继续工作需单独发起。</p><p><code>${escape(action.id)}</code></p><div class="field"><label for="confirmation-outcome">核对结论</label><select id="confirmation-outcome"><option value="completed">原动作已经完成，填入实际结果</option><option value="not_applied">已确认原动作没有产生效果</option></select></div><div class="field"><label for="confirmation-evidence">核对依据</label><textarea id="confirmation-evidence" rows="4" required maxlength="8192" placeholder="说明核对的外部回执、原文件或其他可验证事实。"></textarea></div><div class="field" id="confirmation-result-field"><label for="confirmation-result">原动作实际结果（JSON 对象）</label><textarea id="confirmation-result" rows="7" required placeholder="按原工具的结果契约填写。"></textarea></div><p><button class="btn primary">保存核对证据</button></p></form>`);

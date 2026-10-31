@@ -24,7 +24,8 @@ def diagnostic(error):
             "origin": root.get("origin", "unknown"), "stage": root.get("stage"), "reason": root.get("reason", root.get("code")),
             "send_started": facts.get("send_started"), "response_received": facts.get("response_received"),
             "integrity": details.get("integrity", "unknown"), "measurement": root.get("measurement"),
-            "evidence_ref": evidence, "continuation": continuation, "available_actions": ["read_receipt"] if evidence else []}
+            "evidence_ref": evidence, "continuation": continuation, "field_errors": details.get("errors", []),
+            "available_actions": ["read_receipt"] if evidence else []}
 
 
 class RuntimeFault(Exception):

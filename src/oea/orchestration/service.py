@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from oea.contracts.execution import ResumeExecutionLimits, resume_limits, step_limit_fault
 from collections import OrderedDict
 
 from oea.catalog.service import need
@@ -608,6 +609,8 @@ class Workflows:
         resumption = await self.host.store.call(lambda db: one(db, "SELECT * FROM workflow_resumptions WHERE workflow_run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,)))
         graph, context = self._compile(run["graph_json"]), WorkflowContext(self, run, definition, resumption=resumption)
         config = self.config(run_id, definition)
+        if resumption:
+            config["recursion_limit"] = json.loads(resumption["execution_limits_json"]).get("effective", {}).get("max_steps", config["recursion_limit"])
         try:
             def start(db):
                 budget, policy = self.host.budgets._check(db, run)
@@ -661,6 +664,13 @@ class Workflows:
         except Exception as error:
             await self._stop_computations(run_id)
             fault = error if isinstance(error, RuntimeFault) else RuntimeFault("BUDGET_EXHAUSTED", "Work elapsed-time budget is exhausted") if isinstance(error, TimeoutError) else RuntimeFault("WORKFLOW_FAILED", "Business graph execution failed", details={"cause": type(error).__name__})
+            from langgraph.errors import GraphRecursionError
+            if isinstance(error, GraphRecursionError):
+                saved = await graph.aget_state(config)
+                fault = step_limit_fault(config["recursion_limit"], run["workflow_id"], run["revision"], saved.config, workflow_run_id=run_id)
+            else:
+                saved = await graph.aget_state(config)
+                fault.identity["evidence_ref"] = {**(fault.identity.get("evidence_ref") or {}), "checkpoint": saved.config}
             # Native fail-fast cancels only accepted work owned by this graph.
             # A successful sibling in collect_independent remains evidence.
             if definition.failure_policy == "fail_fast":
@@ -684,12 +694,16 @@ class Workflows:
         recovered = {node_id: completed[identity]["outcome_hash"] for node_id, identity in selected if identity in completed}
         return {"recovery_request_id": request_id, "failures": {node_id: None for node_id in recovered}, "versions": recovered}
 
-    async def resume(self, workflow_run_id: str, idempotency_key: str, *, project_id: str, input: str | dict | None = None, interrupt_id: str | None = None, node_id: str | None = None):
+    async def resume(self, workflow_run_id: str, idempotency_key: str, *, project_id: str, input: str | dict | None = None, interrupt_id: str | None = None, node_id: str | None = None, execution_limits: ResumeExecutionLimits | None = None):
         self.host.assert_open()
         require(0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "Use a stable resumption key")
         encoded_input = encode(self.host.redact(input))
         require(len(encoded_input.encode("utf-8")) <= 1024 * 1024, "INVALID_REQUEST", "Resume large inputs by reference")
-        fingerprint = hashlib.sha256(encode({"input": input, "interrupt_id": interrupt_id, "node_id": node_id}).encode("utf-8")).hexdigest()
+        requested_limits = resume_limits(execution_limits)
+        intent = {"input": input, "interrupt_id": interrupt_id, "node_id": node_id}
+        if requested_limits:
+            intent["execution_limits"] = requested_limits
+        fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
         def current(db):
             return self._row(db, workflow_run_id, project_id), one(db, "SELECT * FROM workflow_resumptions WHERE workflow_run_id=? AND idempotency_key=?", (workflow_run_id, idempotency_key))
         run, previous = await self.host.store.call(current)
@@ -733,8 +747,13 @@ class Workflows:
             candidates = [item for item in wait.get("interrupts", ()) if item["kind"] == "input"]
             require(run["state"] != "waiting" or candidates or wait.get("kind") == "confirmation", "WORKFLOW_DEPENDENCY_PENDING", "The graph is still waiting for its original child receipts")
             require(selected is None and input is None and not candidates or any(item["id"] == selected for item in candidates), "INPUT_REQUIRED", "The original human input wait changed")
-            db.execute("INSERT INTO workflow_resumptions(id,workflow_run_id,idempotency_key,interrupt_id,input_json,input_hash,created_at,checkpoint_id,repair_steps_json) VALUES(?,?,?,?,?,?,?,?,?)",
-                (new_id("workflow-resume"), workflow_run_id, idempotency_key, selected, encoded_input, fingerprint, now_ms(), checkpoint_id, encode(repair_steps)))
+            latest = one(db, "SELECT execution_limits_json FROM workflow_resumptions WHERE workflow_run_id=? ORDER BY rowid DESC LIMIT 1", (workflow_run_id,))
+            prior_limits = json.loads(latest["execution_limits_json"]).get("effective", {}) if latest else {}
+            effective = {"max_steps": prior_limits.get("max_steps", json.loads(run["graph_json"])["max_steps"]), **requested_limits}
+            limits_receipt = {"requested": requested_limits, "effective": effective,
+                              "checkpoint": (json.loads(run["error_json"]).get("evidence_ref") or {}).get("checkpoint") if run["error_json"] else None}
+            db.execute("INSERT INTO workflow_resumptions(id,workflow_run_id,idempotency_key,interrupt_id,input_json,input_hash,created_at,checkpoint_id,repair_steps_json,execution_limits_json,failure_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (new_id("workflow-resume"), workflow_run_id, idempotency_key, selected, encoded_input, fingerprint, now_ms(), checkpoint_id, encode(repair_steps), encode(limits_receipt), run["error_json"]))
             db.execute("UPDATE workflow_runs SET state='accepted',error_json=NULL,stopped_at=NULL,updated_at=? WHERE id=?", (now_ms(), workflow_run_id))
             event(db, "workflow.resume_requested", project_id=project_id, session_id=run["session_id"], data={"workflow_run_id": workflow_run_id, "interrupt_id": selected, "checkpoint_id": checkpoint_id, "repair_steps": repair_steps})
             return run["state"]

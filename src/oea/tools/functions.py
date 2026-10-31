@@ -9,6 +9,7 @@ from typing import Any, get_type_hints
 from pydantic import ConfigDict, TypeAdapter, ValidationError, create_model
 
 from oea.contracts.errors import RuntimeFault
+from oea.contracts.schema_validation import parameter_errors
 from oea.tools.contracts import ToolSpec
 
 
@@ -27,7 +28,7 @@ class FunctionTool:
         self.name = name or function.__name__
         self.description = description if description is not None else inspect.getdoc(function) or ""
         signature = inspect.signature(function)
-        hints = get_type_hints(function)
+        hints = get_type_hints(function, include_extras=True)
         fields = {}
         for parameter in signature.parameters.values():
             if parameter.kind not in {parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY}:
@@ -64,7 +65,8 @@ class FunctionTool:
             return self.arguments.model_validate(arguments)
         except ValidationError as error:
             raise RuntimeFault("INVALID_REQUEST", "Tool input does not match its declared types",
-                               details={"tool": self.name, "errors": error.errors(include_input=False, include_url=False, include_context=False)}) from None
+                               origin="local", stage="tool.validate", tool=self.name,
+                               details={"tool": self.name, "errors": parameter_errors(error)}) from None
 
     async def invoke(self, request):
         arguments = request.get("bound_arguments")

@@ -7,6 +7,7 @@ from typing import Any, get_type_hints
 from pydantic import ConfigDict, ValidationError, create_model
 
 from oea.contracts.errors import RuntimeFault, require
+from oea.contracts.schema_validation import parameter_errors
 
 operation_context = ContextVar("oea_operation_context", default=None)
 
@@ -24,7 +25,7 @@ class OperationRegistry:
         self.handlers[name] = handler
         self.read_only[name] = read_only
         self.signatures[name] = inspect.signature(handler)
-        hints = get_type_hints(handler)
+        hints = get_type_hints(handler, include_extras=True)
         fields = {parameter.name: (hints.get(parameter.name, Any), ... if parameter.default is inspect.Parameter.empty else parameter.default)
                   for parameter in self.signatures[name].parameters.values()}
         self.parameters[name] = create_model(name.replace(".", "_") + "Parameters", __config__=ConfigDict(extra="forbid"), **fields)
@@ -37,10 +38,10 @@ class OperationRegistry:
         try:
             parsed = self.parameters[name].model_validate(params)
         except ValidationError as error:
-            fields = error.errors(include_input=False, include_url=False)
+            fields = parameter_errors(error)
             raise RuntimeFault("INVALID_REQUEST", "Parameters do not match the operation contract", operation=name,
-                               details={"fields": [list(item["loc"]) for item in fields],
-                                        "errors": [{"path": list(item["loc"]), "message": item["msg"], "type": item["type"]} for item in fields]}) from None
+                               origin="local", stage="operation.validate",
+                               details={"fields": [item["path"] for item in fields], "errors": fields}) from None
         params = {field: getattr(parsed, field) for field in type(parsed).model_fields}
         if agent_name is not None:
             require(isinstance(agent_name, str) and 0 < len(agent_name.strip()) <= 80 and all(character.isprintable() for character in agent_name),

@@ -47,6 +47,7 @@ class MapConfig(Configuration):
     input: str | dict = "{{item}}"
     outcome: Literal["all_succeeded", "all_settled"] = "all_succeeded"
     policy: UsePolicy = Field(default_factory=UsePolicy)
+    item_label: str = Field(default="", max_length=256)
 
 
 class ConditionConfig(Configuration):

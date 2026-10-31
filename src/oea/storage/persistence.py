@@ -102,7 +102,7 @@ class Store:
             self.db.execute(script)
             self.db.execute("INSERT INTO metadata VALUES('protocol_version',?)", (PROTOCOL_VERSION,))
             self.db.execute("INSERT INTO metadata VALUES('schema_sha256',?)", (checksum,))
-            self.db.execute("INSERT INTO metadata VALUES('schema_revision','2')")
+            self.db.execute("INSERT INTO metadata VALUES('schema_revision','3')")
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")
@@ -113,7 +113,7 @@ class Store:
             raise RuntimeFault("STORE_CLOSED", "State store is not open")
         def invoke():
             if transaction:
-                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("BEGIN" if transaction == "read" else "BEGIN IMMEDIATE")
             try:
                 value = function(self.db)
                 if transaction:

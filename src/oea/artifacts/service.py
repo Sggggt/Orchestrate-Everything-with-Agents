@@ -190,7 +190,10 @@ class Artifacts:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def for_run(self, run_id: str):
-        records = await self.host.store.call(lambda db: rows(db, "SELECT * FROM artifacts WHERE run_id=? ORDER BY rowid", (run_id,)))
+        return await self.host.store.call(lambda db: self.list_for_run(db, run_id))
+
+    def list_for_run(self, db, run_id):
+        records = rows(db, "SELECT * FROM artifacts WHERE run_id=? ORDER BY rowid", (run_id,))
         return [self.view(row) for row in records]
 
     async def list(self, session_id: str | None, project_id: str, *, cursor: int = 0, limit: int = 25, query: str = ""):

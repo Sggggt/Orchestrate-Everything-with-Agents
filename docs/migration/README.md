@@ -69,8 +69,10 @@ snapshot and archive; a project-scoped history read does not expose them to anot
 
 ## 显式 v2 状态升级
 
-状态修订 2 增加 instance_read_positions，并将已识别的旧消息来源角色规范为 leader / instance。协议仍为 2.0。启动校验只接受当前 Schema，启动过程不自动升级旧库。
+OEA 2.1.0 使用状态修订 3，协议仍为 2.0。修订 3 增加结果快照、工具 Schema 选择状态、阻断证据、恢复执行限额及任务展示元信息。此前修订 2 增加的实例已读位置继续保留。启动校验只接受当前 Schema，启动过程不自动升级旧库。
 
-在已有宿主停止后先运行 `oea upgrade-state --data-dir EXTERNAL_STATE_DIRECTORY` 检查。执行时使用 `oea upgrade-state --data-dir EXTERNAL_STATE_DIRECTORY --backup-file EXTERNAL_BACKUP_FILE --apply`。升级工具只接受已声明的来源 Schema 校验值，获取原宿主排他锁，创建一个不存在的新数据库备份，然后在单事务中升级。旧游标、消息正文和对象 ID 保留；实例游标初始为空，不能推定历史已读。未知 Schema、活动宿主或已存在的备份目标都会拒绝。
+在已有宿主停止后先运行 `oea upgrade-state --data-dir EXTERNAL_STATE_DIRECTORY` 检查。执行时使用 `oea upgrade-state --data-dir EXTERNAL_STATE_DIRECTORY --backup-file EXTERNAL_BACKUP_FILE --apply`。升级工具支持已识别的修订 1、2 来源，获取原宿主排他锁，创建一个不存在的新数据库备份，然后在单事务中升级。旧游标、消息正文、对象 ID、动作回执和累计预算保留；从修订 1 升级时，新增实例游标初始为空，不能推定历史已读。未知 Schema、活动宿主或已存在的备份目标都会拒绝。
+
+旧工具加载事实转换为候选，下一次投影核验当前授权并绑定当前契约。无法恢复原内容版本的旧动态结果引用明确失效；获取最新状态应重新发起只读查询，不能重跑写操作。已经是修订 3 的目录再次检查返回 `current`，不重复迁移。
 
 此命令不迁移数据目录，不重置任务、产物或凭据。回滚须先停止宿主并核对升级后的新增事实，不能用旧备份抹去后续结果。

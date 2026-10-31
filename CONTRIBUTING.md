@@ -17,4 +17,4 @@ As an optional Windows convenience alternative, `Install-OEA.ps1 -Editable` prep
 
 Keep SDK, shared operations, CLI/MCP, browser and relevant module documentation consistent. Add tests for observable regressions. Preserve project ownership, revision checks, receipts and unknown-outcome handling. Code modules and matching interface documents are indexed in [docs/modules.md](docs/modules.md).
 
-Do not publish credentials, personal paths, business data, generated inputs or outputs, logs, populated state, captures or development context. Build outside the checkout with `python -B -m build --outdir EXTERNAL_BUILD_DIRECTORY`; inspect the actual wheel and source archive before distribution. Preserve the MIT license and third-party notices.
+Do not publish credentials, personal paths, business data, generated inputs or outputs, logs, populated state, captures or development context. Build outside the checkout with `python -B -m build --outdir EXTERNAL_BUILD_DIRECTORY`; inspect the actual wheel and source archive before distribution. Preserve the project license and applicable dependency licenses.

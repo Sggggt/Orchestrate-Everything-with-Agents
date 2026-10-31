@@ -22,7 +22,7 @@
 - `context/store.py`：`ContextStore`
   - `check_access(db, instance, source)`
   - `async authorize_reference(self, run, instance, reference, authorize)`
-  - `async source(self, run, instance, text, origin, *, action_key=None)`
+  - `async source(self, run, instance, text, origin, *, action_key=None, on_insert=None)`
   - `async read(self, run, instance, reference, *, offset=0, limit=8192, authorize=None)`
   - `async revoke(self, reference: str, instance_id: str, *, project_id: str)`
   - `async append(self, run, instance, message, key)`
@@ -30,9 +30,9 @@
   - `async input(self, run, instance)`
   - `async inbox(self, run, instance)`
   - `async reply(self, run, instance, request_id)`
-  - `async tool_result(self, run, instance, policy, call, result, *, action_key=None)`
+  - `async tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None)`
   - `async history(self, instance_id, *, after=0, limit=20)`
-  - `async project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None)`
+  - `async project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None, prepare_tools=None, input_cap=None)`
 
 ## 依赖与边界
 
@@ -41,6 +41,10 @@
 跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
 
 ## 有界内容选择
+
+投影记录版本、模型和工具集合指纹、历史位置、记忆引用及估算方法。供应商实际输入和估算偏差绑定原请求，缓存命中单独计量。相同契约的重复工具详情仅在投影引用化，原始历史和错误证据保留。压缩按选择指纹复用原摘要回执；只有有效且实际减量的摘要才推进记忆位置，无新增内容不重复摘要。工作输入目标、模型窗口和根累计成本分别核验，估算校准不放宽硬边界。
+
+窗口拒绝恢复沿用本模块的确定性选择与摘要能力，通过更低的 `input_cap` 准备候选；失败保留原记忆与原模型失败。`context.recovered` 记录原 action/attempt、前后输入哈希、估算与投影。模型执行边界验证该证据，不能将它当作用户对未知结果重发的批准。
 
 `context/selection.py` 是纯函数。正常输入走快速路径；压力触发时，在当前有界历史页上为每个完整消息组选择 full 或 reference。引用视图仅卸载可识别的正文，状态、错误、退出码、来源和未决动作保留；assistant 的调用 ID、名称、参数与对应结果不拆分。
 

@@ -16,6 +16,7 @@
 
 - `models/api.py`：`provider_error(response, redact)`
 - `models/api.py`：`ModelFailure`
+- `models/api.py`：`ModelCancelled`
 - `models/api.py`：`sse_data(response, max_bytes=1024 * 1024)`
 - `models/api.py`：`ModelAPI`
   - `async complete(self, model, messages, *, tools=(), output_tokens=None, emit=None, on_fact=None)`
@@ -54,3 +55,7 @@ Context 的分项估算直接用于根预算核算；输入窗口按本次计划
 准备、进入发送、收到 HTTP 响应和终结记录到原 action 的 JSON 元数据及同事务事件。attempt_id 沿用原 usage ID；显式重试保留 action_id，上一尝试进入 model_failures。每个流只写阶段事实，正文增量不逐片段写数据库。自定义模型适配器未报告发送阶段时，相关事实保持未知。
 
 captured_output_bytes 表示传输边界保留的有效内容；saved_output_bytes 表示秘密处理后实际保存的正文和工具字段。协议封装不计入这两个值。达到生成上限保留 finish_reason 并标记 incomplete；未完成工具片段只进入 discarded_tool_calls。供应商明确的结构化配额代码可分类为 quota，HTTP 403 本身不能作此判断。
+
+HTTP 400/413 且结构化代码为 `context_length_exceeded` 或 `max_context_length_exceeded` 时，适配层记录明确拒绝并返回 `MODEL_CONTEXT_REJECTED`。其它状态、错误文本、流内错误和超时不使用此分类。默认图可凭已保存且实际减量的投影沿原 action 自动重试一次；失败尝试单独归档，模型执行器不自行循环重试。
+
+成功及失败响应的 `input_comparison` 关联原投影版本、模型/工具指纹、预测输入、供应商实际输入与偏差；未知报告保持空值。取消仍传播取消信号，并在原回执保留已接受的正文、工具片段和用量。实时流携带 action/attempt、顺序号和 block ID；`models/stream.py` 只维护进程内活动投影及最多 16 个、合计 16 MiB 的补读快照，不能替代持久回执。
