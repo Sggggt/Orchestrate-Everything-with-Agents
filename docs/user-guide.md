@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 2.1.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 3.0.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -76,90 +76,18 @@ The browser, SDK client and control MCP connect to the same host. A standalone S
 <a id="install"></a>
 ## 3. Install and start OEA
 
-Use `oea` on Windows, Linux and macOS. For everyday platform use, install it as a global command-line tool with uv. To import the SDK or manage a Python environment yourself, use the separate Python-environment steps below.
-
-### Recommended: install the platform with uv
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), download or clone the OEA source, and open a terminal at the directory containing `pyproject.toml` and `constraints.txt`. Use the same commands in Windows PowerShell, Windows Command Prompt, Linux bash or macOS zsh:
+Use Python 3.12+ and a prebuilt wheel matching Windows x64 or Linux x64. Replace the placeholder with the release filename; normal installation needs no Rust compiler:
 
 ```sh
-uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
-uv tool update-shell
+python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+oea serve --allow-commands
 ```
 
-Reopen the terminal, then verify and start OEA from any directory:
+Windows also provides `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl` and `Start-Workspace.ps1 -AllowCommands`. See [installation](getting-started.md) for isolated environments, source builds and backend prerequisites.
 
-```sh
-oea --version
-oea serve
-```
+Open the printed browser URL; the initial default is `http://127.0.0.1:8890`. Ctrl+C stops a foreground host; closing the browser does not. One Host owns each state directory. Existing-host clients use PlatformClient.
 
-uv manages an isolated tool environment and exposes `oea` on your user's PATH. Everyday commands need no manual environment activation. OEA requires Python **3.12+**; the command selects Python 3.12, which uv can download when needed according to its settings. The installation reads the local source and constraints file. See [quick installation](getting-started.md#quick-install).
-
-### SDK or manually managed Python environment
-
-To run code that imports `oea`, install it in that code's Python environment. A uv tool installation does not expose the module to another Python interpreter. Install Python **3.12 or newer**, open a terminal at the repository root, and choose the steps for your shell. These also provide a platform installation alternative for users who prefer managing the environment themselves.
-
-#### Windows PowerShell
-
-```powershell
-python -m venv "$env:USERPROFILE\.venvs\oea"
-& "$env:USERPROFILE\.venvs\oea\Scripts\Activate.ps1"
-$env:PYTHONDONTWRITEBYTECODE = "1"
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-If policy prevents activation scripts, use the environment's executables directly as shown in [PowerShell setup](getting-started.md#windows-powershell).
-
-#### Windows Command Prompt (cmd.exe)
-
-```bat
-python -m venv "%USERPROFILE%\.venvs\oea"
-call "%USERPROFILE%\.venvs\oea\Scripts\activate.bat"
-set PYTHONDONTWRITEBYTECODE=1
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-#### Linux and macOS (bash / zsh)
-
-These commands work on both systems. Ensure `python3` selects Python 3.12+ with the `venv` module available:
-
-```sh
-python3 -m venv "$HOME/.venvs/oea"
-. "$HOME/.venvs/oea/bin/activate"
-export PYTHONDONTWRITEBYTECODE=1
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-For a manually managed installation, activate the same environment when running SDK code or platform commands. After the recommended uv installation, run `oea serve` directly from any directory. A newly started server runs in the foreground and keeps the terminal occupied. Open its printed URL in your browser; the first-launch default is [http://127.0.0.1:8890](http://127.0.0.1:8890). Use another terminal for client commands. `Ctrl+C` stops the foreground server. Closing a browser tab leaves it running. A launch against an authenticated running host reuses it.
-
-### Check the installation
-
-```sh
-oea --version
-oea paths
-oea request host.status
-```
-
-The version and paths commands inspect the installation. `host.status` needs a running host. The browser establishes an authenticated local session; clients discover the host from its saved connection information. Restart MCP clients after `uv tool update-shell`. A client that still cannot find `oea` can use its absolute executable path; see [client command lookup](getting-started.md#mcp-client).
-
-By default, OEA uses `~/.oea` (`%USERPROFILE%\.oea` on Windows):
-
-| Directory | Purpose |
-| --- | --- |
-| `data/` | Databases, checkpoints, secrets, connection information, managed workspaces and artifacts |
-| `runtime/` | Python environment created by the optional Windows installer |
-| `cache/` | Caches used by managed installation workflows |
-| `bin/` | Command and launchers installed by the optional Windows installer |
-
-With uv, its tool environment and exposed command are managed separately from OEA state. With pip, the command remains in your chosen environment. The optional managed directories need not exist with either installation. `oea paths` only reports locations, while `oea serve` creates the selected data directory on first use. Keep runtime state on local disk, outside source repositories and synchronized folders. The saved port is reused on later launches. `OEA_HOME` can select an explicit absolute home for an isolated installation; changing it does not move existing data. See [getting started](getting-started.md) for advanced path options.
-
-### Optional Windows convenience scripts
-
-If you prefer a Windows managed runtime and double-click launch, run `Install-OEA.cmd` from the source distribution, then `Start-Workspace.cmd`. This is an optional platform installation alternative. The installer prepares the external managed runtime and adds its command directory to the user PATH; reopen terminals and MCP clients after installation. The launcher starts the host in the background or reuses it, and opens the browser. You can still use `oea serve` and `oea mcp`. See [Windows shortcuts](getting-started.md#windows-shortcuts) for options.
+Default state is `~/.oea/data`, outside Git, source and synchronized directories. `oea paths` only reports locations. `OEA_HOME` explicitly selects another absolute home; updating the environment does not move or migrate data. Source-only editable mode leaves native local tools unavailable until matching assets are supplied.
 
 <a id="first-task"></a>
 ## 4. Complete your first Agent task
@@ -239,7 +167,7 @@ In **工作目录与环境**, distinguish:
 - **References**: additional read-only material.
 - **Writable project paths**: explicit exceptions for file-tool edits to selected project subpaths.
 
-File tools enforce their path grants. Commands run with the host user's operating-system permissions, so file-tool restrictions do not sandbox a shell or process Agent. To use configured command tools or process Agents, start an idle host with that capability enabled:
+Commands, patches and file/image capture default to one native OS policy; unsupported policies fail explicitly. Only explicit trusted mode uses host-user authority without isolation. Agents may override project directory/network defaults and receive explicit external write grants. Command and process tools also require the host startup grant:
 
 ```sh
 oea serve --allow-commands
@@ -283,32 +211,15 @@ Skill text, imported documents and tool output cannot grant permission or change
 <a id="collaboration"></a>
 ## 9. Work with multiple instances
 
-### Separate independent tasks
+Start with one capable Agent. Create independent instances when responsibility, context or directories need separation. Reuse an instance for follow-up work. Instances run concurrently without global, Agent, model or MCP slot quotas; budgets manage cost and time.
 
-Create several instances when the same Agent definition needs independent histories or work directories. For example, assign different input files to different reviewer instances. Send one explicit goal to each. Their Runs can proceed concurrently; cumulative budgets and provider limits still apply.
+In **协作消息**, choose a project/session board or an authorized private inbox and send free-form content. Replies, mentions and references are optional. Invalid optional recipients do not erase an accepted body; the receipt reports delivery issues. Mentions grant no read or tool permission.
 
-Reuse an existing instance for follow-up work that needs its context. Use a new instance when the task should begin with a separate history. OEA does not provide global, Agent, model or MCP execution-slot quotas. Budget settings limit work cost and time rather than concurrent resource admission.
+Plain messages create no Run or budget and do not wake models. Submit new work explicitly in a conversation, resume the original Run for an existing wait, or use an authorized assign_work. Directed messages enter existing model boundaries; child waits use persistent interrupts.
 
-### Direct and collaborative modes
+Managers are optional and have independent models and credentials. Tools, Skills, workspace and execution inherit the definition unless explicitly narrowed. A role name removes no business capability and grants no administrator authority. Assignment and cancellation still check current communication scope and root ownership.
 
-Start with `direct` mode when addressing known instances yourself. Use `collaborative` mode when you want a configured manager to coordinate work through its allowed partner and instance tools.
-
-To use collaboration, configure the Agent's **通信与 manager** group, including the manager's separate model, credential and instructions. Grant the needed partner scope and work-request permission. In **协作消息**, select collaborative mode and choose the intended Agent coordination target or instance recipients.
-
-A manager has coordination capabilities within the accepted goal and root budget. It does not inherit business shell tools or the main model's credentials. Changing the session mode does not rewrite already accepted work.
-
-### Choose the message purpose
-
-| Purpose | Browser label | Effect |
-| --- | --- | --- |
-| `inform` | 资料消息 | Adds information to recipients' inboxes without starting inference |
-| `request` | 工作请求 | Submits explicitly authorized work under its work ownership and budget |
-| `reply` | 答复原工作 | Answers or continues the associated original work |
-| `report` | 进展与问题 | Records facts or issues without independently starting work |
-
-Select recipients through the recipient controls. Acceptance freezes the actual recipient set; a later membership change does not change that message's recipients. Writing an `@` mention in prose alone does not create an authorized request. Ordinary information or broadcast messages do not implicitly run every Agent.
-
-Inspect the message receipt to distinguish inbox acceptance, application and completed work. Send references to complete artifacts and original results when handing work over. A manager turn ending does not automatically cancel its child work. See [collaboration](collaboration.md).
+Saved content, directed delivery, read state and business completion are separate facts. Hand over complete results and artifact references. A manager turn ending does not cancel child work; root cancellation follows actual ownership. See [collaboration](collaboration.md).
 
 <a id="workflows"></a>
 ## 10. Build a reusable workflow
@@ -407,7 +318,7 @@ Waiting workflows preserve their native interrupt and child receipts. Use the or
 
 Task details show elapsed time, budget accounting and diagnostics. Execution activities link to original model and tool calls. Provider-reported tokens, estimates, in-flight reservations and unresolved usage are separate values; unknown usage is shown as unknown. Token totals alone do not establish a billing amount.
 
-Root and child work, including manager coordination and repairs, share their inherited cumulative budget. Choose limits in **执行与交付** for model calls, input/output tokens, tool calls, elapsed time and stalled work. One model response's output limit is separate from the whole work's output-token budget.
+Root and child work, summaries and recovery share the original budget. The UI distinguishes this Run, root work and the shared ledger. Cache remains in total input and is priced separately. Total/uncached input ceilings are optional; finalization and recovery reserves are part of the original budget. Missing provider fields remain unknown, and one generation limit is separate from cumulative output.
 
 ### Continue safely
 
@@ -456,14 +367,14 @@ Connect with `PlatformClient.from_data_dir()` to manage the running main host. T
 
 Use `arun` / `astream` and asynchronous context managers in an application that already has an event loop. Keep a client and Agent on their original event loop. New Python function implementations must be registered in the host process before a remote binding can use them.
 
-For executable examples and advanced lifecycle, stream and recovery contracts, see [Python SDK](sdk.md), [model Agent example](../examples/model_agent.py) and [process Agent example](../examples/integration_agent.py). Process Agents implement OEA's v2 UTF-8 JSONL protocol; an arbitrary console script is not automatically an OEA Agent.
+For executable examples and advanced lifecycle, stream and recovery contracts, see [Python SDK](sdk.md), [model Agent example](../examples/model_agent.py) and [process Agent example](../examples/integration_agent.py). Process Agents implement OEA's protocol-3 UTF-8 JSONL protocol; an arbitrary console script is not automatically an OEA Agent.
 
 <a id="mcp"></a>
 ## 13. Connect an Agent client through MCP
 
 1. Start the OEA host and confirm its project and data directory.
 2. In your MCP-capable client, configure the stdio command `oea` with arguments `["mcp"]`. The client must be able to find the installed command and reach the local host. If its PATH does not include your Python environment, use the absolute executable path found with the [command lookup instructions](getting-started.md#mcp-client).
-3. Restart the MCP client after `uv tool update-shell` or other PATH changes.
+3. Restart the MCP client after installation or PATH changes.
 4. If using the supplied control Skill, export it to a new external directory and install that directory through the client's Skill mechanism. Replace the destination below with your intended new absolute directory:
 
 ```sh
@@ -498,11 +409,11 @@ Let active work settle or inspect its cancellation and unresolved outcomes befor
 
 Stop the host before changing its installed environment or taking an offline backup. Preserve the complete state directory, including databases, graph checkpoints, secrets and their key material, artifacts and connection information. Back up external work/input directories separately when their contents are needed. Protect backups as private runtime data.
 
-With the host stopped, update a uv-installed platform by [reinstalling the tool from the intended source version](getting-started.md#update-tool), then run `oea serve`. For a pip installation, activate its environment and rerun its package installation command against the updated source. An editable installation references the source checkout directly; frontend changes need a browser refresh and Python changes need an idle-host restart. If you chose the optional Windows managed installation, update it with its installer while that host is stopped. Installation updates do not relocate user data.
+With the host stopped, activate its Python environment and install the new matching platform wheel, then run `oea serve`. Follow the [update and migration instructions](getting-started.md#update-tool) when changing protocol versions. An editable installation references the source checkout directly; frontend changes need a browser refresh and Python changes need an idle-host restart. If you chose the optional Windows managed installation, pass the new wheel to its installer while that host is stopped. Installation updates do not relocate user data.
 
 ### State upgrades and migration
 
-If the application reports a recognized v2 schema mismatch, inspect it offline with `oea upgrade-state` before applying an upgrade with a new backup destination. Conversion from supported legacy formats uses `oea migrate`, whose default is a read-only inspection and whose apply mode creates a separate new target.
+Inspect protocol-2 state with `oea upgrade-state --data-dir SOURCE`, then convert with `--target NEW_TARGET --apply`. Old graphs and unknown effects remain for review and are not replayed. Other supported legacy formats use `oea migrate`, also into a separate new target.
 
 Read the [migration guide](migration/README.md) before applying either operation. Changing `OEA_HOME`, copying a live database or opening a blank state directory does not migrate an existing workspace. Preserve the original data and reconcile newer facts before restoring any backup.
 
@@ -511,7 +422,7 @@ Read the [migration guide](migration/README.md) before applying either operation
 
 | Symptom | What to check and do |
 | --- | --- |
-| `oea` is not found | For uv, run `uv tool update-shell` and restart the terminal/client; for a manually managed environment, activate it or use its absolute executable path; optional Windows installer PATH changes also need a restart |
+| `oea` is not found | Activate its Python environment or use its absolute executable path; restart the terminal/client after installation or PATH changes, including changes made by the optional Windows installer |
 | The browser does not connect | Use the URL printed by the launcher, check the saved port and read the selected host's startup logs; verify ownership before starting another host |
 | MCP reports no available host | Start OEA first; confirm that the client and host resolve the same home and data directory |
 | The workspace looks empty | Check the selected project/session and `oea paths`; verify that an environment override did not select a different home before creating replacement data |
@@ -540,7 +451,7 @@ When reporting a problem, include the application version, operation, task/actio
 | [Workflows](workflows.md) | Graph execution and node behavior |
 | [Workbench](workbench.md) | Local tools, program environments and files |
 | [Skills](skills.md) | Registration, revisions and execution policies |
-| [Collaboration](collaboration.md) | Message purposes, ownership and manager coordination |
+| [Collaboration](collaboration.md) | Boards, private inboxes, ownership and optional coordination |
 | [Supervision](operations.md) | Original receipts, guidance and confirmation |
 | [API](api.md) | Shared operations, transports and error contracts |
 | [Architecture](architecture.md) | Host, LangGraph and persistence responsibilities |

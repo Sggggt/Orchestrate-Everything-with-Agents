@@ -1,4 +1,4 @@
-"""A v2 process Agent inspecting only the capabilities supplied by its Run.
+"""A protocol-3 process Agent inspecting only the capabilities supplied by its Run.
 
 Bind this program with Execution(program=(PYTHON, "-B", ABSOLUTE_SCRIPT_PATH)).
 The host must explicitly allow commands. This example makes no model call.

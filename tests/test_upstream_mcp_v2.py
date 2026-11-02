@@ -90,7 +90,8 @@ class ToolModel:
         if name is None:
             results = [json.loads(message["content"]) for message in messages if message["role"] == "tool"]
             page = next((value for value in reversed(results) if value.get("items")), None)
-            arguments = {"name": page["items"][0]["name"]} if page else {"query": ""}
+            names = [item["name"] for item in page["items"] if item["name"].startswith("mcp_")] if page else []
+            arguments = {"name": names[0]} if names else {"query": "mcp_"}
             return Completion(tool_calls=({"id": "discover-" + str(self.calls), "type": "function", "function": {
                 "name": "tool_guide", "arguments": json.dumps(arguments)}},),
                 finish_reason="tool_calls", usage={"prompt_tokens": 30, "completion_tokens": 2})

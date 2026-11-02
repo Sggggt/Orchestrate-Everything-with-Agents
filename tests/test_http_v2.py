@@ -4,11 +4,12 @@ import json
 import hashlib
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 
 import httpx
 
-from oea import Agent, AgentDefinition, Completion, Model, PlatformClient, RunSpec
+from oea import Agent, AgentDefinition, Completion, Model, PlatformClient, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.web.app import create_app
@@ -28,7 +29,7 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="oea-http-")
         self.root = Path(self.temporary.name)
         self.model = ModelFixture()
-        self.host = await Host(self.root / "state", model_api=self.model).__aenter__()
+        self.host = await Host(self.root / "state", model_api=self.model, allow_commands=True).__aenter__()
         self.app = create_app(host=self.host, client_url="http://127.0.0.1:8899")
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -67,11 +68,50 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), digest)
         response = await self.client.client.get("/api/artifacts/" + uploaded["id"] + "/content", params={"project_id": "p"})
         self.assertEqual(response.content, body)
+        download = await self.client.download_artifact(uploaded["id"], self.root / "downloaded.txt", project_id="p")
+        self.assertEqual(download["sha256"], digest)
+        self.assertEqual((self.root / "downloaded.txt").read_bytes(), body)
+        with self.assertRaises(RuntimeFault) as exists:
+            await self.client.download_artifact(uploaded["id"], self.root / "downloaded.txt", project_id="p")
+        self.assertEqual(exists.exception.code, "DESTINATION_EXISTS")
         spoofed = await self.client.client.put("/api/artifact-uploads/" + uploaded["id"] + "/content", params={"project_id": "p"},
             headers={"X-OEA-Consumer-ID": "another-consumer"}, content=body)
         self.assertEqual(spoofed.status_code, 403)
         self.assertEqual(self.model.calls, 0)
         self.assertEqual((await self.client.call("instances.list", {"session_id": session["id"]}))["items"], [])
+
+    async def test_command_download_reads_full_saved_bytes_without_new_execution(self):
+        session, instance = await self.seed()
+        class CommandModel:
+            calls = 0
+            async def complete(self, model, messages, **options):
+                self.calls += 1
+                if self.calls == 1:
+                    arguments = {"argv":[sys.executable,"-B","-c","import sys; print('retained-output'*10000); sys.exit(7)"],"yield_time_ms":1000}
+                    return Completion(tool_calls=({"id":"command","type":"function","function":{"name":"exec_command","arguments":json.dumps(arguments)}},),finish_reason="tool_calls")
+                return Completion(text="Completed")
+        model = self.host.model_api = CommandModel()
+        definition = (await self.host.agents.get("review"))["definition"]
+        definition["tools"] = Tools(local=("exec_command",)).model_dump(mode="json")
+        definition["workspace"] = Workspace(sandbox="trusted").model_dump(mode="json")
+        await self.host.agents.save(AgentDefinition.model_validate(definition), expected_revision=1)
+        run = await self.host.runs.submit(RunSpec(instance_id=instance["id"],input="Capture output",idempotency_key="download"))
+        await self.host.runs.result(run.id, timeout=10)
+        detail = await self.host.runs.inspect(run.id)
+        action = next(row for row in detail["actions"] if row["name"] == "exec_command")
+        self.assertTrue(action["result_is_error"])
+        self.assertEqual(action["exit_code"], 7)
+        command = action["command_session_id"]
+        receipt = await self.client.call("runs.command", {"run_id":run.id,"command_session_id":command,"project_id":"p"})
+        self.assertGreater(receipt["output_refs"][0]["saved_bytes"], len(receipt["stdout"]))
+        path = self.root / "stdout.bin"
+        result = await self.client.download_command(run.id, command, "stdout", path, project_id="p")
+        self.assertEqual(result["bytes"], receipt["output_refs"][0]["saved_bytes"])
+        self.assertEqual(path.read_text().strip(), "retained-output"*10000)
+        with self.assertRaises(RuntimeFault) as denied:
+            await self.client.download_command(run.id, command, "stdout", self.root / "denied.bin", project_id="other")
+        self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
+        self.assertEqual(model.calls, 2)
 
     async def test_sdk_client_receipts_and_http_errors_match_local_service(self):
         session, instance = await self.seed()

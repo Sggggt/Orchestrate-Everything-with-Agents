@@ -50,7 +50,7 @@ export async function uploadArtifact(app,onUploaded){
     const key=localStorage.getItem(slot)||crypto.randomUUID();localStorage.setItem(slot,key);
     const receipt=await rpc("artifacts.begin_upload",{project_id,session_id,name:file.name,bytes:file.size,sha256,idempotency_key:key});
     if(receipt.state!=="completed"){
-      const response=await fetch(`/api/artifact-uploads/${encodeURIComponent(receipt.id)}/content?project_id=${encodeURIComponent(project_id)}`,{method:"PUT",headers:{"Content-Type":"application/octet-stream","X-OEA-Protocol-Version":"2.0","X-OEA-Consumer-ID":localStorage.getItem("oea-consumer")},body:file});
+      const response=await fetch(`/api/artifact-uploads/${encodeURIComponent(receipt.id)}/content?project_id=${encodeURIComponent(project_id)}`,{method:"PUT",headers:{"Content-Type":"application/octet-stream","X-OEA-Protocol-Version":"3.0","X-OEA-Consumer-ID":localStorage.getItem("oea-consumer")},body:file});
       const result=await response.json();if(result.error)throw new Error(result.error.safe_message);if(!response.ok||result.result?.state!=="completed")throw new Error("请读取原上传回执，核对文件是否已完整接收。");
     }
     localStorage.removeItem(slot);notify("产物已收存");onUploaded?.({id:receipt.id,name:receipt.name});

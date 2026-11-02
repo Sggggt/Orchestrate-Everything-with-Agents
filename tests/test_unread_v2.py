@@ -72,13 +72,14 @@ class UnreadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_reads_do_not_clear_instance_replies(self):
         await self.reply(self.first, "one")
-        spec = MessageSpec(session_id=self.session["id"], recipients=(self.first["id"],), content="Information", idempotency_key="message")
+        board = (await self.host.boards.list("p", session_id=self.session["id"]))["items"][0]["id"]
+        spec = MessageSpec(board_id=board, mentions=(self.first["id"],), content="Information", idempotency_key="message")
         message = await self.host.registry.call("messages.send", {"spec": spec.model_dump(mode="json")}, consumer_id="external", agent_name="codex")
         self.assertEqual(message["source"]["kind"], "leader")
         self.assertEqual(message["source"]["name"], "codex")
         replay = await self.host.registry.call("messages.send", {"spec": spec.model_dump(mode="json")}, consumer_id="external", agent_name="another-agent")
         self.assertEqual(replay["source"]["name"], "codex")
-        read = await self.host.messages.mark_read(self.session["id"], "reader-a", message["position"], project_id="p")
+        read = await self.host.messages.mark_read(board, "reader-a", message["position"], project_id="p")
         self.assertEqual(read["summary"]["messages"]["count"], 0)
         self.assertEqual(read["summary"]["agents"]["worker"]["count"], 1)
 

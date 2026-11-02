@@ -31,10 +31,10 @@ def pointer(value, path):
 class ResultReferences:
     inline_bytes = 16384
     snapshot_operations = frozenset({
-        "runs.get", "runs.list", "runs.inspect", "runs.action", "runs.attempts", "runs.response", "runs.result",
+        "runs.get", "runs.list", "runs.command", "boards.get", "boards.list", "runs.inspect", "runs.action", "runs.attempts", "runs.response", "runs.result",
         "budgets.get", "sessions.get", "sessions.list", "sessions.summary", "sessions.unread",
         "instances.get", "instances.list", "instances.history", "messages.get", "messages.list", "messages.unread",
-        "artifacts.get", "artifacts.list", "artifacts.for_run", "artifacts.get_upload", "events.list",
+        "artifacts.get", "artifacts.list", "artifacts.for_run", "artifacts.get_upload", "artifacts.candidates", "artifacts.candidate", "events.list",
         "workflows.get_run", "workflows.list_runs", "workflows.inspect", "workflows.node_result",
         "workflows.members", "workflows.result", "workflows.activity", "mcp.call_result", "mcp.calls",
         "history.summary", "history.list", "history.get", "history.conversation", "history.usage",
@@ -65,6 +65,8 @@ class ResultReferences:
             overlay = {"in_flight": result["in_flight"], "stop_confirmed": result["stop_confirmed"]}
         elif operation in {"workflows.create", "workflows.update"}:
             operation, params = "workflows.get", {"workflow_id": result["id"], "project_id": result["project_id"]}
+        elif operation == "boards.create":
+            operation, params = "boards.get", {"board_id": result["id"], "project_id": result["project_id"]}
         elif operation == "messages.send":
             operation, params = "messages.get", {"message_id": result["id"], "project_id": result["project_id"]}
             overlay = {"reused": result["reused"]}
@@ -114,7 +116,7 @@ class ResultReferences:
             "workflow_id": "SELECT project_id FROM workflows WHERE id=?", "agent_id": "SELECT project_id FROM agent_definitions WHERE id=?",
             "instance_id": "SELECT project_id FROM instances WHERE id=?", "session_id": "SELECT project_id FROM sessions WHERE id=?",
             "artifact_id": "SELECT project_id FROM artifacts WHERE id=?", "budget_id": "SELECT project_id FROM budgets WHERE id=?",
-            "message_id": "SELECT project_id FROM messages WHERE id=?",
+            "message_id": "SELECT project_id FROM messages WHERE id=?", "board_id": "SELECT project_id FROM boards WHERE id=?",
         }
         for key, query in queries.items():
             if params.get(key):
@@ -152,7 +154,7 @@ class ResultReferences:
             return project, identity
         project, identity = await self.host.store.call(accept, transaction=True)
         return {"result_ref": identity, "project_id": project, "consumer_id": consumer_id, "characters": len(payload),
-            "content_version": content_hash, "content_sha256": content_hash, "page_limit": 2048, "offset_unit": "unicode_codepoint",
+            "content_version": content_hash, "content_sha256": content_hash, "page_limit": 65536, "offset_unit": "unicode_codepoint",
             "read_operation": "results.read", "source_operation": source}
 
     def authorize_snapshot(self, db, record, params):
@@ -163,7 +165,7 @@ class ResultReferences:
         need(db, "projects", project)
         tables = {"run_id": "runs", "action_id": "actions", "session_id": "sessions", "instance_id": "instances",
                   "workflow_id": "workflows", "workflow_run_id": "workflow_runs", "artifact_id": "artifacts",
-                  "budget_id": "budgets", "message_id": "messages", "step_id": "workflow_steps"}
+                  "budget_id": "budgets", "message_id": "messages", "step_id": "workflow_steps", "reference": "context_sources"}
         for key, table in tables.items():
             if params.get(key):
                 owner = need(db, table, params[key])
@@ -211,13 +213,13 @@ class ResultReferences:
         return encoded, digest
 
     async def read(self, result_ref: str, *, project_id: str | None = None, consumer_id: str | None = None,
-                   json_pointer: ResultPointer = "", offset: ResultOffset = 0, limit: ResultLimit = 2048):
+                   json_pointer: ResultPointer = "", offset: ResultOffset = 0, limit: ResultLimit = 16384):
         """Read one field or a bounded JSON text page from its original owner."""
         self.host.assert_open()
         context = operation_context.get() or {}
         reader = consumer_id or context.get("consumer_id")
         require(reader and (not context.get("consumer_id") or reader == context["consumer_id"]), "PERMISSION_DENIED", "Use the original conversation consumer identity")
-        require(type(offset) is int and 0 <= offset < 2**63 and type(limit) is int and 1 <= limit <= 2048 and isinstance(json_pointer, str) and len(json_pointer) <= 512, "INVALID_REQUEST", "Use a bounded result page and JSON Pointer")
+        require(type(offset) is int and 0 <= offset < 2**63 and type(limit) is int and 1 <= limit <= 65536 and isinstance(json_pointer, str) and len(json_pointer) <= 512, "INVALID_REQUEST", "Use a bounded result page and JSON Pointer")
         def read_record(db):
             record = one(db, "SELECT * FROM result_refs WHERE id=? AND consumer_id=?", (result_ref, reader))
             require(record is not None and record["project_id"] == project_id, "PERMISSION_DENIED", "Result reference belongs to another conversation or project")
@@ -248,7 +250,7 @@ class ResultReferences:
         require(offset <= len(encoded), "INVALID_REQUEST", "Offset exceeds the selected result length",
                 details={"offset": offset, "characters": len(encoded), "errors": [{"path": ["offset"], "type": "less_than_equal", "message": "Offset must not exceed characters"}]})
         metadata = {"result_ref": result_ref, "json_pointer": json_pointer, "content_version": version.get("content_version", version.get("content_hash", encode(version))),
-                    "content_sha256": digest, "characters": len(encoded), "page_limit": 2048, "offset_unit": "unicode_codepoint"}
+                    "content_sha256": digest, "characters": len(encoded), "page_limit": 65536, "offset_unit": "unicode_codepoint"}
         if offset == 0 and len(encoded) <= limit:
             return {**metadata, "value": json.loads(encoded), "complete": True, "next_offset": None,
                     "content_view": content_view("full", source_ref=result_ref, length=len(encoded))}

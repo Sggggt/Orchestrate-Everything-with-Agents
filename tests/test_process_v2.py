@@ -27,21 +27,21 @@ class Program:
         if mode == "failure":
             raise ValueError("fixture failure")
         if mode == "cancel":
-            await ctx.invoke_tool("run_command", {"argv": [ctx.input["python"], "-B", "-c", "import time; time.sleep(60)"]}, "sleep")
+            await ctx.invoke_tool("exec_command", {"argv": [ctx.input["python"], "-B", "-c", "import time; time.sleep(60)"]}, "sleep")
             return ProgramResult(text="Unexpected completion")
         if mode == "model":
             response = await ctx.complete("one")
             return ProgramResult(text=response["message"]["content"])
         script = "from pathlib import Path; p=Path('counter.txt'); p.write_text(str(int(p.read_text())+1) if p.exists() else '1'); print('完成')"
         arguments = {"argv": [ctx.input["python"], "-B", "-c", script]}
-        first = await ctx.invoke_tool("run_command", arguments, "compute-once")
-        second = await ctx.invoke_tool("run_command", arguments, "compute-once")
+        first = await ctx.invoke_tool("exec_command", arguments, "compute-once")
+        second = await ctx.invoke_tool("exec_command", arguments, "compute-once")
         assert first == second
         await ctx.progress("计算完成，原回执已保留")
         if mode == "suspend" and not ctx.checkpoint:
             return ProgramResult(status="suspended", checkpoint={"phase": 1}, wait={"kind": "input", "prompt": "确认结果"})
         artifact = await ctx.invoke_tool("publish_artifact", {"path": "counter.txt", "name": "counter.txt"}, "publish-once")
-        text = await ctx.invoke_tool("read_file", {"path": "counter.txt"}, "read-once")
+        text = await ctx.invoke_tool("read_artifact", {"artifact_id": artifact["artifact"]["id"]}, "read-once")
         return ProgramResult(text="结果为 1", data={"count": 1, "reply": ctx.reply, "checkpoint": ctx.checkpoint})
 run_agent(Program())
 '''
@@ -74,8 +74,8 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
     async def configure(self, *, model=False, script=None, timeout=20):
         value = AgentDefinition(id="program", name="Program", project_id="p",
             model=Model(base_url="https://model.invalid/v1", model="protocol-fixture") if model else Model(),
-            tools=Tools(local=("run_command", "read_file", "publish_artifact")),
-            workspace=Workspace(environment={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}),
+            tools=Tools(local=("exec_command", "write_stdin", "publish_artifact")),
+            workspace=Workspace(sandbox="trusted", environment={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}),
             execution=Execution(program=(sys.executable, "-B", str(script or self.script)), program_uses_model=model, program_timeout_seconds=timeout))
         await self.host.agents.save(value)
 
@@ -94,7 +94,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.artifacts), 1)
         self.assertEqual((await self.host.artifacts.read(result.artifacts[0].id, "p"))["text"], "1")
         actions = await self.host.store.call(lambda db: rows(db, "SELECT name,state FROM actions WHERE run_id=?", (run.id,)))
-        self.assertEqual(sum(value["name"] == "run_command" for value in actions), 1)
+        self.assertEqual(sum(value["name"] == "exec_command" for value in actions), 1)
         stopped = await self.host.store.call(lambda db: rows(db, "SELECT data_json FROM events WHERE run_id=? AND kind='program.stopped'", (run.id,)))
         self.assertEqual(json.loads(stopped[0]["data_json"])["exit_code"], 0)
 
@@ -113,7 +113,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.data["reply"], "确认")
         self.assertEqual((await self.host.artifacts.read(result.artifacts[0].id, "p"))["text"], "1")
         actions = await self.host.store.call(lambda db: rows(db, "SELECT name FROM actions WHERE run_id=?", (run.id,)))
-        self.assertEqual(sum(value["name"] == "run_command" for value in actions), 1)
+        self.assertEqual(sum(value["name"] == "exec_command" for value in actions), 1)
         self.assertEqual(sum(value["name"] == "_oea_program" for value in actions), 2)
 
     async def test_program_model_uses_host_budget_and_never_requires_child_credentials(self):
@@ -122,7 +122,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         result = await self.host.runs.result(run.id, timeout=15)
         self.assertEqual(result.text, "Model result")
         self.assertEqual(self.model.calls, 1)
-        self.assertEqual(result.usage["provider_reported"]["input_tokens"], 20)
+        self.assertEqual(result.usage["run_direct"]["provider_reported"]["input_tokens"], 20)
 
     async def test_sdk_failure_is_not_a_completed_boundary_and_can_be_explicitly_repaired(self):
         await self.configure()
@@ -141,9 +141,10 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
         def observed(process):
             tree = OwnedProcessTree(process)
             children.append(process)
-            ready.set()
+            if len(children) >= 2:
+                ready.set()
             return tree
-        with patch("oea.workspace.service.OwnedProcessTree", side_effect=observed):
+        with patch("oea.stdio.process_tree.OwnedProcessTree", side_effect=observed):
             _, run = await self.submit("cancel")
             await asyncio.wait_for(ready.wait(), 15)
             result = await self.host.runs.cancel(run.id)

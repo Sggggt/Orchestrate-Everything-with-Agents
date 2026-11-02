@@ -2,7 +2,7 @@
 
 [English](user-guide.md) · 简体中文 · [文档目录](README.md)
 
-本指南适用于 Orchestrate Everything with Agents（OEA）2.1.0，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
+本指南适用于 Orchestrate Everything with Agents（OEA）3.0.0，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
 
 ## 目录
 
@@ -76,90 +76,18 @@ flowchart TD
 <a id="install"></a>
 ## 3. 安装与启动
 
-Windows、Linux 和 macOS 均以 `oea` 为命令行入口。日常运行平台推荐用 uv 安装为全局命令行工具；需要导入 SDK 或自己管理 Python 环境时，使用后面的独立环境步骤。
-
-### 推荐：用 uv 安装平台
-
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，下载或克隆 OEA 源码，在包含 `pyproject.toml` 和 `constraints.txt` 的目录打开终端。Windows PowerShell、Windows 命令提示符、Linux bash 和 macOS zsh 使用相同命令：
+使用 Python 3.12+，安装与 Windows x64 或 Linux x64 匹配的预编译 wheel。把示例中的文件名替换为发布包完整文件名，普通安装不需要 Rust：
 
 ```sh
-uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
-uv tool update-shell
+python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+oea serve --allow-commands
 ```
 
-重新打开终端后，在任意目录检查并启动：
+Windows 可运行 `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl`，再用 `Start-Workspace.ps1 -AllowCommands` 启动。安装环境、源码构建、外部虚拟环境和系统依赖见[安装指南](getting-started.md)。
 
-```sh
-oea --version
-oea serve
-```
+浏览器打开宿主打印的地址，初次默认 `http://127.0.0.1:8890`。前台宿主可用 Ctrl+C 退出；关闭浏览器不会停止宿主。相同状态目录只由一个 Host 持有，已有宿主使用 PlatformClient 连接。
 
-uv 管理独立工具环境，并把 `oea` 命令加入当前用户 PATH，日常使用无需手动激活环境。OEA 需要 **Python 3.12+**；命令选择 Python 3.12，uv 可根据其设置在需要时下载解释器。安装读取本地源码和约束文件，详见[快速安装](getting-started.md#quick-install)。
-
-### SDK 或手动管理的 Python 环境
-
-需要运行 `import oea` 的代码时，把 OEA 安装到运行该代码的 Python 环境。uv 工具安装不会让其他 Python 解释器直接导入该包。安装 **Python 3.12 或更新版本**，在源码仓库根目录打开终端，选择对应 Shell 的步骤；偏好自行管理平台环境的用户也可以采用这条路径。
-
-#### Windows PowerShell
-
-```powershell
-python -m venv "$env:USERPROFILE\.venvs\oea"
-& "$env:USERPROFILE\.venvs\oea\Scripts\Activate.ps1"
-$env:PYTHONDONTWRITEBYTECODE = "1"
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-如果策略禁止执行激活脚本，可以直接调用环境中的可执行文件，见 [PowerShell 安装说明](getting-started.md#windows-powershell)。
-
-#### Windows 命令提示符（cmd.exe）
-
-```bat
-python -m venv "%USERPROFILE%\.venvs\oea"
-call "%USERPROFILE%\.venvs\oea\Scripts\activate.bat"
-set PYTHONDONTWRITEBYTECODE=1
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-#### Linux 和 macOS（bash / zsh）
-
-两个系统使用以下相同命令。确认 `python3` 指向 Python 3.12+，并且已提供 `venv` 模块：
-
-```sh
-python3 -m venv "$HOME/.venvs/oea"
-. "$HOME/.venvs/oea/bin/activate"
-export PYTHONDONTWRITEBYTECODE=1
-python -m pip install -c constraints.txt ".[web,mcp,workbench]"
-oea serve
-```
-
-手动管理环境时，运行 SDK 代码或平台命令前先激活同一环境。采用推荐的 uv 安装后，可以在任意目录直接执行 `oea serve`。新启动的服务在前台持续占用该终端，通过浏览器打开打印的地址，首次启动默认是 [http://127.0.0.1:8890](http://127.0.0.1:8890)。客户端命令在另一个终端中执行。在服务终端按 `Ctrl+C` 可以停止前台宿主，关闭浏览器标签不会停止它。连接到经过认证的运行中宿主时会复用原服务。
-
-### 检查安装
-
-```sh
-oea --version
-oea paths
-oea request host.status
-```
-
-版本和路径命令用于查看安装情况，`host.status` 需要宿主已经运行。浏览器建立经过认证的本机会话，客户端通过保存的连接信息发现宿主。执行 `uv tool update-shell` 后重启 MCP 客户端；仍找不到 `oea` 时，可以填写其绝对可执行文件路径，见[客户端命令定位](getting-started.md#mcp-client)。
-
-默认用户目录为 `~/.oea`，Windows 对应 `%USERPROFILE%\.oea`：
-
-| 目录 | 用途 |
-| --- | --- |
-| `data/` | 数据库、检查点、秘密、连接信息、受管工作目录与产物 |
-| `runtime/` | 可选 Windows 安装器创建的 Python 环境 |
-| `cache/` | 受管安装流程使用的缓存 |
-| `bin/` | 可选 Windows 安装器放置的命令与启动脚本 |
-
-通过 uv 安装时，其工具环境与命令入口由 uv 管理，与 OEA 状态分开；通过 pip 安装时，命令位于所选 Python 环境。两种方式下，可选受管目录都不必存在。`oea paths` 只报告位置，`oea serve` 首次使用时创建选定的数据目录。运行状态必须保存在本机磁盘，并位于源码仓库和同步目录之外。后续启动沿用保存的端口。需要隔离安装时，可通过 `OEA_HOME` 指定绝对用户目录；改变该值不会搬迁已有数据。高级目录选项见[快速开始](getting-started.md)。
-
-### Windows 可选便捷脚本
-
-偏好 Windows 托管环境与双击启动时，可以在源码发行目录中运行 `Install-OEA.cmd`，然后运行 `Start-Workspace.cmd`，作为可选的平台安装替代方式。安装器在仓库外准备托管环境并把命令目录加入用户 PATH，安装后重开终端和 MCP 客户端。启动器会后台启动或复用宿主，并打开浏览器；仍然可以使用 `oea serve` 和 `oea mcp`。参数说明见 [Windows 便捷方式](getting-started.md#windows-shortcuts)。
+默认本机状态位于 `~/.oea/data`，必须位于 Git、源码和同步目录之外。`oea paths` 只报告路径；`OEA_HOME` 可显式选择另一个绝对用户根。更新环境不自动移动或迁移数据。源码 editable 模式没有原生组件时，本地原生工具明确不可用。
 
 <a id="first-task"></a>
 ## 4. 完成第一个 Agent 任务
@@ -239,7 +167,7 @@ oea schema agent
 - **只读参考目录**：补充材料。
 - **允许写入的项目子目录**：文件工具可修改项目原件的明确例外。
 
-文件工具按照路径授权执行。命令具有宿主用户的操作系统权限，文件工具的限制无法把 Shell 或进程 Agent 变成沙箱。使用已配置的命令工具或进程 Agent 时，宿主还需在空闲状态下以相应能力启动：
+命令、补丁、图片与文件捕获默认共用原生 OS 沙箱，策略不可用时明确拒绝。显式 trusted 模式才使用宿主用户权限。项目默认目录和网络可被 Agent 覆盖，项目外写目录须明确授予。命令和进程 Agent 还需宿主启动授权：
 
 ```sh
 oea serve --allow-commands
@@ -283,32 +211,15 @@ Skill、导入文档和工具输出都不能授予权限或改变用户目标。
 <a id="collaboration"></a>
 ## 9. 使用多个实例协作
 
-### 分开处理独立工作
+先让一个 Agent 独立完成工作。需要独立职责、上下文或目录时再创建实例；同一实例继续使用原历史，不同实例可并行。平台不提供全局、Agent、模型或 MCP 槽位配额，预算管理成本与时间。
 
-同一套 Agent 能力需要独立历史或工作目录时，创建多个实例。例如，将不同输入文件分别交给不同审阅实例，为每个实例发送明确目标。它们的 Run 可以并行执行，累计预算和供应商限制仍然适用。
+**协作消息**选择项目、会话板块或获准私有 inbox，再发送自由正文。reply_to、mentions 和资料引用是可选项。有效外壳接受后，错误提及不丢正文；回执报告未送达的问题。私有读权必须显式授予，@ 不扩大读者或工具权限。
 
-需要沿用上下文时继续使用原实例；需要独立历史时创建新实例。平台没有全局、Agent、模型或 MCP 执行槽位配额。预算限制工作的累计成本与时间，不承担并发资源准入。
+普通留言不会创建 Run、预算或自动唤醒模型。新工作在独立对话明确提交，原等待通过原 Run 恢复；执行 Agent 可在当前通信授权内使用 assign_work。消息在既有模型步骤边界合并，子工作等待使用持久中断。
 
-### 直接模式与协作模式
+manager 可选，具有独立模型和秘密。工具、Skills、环境与执行继承定义或显式收窄；角色名称不剥夺业务能力，也不授予管理员权限。创建、派发和取消仍核验 can_request、伙伴范围和根归属。
 
-自己指定实例工作时，可以从 `direct` 直接模式开始。希望配置好的 manager 使用获准伙伴和实例能力协调工作时，显式启用 `collaborative` 协作模式。
-
-先在 Agent 的**通信与 manager**中配置 manager 独立的模型、密钥和指令，授予需要的伙伴范围及工作请求权限。再进入**协作消息**，选择协作模式，通过收件控件选择对应 Agent 的协调入口或具体实例。
-
-manager 在已经接受的目标与根预算内协调工作，不继承业务 Shell 工具或主模型密钥。切换会话模式不会改写已经接受的工作。
-
-### 选择消息用途
-
-| 用途 | 界面名称 | 效果 |
-| --- | --- | --- |
-| `inform` | 资料消息 | 把信息加入收件箱，不启动模型推理 |
-| `request` | 工作请求 | 按工作归属与预算提交明确获准的工作 |
-| `reply` | 答复原工作 | 回答或接续关联的原工作 |
-| `report` | 进展与问题 | 保存事实或问题，不独立启动工作 |
-
-通过收件控件选择对象。接受时冻结实际收件集合，之后成员变化不会改写原消息的收件人。仅在正文中输入 `@` 提及不会创建获准工作请求。普通资料和广播不会隐式让所有 Agent 开始运行。
-
-通过消息回执区分入箱、应用和工作完成。交接时优先传递完整产物与原结果引用。manager 短回合结束不会自动取消子工作。详见[协作指南](collaboration.md)。
+保存、定向投递、已读与业务完成分别核验。交接使用完整结果和产物引用。manager 回合结束不取消子工作，根取消沿实际归属传播。见[协作指南](collaboration.md)。
 
 <a id="workflows"></a>
 ## 10. 创建可复用的工作流
@@ -407,12 +318,12 @@ if __name__ == "__main__":
 
 任务详情展示时间、预算核算和诊断，执行活动可以打开原模型与工具调用。供应商报告的 token、估算、在途预留和待核对用量分别记录，未知用量按未知显示。仅凭 token 总量不能确定账单金额。
 
-根工作与子工作共用继承的累计预算，包括 manager 协调和修复。在**执行与交付**中设置模型调用次数、累计输入输出 token、工具调用次数、总时长及停滞工作限制。单次模型输出长度与整项工作的累计输出 token 预算是两个参数。
+根工作与子工作共用原预算，包括摘要和恢复。界面分别显示本 Run、根工作和共享账本；缓存计入完整输入，费用按配置价格折算。总输入和非缓存输入上限显式可选，收尾/恢复预留包含在原预算。供应商缺失字段保持未知，单次生成额度与累计输出上限分开。
 
 ### 继续与恢复
 
 - 新的后续工作：向原实例发送新目标。
-- 接续挂起或失败的工作：通过 SDK 或 MCP 对原 Run 使用恢复操作，或答复有效关联的原等待。浏览器对话输入框提交新工作，不是通用检查点恢复控件。
+- 接续挂起或失败的工作：通过 SDK 或 MCP 对原 Run 使用恢复操作，或使用任务详情中的“继续原工作”。留言板回复不隐式恢复图。
 - 响应丢失：读取原回执。程序重试同一次提交时保持原幂等键与内容；真正的新工作使用新键。
 - 请求停止：使用对话中的停止按钮，并核对最终执行证据。停止请求、确认停止和外部结果未知分别记录。
 - 工具可能已改变外部系统：先核验原效果。确认操作保存证据和实际结果，不重发动作。共享操作包括 `runs.confirm_action` 与 `mcp.confirm_call`。
@@ -456,14 +367,14 @@ Agent 拥有这份隔离 SDK 状态，退出上下文时关闭自己创建的资
 
 应用已有事件循环时，使用 `arun` / `astream` 和异步上下文管理器。客户端和 Agent 始终使用原事件循环。新增的 Python 函数实现需先注册到宿主进程，远端绑定才能调用。
 
-完整开发、流式和恢复契约见 [Python SDK](sdk.md)、[模型 Agent 示例](../examples/model_agent.py)和[进程 Agent 示例](../examples/integration_agent.py)。进程 Agent 需要实现 OEA v2 UTF-8 JSONL 协议，普通控制台脚本不会自动成为 OEA Agent。
+完整开发、流式和恢复契约见 [Python SDK](sdk.md)、[模型 Agent 示例](../examples/model_agent.py)和[进程 Agent 示例](../examples/integration_agent.py)。进程 Agent 需要实现 OEA 协议 3 UTF-8 JSONL 协议，普通控制台脚本不会自动成为 OEA Agent。
 
 <a id="mcp"></a>
 ## 13. 通过 MCP 接入 Agent 客户端
 
 1. 启动 OEA 宿主，确认项目与数据目录。
 2. 在支持 MCP 的客户端配置 stdio 命令 `oea`，参数为 `["mcp"]`。客户端需要能找到安装后的命令，并能访问本机宿主。客户端 PATH 没有包含 Python 环境时，按[命令定位说明](getting-started.md#mcp-client)填写可执行文件绝对路径。
-3. 执行 `uv tool update-shell` 或以其他方式更新 PATH 后，重启 MCP 客户端。
+3. 安装程序或修改 PATH 后，重启 MCP 客户端。
 4. 需要使用配套控制 Skill 时，先导出到新的外部目录，再按客户端的 Skill 安装方式放置。下面的目标参数应替换为计划新建的绝对目录：
 
 ```sh
@@ -498,11 +409,11 @@ oea export-skill --output EXTERNAL_NEW_SKILL_DIRECTORY
 
 修改安装环境和离线备份前先停止宿主。完整保留状态目录，包括数据库、图检查点、秘密及其密钥材料、产物和连接信息。需要保留的外部工作目录与输入目录另行备份，备份按照私有运行数据管理。
 
-宿主停止后，uv 安装的平台按[指定源码版本重新安装工具](getting-started.md#update-tool)，再运行 `oea serve`。pip 安装则激活对应环境，对更新的源码重新执行包安装命令。可编辑安装直接引用源码，前端修改后刷新浏览器，Python 修改后重启空闲宿主。选择可选 Windows 托管安装方式的用户，也可在对应宿主停止后使用其安装器更新。更新安装不会搬迁用户数据。
+宿主停止后，激活其 Python 环境，安装与平台匹配的新版 wheel，再运行 `oea serve`。跨协议版本更新时，按[更新与迁移说明](getting-started.md#update-tool)处理已有状态。可编辑安装直接引用源码，前端修改后刷新浏览器，Python 修改后重启空闲宿主。选择可选 Windows 托管安装方式的用户，在对应宿主停止后将新版 wheel 传给安装器更新。更新安装不会搬迁用户数据。
 
 ### 状态升级与迁移
 
-出现已识别的 v2 状态 Schema 不一致时，先用 `oea upgrade-state` 离线检查，再按要求提供新的备份目标执行升级。受支持旧格式的转换使用 `oea migrate`，默认只读检查，执行模式写入独立新目标。
+协议 2 状态先用 `oea upgrade-state --data-dir SOURCE` 离线检查，再以 `--target NEW_TARGET --apply` 转换；旧图与未知效果保留供核对，不重放。其他受支持旧格式使用 `oea migrate`，同样写入独立新目标。
 
 执行前阅读[迁移指南](migration/README.md)。更改 `OEA_HOME`、复制正在运行的数据库或打开一个空状态目录，都不能完成已有工作区迁移。保留原数据，恢复备份前先核对后续新增事实。
 
@@ -511,7 +422,7 @@ oea export-skill --output EXTERNAL_NEW_SKILL_DIRECTORY
 
 | 现象 | 检查与处理 |
 | --- | --- |
-| 找不到 `oea` 命令 | uv 安装执行 `uv tool update-shell` 并重启终端或客户端；手动环境先激活或使用绝对可执行文件路径；可选 Windows 安装器更新 PATH 后也需重启客户端 |
+| 找不到 `oea` 命令 | 激活对应 Python 环境或使用可执行文件的绝对路径；安装程序或修改 PATH 后重启终端或客户端，可选 Windows 安装器修改 PATH 后也一样 |
 | 浏览器连接不上 | 使用启动器打印的地址，检查保存端口和该宿主启动日志；再次启动前确认目录归属 |
 | MCP 提示没有可用宿主 | 先启动 OEA，核对客户端与宿主解析到同一个用户根和数据目录 |
 | 工作区看起来为空 | 检查所选项目、会话及 `oea paths`，创建替代数据前先核对环境覆盖是否选择了其他用户根 |

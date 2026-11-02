@@ -1,9 +1,13 @@
 # Supervision and guidance
 
-OEA records durable Run, action, message and workflow facts for supervision. The browser and control clients read the same services; the UI's short status is separate from complete retained evidence.
+The browser, SDK and MCP read the same durable Run, action, message and workflow facts. Short UI status and complete retained evidence are separate views.
 
-Use `runs.get` and `runs.result` to inspect work state and accepted delivery. Read a bounded `events.list` page, `runs.inspect` for execution and receipt metadata, or `runs.action` for an original action or attempt. Supply additional input through `runs.resume` at a resumable boundary, or a `messages.send` reply associated with the original work. The service validates the current state and permissions before continuing. `runs.cancel` requests cancellation. A cancellation request, observed stop, and unknown external outcome are different facts.
+Use `runs.get` and `runs.result` for execution state and accepted delivery; `runs.inspect`, `runs.action` and bounded `events.list` for original evidence. `runs.command` reads a command's original saved streams, actual exit state and environment revision, including after a restart. Reading never reruns the command.
 
-Unknown tool outcomes remain attached to their original action. Verify the real effect before confirming it through `runs.confirm_action` or `mcp.confirm_call`. Confirmation records evidence and never dispatches the action. Explicit continuation uses the original Run and checkpoint. A late result settles that same receipt.
+Continue a resumable boundary through `runs.resume` with the original Run and checkpoint. Free-form board messages retain guidance but do not implicitly resume a graph or create work. Directed messages enter existing model-input boundaries.
 
-Messages distinguish `inform`, `request`, `reply`, and `report`. Reports preserve observed problems; a reply can answer a valid wait without inventing a new goal or widening permission. Main and manager roles have separate configuration. See [collaboration](collaboration.md), [runtime interfaces](runtime/README.md), and [SDK](sdk.md).
+`runs.cancel` requests cancellation. A request, observed stop and unknown external outcome are different facts. A waiting Run with a live command retains execution ownership; revocation stops that owned command. Losing ownership leaves the related outcome unknown and does not reserve global capacity.
+
+Verify unknown effects before `runs.confirm_action` or `mcp.confirm_call`. Confirmation records evidence without dispatching the action. Late results settle the original receipt. Use complete artifacts and result references for handoff; strict delivery schemas and required evidence are optional constraints.
+
+See [collaboration](collaboration.md), [runtime](runtime/README.md), [budgets](budgets/README.md) and [SDK](sdk.md).

@@ -12,12 +12,12 @@ export async function removeAgent(app,id,revision){
 const groups=[
   ["职责与模型","定义清楚的职责，选择实际使用的模型。",[["model"],["instructions"]]],
   ["工具与 Skills","业务工具参数默认按需加载；Skill 先提供目录，必需正文在执行前加载。",[["tools"],["skills"]]],
-  ["上下文与记忆","保留原文引用，控制模型的活跃输入与阶段记忆。",[["context"]]],
+  ["上下文与记忆","保留原文引用，控制模型的活跃输入与阶段记忆。",[["context"],["summary_model"]]],
   ["工作目录与环境","项目原件与实例工作目录分开，恢复时继续使用原实例目录。",[["workspace"]]],
   ["执行与交付","选择执行图，设置交付要求与累计费用、时间预算。",[["execution"]]],
-  ["通信与 manager","明确伙伴范围，单独配置manager的模型与协调指令。",[["communication"],["manager"]]]
+  ["通信与 manager","明确伙伴范围；可选角色继承普通能力，也可显式收窄。",[["communication"],["manager"]]]
 ];
-const basic={model:["base_url","model","credential_ref"],workspace:["project","work","references","writable_project_paths"],execution:["graph","graph_version","delivery","budget"],manager:["model","instructions","communication"]};
+const basic={model:["base_url","model","credential_ref"],workspace:["inherit_project","project","work","references","writable_project_paths","writable_directories","sandbox","network"],execution:["graph","graph_version","delivery","budget"],manager:["model","instructions","communication"]};
 export function configurationCheck(check){
   const labels={base_url:"API 地址",model:"模型名称",credential:"密钥来源"};
   const model=value=>value.state==="configured"?`参数已配置 · ${value.has_credential?"密钥引用可用":"未绑定密钥引用"}`:"缺少："+escape(value.missing.map(key=>labels[key]||key).join("、"));
@@ -42,10 +42,15 @@ export async function renderSettings(app,root){
     const add=(path,schema)=>{const name=path.at(-1);$("#config-fields",form).append(formField({schema:schema||schemaAt(s.schema,path),root:s.schema,get:()=>getAt(draft.definition,path),set:value=>setAt(draft.definition,path,value),name,path,changed,basic:basic[name]}));};
     if(tab===0){const metadata=element('<section class="schema-object"><h3>基本信息</h3><div class="form-grid"></div></section>');$("#config-fields",form).append(metadata);for(const key of ["name","description","enabled"]){const field=formField({schema:s.schema.properties[key],root:s.schema,get:()=>draft.definition[key],set:value=>draft.definition[key]=value,name:key,path:[key],changed});$(".form-grid",metadata).append(field);}const id=document.createElement("p");id.className="v2-muted";id.textContent="Agent 标识："+draft.definition.id;metadata.append(id);}
     for(const path of paths)add(path);
-    if(tab===0||tab===5){const role=tab===0?"main":"manager",model=role==="main"?draft.definition.model:draft.definition.manager?.model;
-      const secret=element(`<section class="v2-secret"><label for="model-secret">${role==="main"?"主模型":"manager 模型"}密钥</label><input id="model-secret" type="password" autocomplete="new-password" data-secret-role="${role}" placeholder="填写新密钥以更新；留空保留已绑定来源"><small>${model?.credential_ref?"已绑定秘密引用，密钥值不回显。":"尚未绑定密钥；如供应商不需要认证，可留空。"}</small><button class="btn" type="button" id="detach-secret">解除当前密钥绑定</button></section>`);
-      $("input",secret).value=draft.secrets[role]||"";$("input",secret).disabled=role==="manager"&&draft.definition.manager==null;
-      $("input",secret).oninput=event=>{draft.secrets[role]=event.target.value;changed();};$("#detach-secret",secret).onclick=()=>{const target=role==="main"?draft.definition.model:draft.definition.manager?.model;if(target){target.credential_ref=null;draft.secrets[role]="";changed();renderBody();}};$("#credential-fields",form).append(secret);
+    if([0,2,5].includes(tab)){
+      const role=tab===5?"manager":"main",owner=role==="main"?draft.definition:draft.definition.manager;
+      for(const purpose of tab===2?["summary"]:tab===5?["main","summary"]:["main"]){
+        const model=purpose==="summary"?owner?.summary_model:owner?.model;if(purpose==="summary"&&!model)continue;
+        const key=role+":"+purpose,identity="secret-"+role+"-"+purpose,label=(role==="manager"?"协调角色 · ":"")+(purpose==="summary"?"摘要模型":"主模型");
+        const secret=element(`<section class="v2-secret"><label for="${identity}">${label}密钥</label><input id="${identity}" type="password" autocomplete="new-password" data-secret-role="${role}" placeholder="填写新密钥以更新；留空保留已有绑定"><small>${model?.credential_ref?"已绑定秘密引用，密钥值不回显。":"如供应商不需要认证，可留空。"}</small><button class="btn detach-secret" type="button">解除当前密钥绑定</button></section>`);
+        $("input",secret).value=draft.secrets[key]||"";$("input",secret).disabled=!owner;
+        $("input",secret).oninput=event=>{draft.secrets[key]=event.target.value;changed();};$(".detach-secret",secret).onclick=()=>{if(model){model.credential_ref=null;draft.secrets[key]="";changed();renderBody();}};$("#credential-fields",form).append(secret);
+      }
     }
     $("#save-status",form).textContent=draft.dirty?"有未保存的修改":"已保存 · 修订 "+draft.revision;
     $("#check-agent",form).disabled=draft.revision===0;
@@ -62,12 +67,12 @@ export async function renderSettings(app,root){
         probe.handle=probe.handle||await rpc("agents.probe",{agent_id:probe.agent_id,session_id:probe.session_id,role:probe.role,idempotency_key:probe.idempotency_key});
         $("#config-check",form).textContent="模型探测已提交："+probe.handle.id;
         const result=await rpc("runs.result",{run_id:probe.handle.id,timeout:30});
-        const usage=result.usage.provider_reported;
+        const usage=result.usage.run_direct.provider_reported;
         $("#config-check",form).textContent=`模型连接已响应 · 输入 ${usage.input_tokens??"未知"} token · 输出 ${usage.output_tokens??"未知"} token · ${probe.handle.id}`;
         probes.delete(key);
       }catch(error){$("#config-check",form).textContent=error.message+(probe.handle?" · "+probe.handle.id:"");if(error.run_id&&error.code!=="RESULT_PENDING")probes.delete(key);}finally{button.disabled=false;button.textContent=probes.has(key)?"查看探测结果":"测试模型连接";}};
     }
-    form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector("button[type=submit]");button.disabled=true;try{let saved=await rpc("agents.save",{definition:draft.definition,expected_revision:draft.revision});draft.revision=saved.revision;draft.definition=saved.definition;for(const [role,value]of Object.entries(draft.secrets)){if(value&&(role!=="manager"||draft.definition.manager)){const credential=await rpc("agents.set_credential",{agent_id:selected,project_id:s.project.id,role,value,expected_revision:draft.revision});draft.revision=credential.revision;const model=role==="main"?draft.definition.model:draft.definition.manager.model;model.credential_ref=credential.credential_ref;}}draft.secrets={};draft.dirty=false;await app.reloadAgents();notify("配置已保存，新工作将使用保存的能力。已撤销的权限立即生效。");await renderSettings(app,root);}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
+    form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector("button[type=submit]");button.disabled=true;try{let saved=await rpc("agents.save",{definition:draft.definition,expected_revision:draft.revision});draft.revision=saved.revision;draft.definition=saved.definition;for(const [key,value]of Object.entries(draft.secrets)){const [role,purpose]=key.split(":"),owner=role==="main"?draft.definition:draft.definition.manager,model=purpose==="summary"?owner?.summary_model:owner?.model;if(value&&model){const credential=await rpc("agents.set_credential",{agent_id:selected,project_id:s.project.id,role,purpose,value,expected_revision:draft.revision});draft.revision=credential.revision;model.credential_ref=credential.credential_ref;}}draft.secrets={};draft.dirty=false;await app.reloadAgents();notify("配置已保存，新工作将使用保存的能力。已撤销的权限立即生效。");await renderSettings(app,root);}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   }
   renderBody();
   if(createRequested){createRequested=false;newAgent(app,root);}

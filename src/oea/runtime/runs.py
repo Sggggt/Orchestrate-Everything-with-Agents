@@ -7,10 +7,11 @@ from oea.contracts.execution import ResumeExecutionLimits, agent_steps, resume_l
 from oea.contracts.paging import ResultOffset, ResponseLimit
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlencode
 
 
 from oea.catalog.service import need
-from oea.contracts.configuration import AgentDefinition, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, manager_snapshot
+from oea.contracts.configuration import PROTOCOL_VERSION, AgentDefinition, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, ProjectWorkspace, manager_snapshot
 from oea.contracts.domain import Artifact, RunHandle, RunResult, RunSpec
 from oea.contracts.measurement import content_view
 from oea.contracts.errors import RuntimeFault, require
@@ -20,6 +21,30 @@ from oea.storage.persistence import encode, event, new_id, now_ms, one, rows
 class Runs:
     def __init__(self, host):
         self.host = host
+
+    async def command(self, run_id: str, command_session_id: str, project_id: str, *, stdout_offset: int = 0, stderr_offset: int = 0):
+        """Read retained command output, including after completion or host restart."""
+        require(stdout_offset >= 0 and stderr_offset >= 0, "INVALID_REQUEST", "Offsets must be nonnegative bytes")
+        record = await self._command_record(run_id, command_session_id, project_id)
+        result = self.host.command_sessions.result(record, {"stdout_offset": stdout_offset, "stderr_offset": stderr_offset})
+        for reference in result["output_refs"]:
+            reference["download_url"] = "/api/commands/" + command_session_id + "/" + reference["stream"] + "?" + urlencode({"project_id":project_id,"run_id":run_id})
+        return result
+
+    async def _command_record(self, run_id, command_session_id, project_id):
+        def authorize(db):
+            run = need(db, "runs", run_id)
+            instance = need(db, "instances", run["instance_id"])
+            require(instance["project_id"] == project_id, "PERMISSION_DENIED", "Run belongs to another project")
+        await self.host.store.call(authorize)
+        return self.host.command_sessions.load(command_session_id, run_id)
+
+    async def command_output(self, run_id, command_session_id, project_id, stream):
+        require(stream in {"stdout", "stderr"}, "INVALID_REQUEST", "Choose stdout or stderr")
+        record = await self._command_record(run_id, command_session_id, project_id)
+        path = self.host.command_sessions.directory(command_session_id) / (stream + ".bin")
+        require(path.is_file(), "COMMAND_OUTPUT_UNAVAILABLE", "No retained stream is available")
+        return path, record
 
     def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False):
         """Join acceptance to an existing message or workflow transaction."""
@@ -40,23 +65,21 @@ class Runs:
         session = need(db, "sessions", instance["session_id"])
         require(not session["archived"], "SESSION_ARCHIVED", "Restore the session before accepting new work")
         require(definition.project_id in {None, instance["project_id"]}, "PROJECT_MISMATCH", "Agent belongs to another project")
-        workspace = definition.workspace
-        if workspace.project is None:
-            project = need(db, "projects", instance["project_id"])
-            workspace = workspace.model_copy(update={"project": Path(project["folder"]) if project["folder"] else None})
-        snapshot = definition.model_copy(update={"workspace": workspace})
+        project = need(db, "projects", instance["project_id"])
+        snapshot = definition
         if instance["role"] == "manager":
             require(session["mode"] == "collaborative" and definition.manager is not None, "MANAGER_UNAVAILABLE", "Manager is not enabled")
-            snapshot = manager_snapshot(definition)
-        elif not model_probe:
+            snapshot = manager_snapshot(snapshot)
+        snapshot = snapshot.model_copy(update={"workspace": snapshot.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])})
+        if not model_probe:
             snapshot = self.host.skills.pin(db, snapshot, instance["project_id"])
         if model_probe:
             snapshot = snapshot.model_copy(update={
                 "model": snapshot.model.model_copy(update={"max_output_tokens": min(snapshot.model.max_output_tokens, 128)}),
                 "instructions": Instructions(system="Reply READY to verify the model connection."), "tools": Tools(), "skills": (),
                 "workspace": Workspace(), "context": ContextPolicy(input_tokens=2048),
-                "execution": Execution(budget=Budget(max_model_calls=1, max_input_tokens=2048, max_output_tokens=128, max_tool_calls=1,
-                                                     max_elapsed_seconds=300))})
+                "execution": Execution(budget=Budget(max_model_calls=1, max_total_input_tokens=2048, max_output_tokens=128, max_tool_calls=1,
+                                                     max_elapsed_seconds=300, finalization_fraction=0, recovery_fraction=0))})
         parent = need(db, "runs", spec.parent_run_id) if spec.parent_run_id else None
         if parent:
             parent_instance = need(db, "instances", parent["instance_id"])
@@ -86,7 +109,7 @@ class Runs:
             require(need(db, "workflow_runs", root_workflow_run_id)["cancel_requested_at"] is None, "RUN_CANCELLED", "Root workflow was cancelled")
         if source_message_id:
             source = need(db, "messages", source_message_id)
-            require(source["session_id"] == instance["session_id"] and source["purpose"] == "request", "MESSAGE_MISMATCH", "Run input must reference its accepted request")
+            require(source["session_id"] == instance["session_id"], "MESSAGE_MISMATCH", "Run input must reference its accepted request")
         db.execute("INSERT INTO runs(id,instance_id,root_run_id,root_workflow_run_id,parent_run_id,workflow_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at,config_json,source_message_id) VALUES(?,?,?,?,?,?,?,'accepted',?,?,?,?,?,?,?,?)",
                    (identity, spec.instance_id, root_run_id, root_workflow_run_id, spec.parent_run_id, workflow_run_id, budget_id,
                     encode(self.host.redact(spec.input)), spec.idempotency_key, fingerprint, instance["role"], now_ms(), now_ms(), snapshot.model_dump_json(), source_message_id))
@@ -111,7 +134,7 @@ class Runs:
     def observe(self, value):
         # Transient task dictionaries belong to the event-loop thread. A saved
         # stop boundary needs no scan of unrelated live tool actions.
-        value["in_flight"] = value["stopped_at"] is None and (value["id"] in self.host.models.streams.active or self.host.tools.has_inflight(value["id"]))
+        value["in_flight"] = value["stopped_at"] is None and (value["id"] in self.host.models.streams.active or self.host.tools.has_inflight(value["id"]) or self.host.command_sessions.has_live(value["id"]))
         value["stop_confirmed"] = value["stopped_at"] is not None and (value["cancel_requested_at"] is None or value.get("cancellation", {}).get("state") == "confirmed")
         return value
 
@@ -128,7 +151,7 @@ class Runs:
 
     @staticmethod
     def view(row):
-        return {key: row[key] for key in ("id", "instance_id", "root_run_id", "root_workflow_run_id", "parent_run_id", "workflow_run_id", "budget_id", "state", "model_role", "cancel_requested_at", "stopped_at", "created_at", "updated_at")} | {
+        return {key: row[key] for key in ("id", "instance_id", "root_run_id", "root_workflow_run_id", "parent_run_id", "workflow_run_id", "budget_id", "state", "model_role", "execution_version", "cancel_requested_at", "stopped_at", "created_at", "updated_at")} | {
             "error": json.loads(row["error_json"]) if row["error_json"] else None,
             "wait": json.loads(row["wait_json"]) if row["wait_json"] else None,
             "result_available": row["result_json"] is not None,
@@ -151,21 +174,22 @@ class Runs:
 
     def read_inspection(self, db, run_id):
         run = self.read(db, run_id)
-        actions = rows(db, "SELECT a.id,a.name,a.state,a.side_effects,a.error_json,a.result_json IS NOT NULL AS result_available,json_extract(a.input_json,'$.attempt') AS attempt_facts,json_extract(a.result_json,'$.content_view') AS content_view,(SELECT COUNT(*) FROM model_failures f WHERE f.action_id=a.id) AS archived_count FROM actions a WHERE a.run_id=? ORDER BY a.rowid DESC LIMIT 25", (run_id,))
+        actions = rows(db, "SELECT a.id,a.name,a.state,a.side_effects,a.error_json,a.result_json IS NOT NULL AS result_available,json_extract(a.result_json,'$.isError') AS result_is_error,json_extract(a.result_json,'$.exit_code') AS exit_code,COALESCE(json_extract(a.result_json,'$.command_session_id'),CASE WHEN a.name='exec_command' THEN a.id END) AS command_session_id,json_extract(a.input_json,'$.attempt') AS attempt_facts,json_extract(a.result_json,'$.content_view') AS content_view,(SELECT COUNT(*) FROM model_failures f WHERE f.action_id=a.id) AS archived_count FROM actions a WHERE a.run_id=? ORDER BY a.rowid DESC LIMIT 25", (run_id,))
         rejected = rows(db, "SELECT position,data_json FROM events WHERE run_id=? AND kind='tool.rejected' ORDER BY position DESC LIMIT 25", (run_id,))
         activity = one(db, "SELECT * FROM run_activity WHERE run_id=?", (run_id,))
         projection = one(db, "SELECT id,json_extract(input_json,'$.projection') AS projection,json_extract(result_json,'$.input_comparison') AS comparison FROM actions WHERE run_id=? AND name='model.complete' AND json_extract(input_json,'$.purpose')='model' ORDER BY rowid DESC LIMIT 1", (run_id,))
         return {**run, "actions": [{"id": row["id"], "name": row["name"], "state": row["state"],
-                                   "side_effects": row["side_effects"], "error": json.loads(row["error_json"]) if row["error_json"] else None, "result_available": bool(row["result_available"]), "archived_count": row["archived_count"], "attempt_facts": json.loads(row["attempt_facts"]) if row["attempt_facts"] else None, "content_view": json.loads(row["content_view"]) if row["content_view"] else None} for row in actions],
+                                   "side_effects": row["side_effects"], "command_session_id": row["command_session_id"], "error": json.loads(row["error_json"]) if row["error_json"] else None, "result_available": bool(row["result_available"]), "result_is_error": bool(row["result_is_error"]) if row["result_is_error"] is not None else None, "exit_code": row["exit_code"], "archived_count": row["archived_count"], "attempt_facts": json.loads(row["attempt_facts"]) if row["attempt_facts"] else None, "content_view": json.loads(row["content_view"]) if row["content_view"] else None} for row in actions],
                 "rejections": [{"position": row["position"], **json.loads(row["data_json"])} for row in rejected],
                 "activity": {"stalled_model_calls": activity["stalled_model_calls"], "blocker": json.loads(activity["blocker_json"]) if activity["blocker_json"] else None, "blocker_repeats": activity["blocker_repeats"]} if activity else None,
                 "model_input": {"action_id": projection["id"], "projection": json.loads(projection["projection"] or "{}"), "comparison": json.loads(projection["comparison"] or "null")} if projection else None,
-                "artifacts": self.host.artifacts.list_for_run(db, run_id), "budget": self.host.budgets.read(db, run["budget_id"])}
+                "artifacts": self.host.artifacts.list_for_run(db, run_id), "budget": self.host.budgets.read(db, run["budget_id"]),
+                "usage": self.host.budgets.scopes(db, run)}
 
     async def response(self, run_id: str, *, action_id: str | None = None, attempt_id: str | None = None,
                        version: str | None = None, offset: ResultOffset = 0, limit: ResponseLimit = 16384):
         """Read one attempt's versioned live text or retained receipt; never resend it."""
-        require(type(offset) is int and 0 <= offset < 2**63 and type(limit) is int and 1 <= limit <= 16384,
+        require(type(offset) is int and 0 <= offset < 2**63 and type(limit) is int and 1 <= limit <= 65536,
                 "INVALID_REQUEST", "Use a bounded response page")
         require(not version or action_id and attempt_id, "INVALID_REQUEST", "Versioned reads require the original action and attempt")
         def locate(db):
@@ -207,7 +231,7 @@ class Runs:
                 "offset": offset, "offset_unit": "unicode_codepoint", "next_offset": offset + limit if offset + limit < len(text) else None}
 
     async def action(self, action_id: str, *, offset: int = 0, limit: int = 8192, attempt_id: str | None = None):
-        require(0 <= offset < 2**63 and 1 <= limit <= 16384 and (attempt_id is None or 0 < len(attempt_id) <= 256), "INVALID_REQUEST", "Use a bounded action result page")
+        require(0 <= offset < 2**63 and 1 <= limit <= 1048576 and (attempt_id is None or 0 < len(attempt_id) <= 256), "INVALID_REQUEST", "Use a bounded action result page")
         def read(db):
             if attempt_id is None:
                 return one(db, "SELECT a.id,a.run_id,a.name,a.state,a.error_json,substr(a.result_json,?,?) AS text,length(a.result_json) AS characters,"
@@ -296,7 +320,7 @@ class Runs:
                 artifacts = await self.host.artifacts.for_run(run_id)
                 return RunResult(text=response["text"] if value.get("origin") == "program" else response["message"].get("content") or "", data=response["data"] if value.get("origin") == "program" else value["data"],
                                  artifacts=tuple(Artifact.model_validate(item) for item in artifacts), finish_reason=value["finish_reason"],
-                                 usage=await self.host.budgets.get(row["budget_id"]), content_view=response.get("content_view"))
+                                 usage=await self.host.budgets.for_run(row), content_view=response.get("content_view"))
             if row["state"] in {"failed", "cancelled", "needs_review"}:
                 self.host.notify_run(run_id)
                 error = json.loads(row["error_json"]) if row["error_json"] else {"code": "RUN_" + row["state"].upper(), "safe_message": "Run did not complete"}
@@ -322,13 +346,14 @@ class Runs:
         if previous:
             require(previous["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Resume key has different input")
             return run
+        require(run["execution_version"] == PROTOCOL_VERSION, "EXECUTION_VERSION_UNSUPPORTED", "The original checkpoint is archived; inspect its receipts and submit explicitly scoped new work")
         require(run["state"] in {"waiting", "failed", "needs_review"} and run["cancel_requested_at"] is None, "RUN_NOT_RESUMABLE", "Choose a waiting or recoverable run")
         require(not one(db, "SELECT 1 FROM actions WHERE run_id=? AND (state='needs_review' OR state='dispatched' AND side_effects!='none') LIMIT 1", (run_id,)),
                 "OUTCOME_UNCERTAIN", "Inspect unresolved side effects before resuming")
         instance = need(db, "instances", run["instance_id"])
         if source_message_id:
             message = need(db, "messages", source_message_id)
-            require(message["session_id"] == instance["session_id"] and message["purpose"] == "reply", "MESSAGE_MISMATCH", "Reply must belong to the original session")
+            require(message["session_id"] == instance["session_id"], "MESSAGE_MISMATCH", "Reply must belong to the original session")
         snapshot = AgentDefinition.model_validate_json(run["config_json"])
         latest = one(db, "SELECT execution_limits_json FROM run_resumptions WHERE run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,))
         prior_limits = json.loads(latest["execution_limits_json"]).get("effective", {}) if latest else {}
@@ -343,13 +368,11 @@ class Runs:
                 changes["model"] = current.manager.model if instance["role"] == "manager" else current.model
             if refresh_capabilities:
                 db.execute("DELETE FROM run_mcp_bindings WHERE run_id=?", (run_id,))
-                workspace = current.workspace
-                if workspace.project is None:
-                    project = need(db, "projects", instance["project_id"])
-                    workspace = workspace.model_copy(update={"project": Path(project["folder"]) if project["folder"] else None})
                 capability = manager_snapshot(current) if instance["role"] == "manager" else current
+                project = need(db, "projects", instance["project_id"])
+                workspace = capability.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
                 changes.update(instructions=capability.instructions, tools=capability.tools, skills=capability.skills,
-                               context=capability.context, workspace=capability.workspace if instance["role"] == "manager" else workspace,
+                               context=capability.context, workspace=workspace,
                                communication=capability.communication)
             snapshot = snapshot.model_copy(update=changes)
             if refresh_capabilities and instance["role"] == "main":

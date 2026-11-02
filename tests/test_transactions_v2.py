@@ -113,7 +113,7 @@ class TransactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_parallel_model_reservations_cannot_overspend_the_shared_root_budget(self):
         self.model.target = 7
-        budget = await self.host.budgets.create("p", Budget(max_model_calls=7, max_input_tokens=100000, max_output_tokens=10000), "shared", session_id=self.session["id"])
+        budget = await self.host.budgets.create("p", Budget(max_model_calls=7, max_total_input_tokens=100000, max_output_tokens=10000), "shared", session_id=self.session["id"])
         instances = await asyncio.gather(*(self.host.instances.create(self.session["id"], "worker", name="Worker " + str(index)) for index in range(32)))
         accepted = await self.simultaneous([lambda instance=instance: self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Shared work", idempotency_key="work", budget_id=budget["id"])) for instance in instances])
         self.assertFalse(any(isinstance(value, Exception) for value in accepted))
@@ -134,26 +134,17 @@ class TransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ledger["provider_reported"]["output_tokens"], 21)
         self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM actions WHERE name='model.complete'")["count"]), 7)
 
-    async def test_concurrent_message_fanout_rolls_back_body_delivery_runs_budget_and_events(self):
+    async def test_concurrent_message_notifications_never_create_work_and_keep_partial_failures(self):
         first, second = await asyncio.gather(*(self.host.instances.create(self.session["id"], "worker", name=name) for name in ("First", "Second")))
-        original = self.host.runs._submit
-        def injected(db, spec, **options):
-            message = one(db, "SELECT body FROM messages WHERE id=?", (options.get("source_message_id"),))
-            if spec.instance_id == second["id"] and message["body"] == "fault":
-                raise RuntimeFault("FAULT_INJECTED", "Second child acceptance failed inside the transaction")
-            return original(db, spec, **options)
-        with patch.object(self.host.runs, "_submit", side_effect=injected):
-            results = await self.simultaneous([lambda index=index: self.host.messages.send(MessageSpec(session_id=self.session["id"], recipients=(first["id"], second["id"]),
-                content="fault" if index % 2 == 0 else "valid", purpose="request", idempotency_key="message-" + str(index))) for index in range(16)])
-        self.assertEqual(sum(isinstance(value, RuntimeFault) and value.code == "FAULT_INJECTED" for value in results), 8)
-        self.assertEqual(sum(not isinstance(value, Exception) for value in results), 8)
+        board = (await self.host.boards.list("p", session_id=self.session["id"]))["items"][0]["id"]
+        with patch.object(self.host.runs, "_submit", side_effect=AssertionError("Messages must not accept work")):
+            results = await self.simultaneous([lambda index=index: self.host.messages.send(MessageSpec(board_id=board,
+                mentions=(first["id"], "missing" if index % 2 == 0 else second["id"]), content="Original body", idempotency_key="message-" + str(index))) for index in range(16)])
+        self.assertFalse(any(isinstance(value, Exception) for value in results))
+        self.assertEqual(sum(bool(value["issues"]) for value in results), 8)
         counts = await self.host.store.call(lambda db: {table: one(db, "SELECT COUNT(*) AS count FROM " + table)["count"] for table in ("messages", "deliveries", "runs", "budgets")})
-        self.assertEqual(counts, {"messages": 8, "deliveries": 16, "runs": 16, "budgets": 8})
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM messages WHERE body='fault'")["count"]), 0)
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM events WHERE kind='run.accepted'")["count"]), 16)
-        self.model.release.set()
-        run_ids = await self.host.store.call(lambda db: rows(db, "SELECT id FROM runs"))
-        await asyncio.gather(*(self.host.runs.result(value["id"], timeout=10) for value in run_ids))
+        self.assertEqual(counts, {"messages": 16, "deliveries": 24, "runs": 0, "budgets": 0})
+        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM events WHERE kind='message.accepted'")["count"]), 16)
 
     async def test_wal_reader_retains_a_consistent_snapshot_while_domain_transactions_commit(self):
         reader = apsw.Connection(str(self.host.root / "oea.sqlite"), flags=apsw.SQLITE_OPEN_READONLY)
@@ -211,7 +202,7 @@ class TransactionTests(unittest.IsolatedAsyncioTestCase):
         self.host.model_api = before
         definition = self.definition.model_copy(update={"tools": Tools(functions=("commit",))})
         await self.host.agents.save(definition, expected_revision=1)
-        budget = await self.host.budgets.create("p", Budget(max_model_calls=80, max_input_tokens=1000000, max_output_tokens=10000), "recovery-root", session_id=self.session["id"])
+        budget = await self.host.budgets.create("p", Budget(max_model_calls=80, max_total_input_tokens=1000000, max_output_tokens=10000), "recovery-root", session_id=self.session["id"])
         instances = await asyncio.gather(*(self.host.instances.create(self.session["id"], "worker", name="Recovery " + str(index)) for index in range(20)))
         original_execute = RunContext.execute_tools
         reached, all_reached, observed = [], asyncio.Event(), 0

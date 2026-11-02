@@ -146,7 +146,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         session = await self.host.sessions.create("p")
         instance = await self.host.instances.create(session["id"], "worker", name="one")
         async with self.connected():
-            message = value(await self.call("messages.send", {"spec": {"session_id": session["id"], "recipients": [instance["id"]], "content": "Information", "idempotency_key": "message"}}))
+            boards = value(await self.call("boards.list", {"project_id": "p", "session_id": session["id"]}))
+            message = value(await self.call("messages.send", {"spec": {"board_id": boards["items"][0]["id"], "mentions": [instance["id"]], "content": "Information", "idempotency_key": "message"}}))
         self.assertEqual(message["source"]["kind"], "leader")
         self.assertEqual(message["source"]["name"], "example-agent")
 

@@ -141,14 +141,32 @@ class ModelAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.usage, usage)
         self.assertEqual(len(self.requests), 1)
 
-    async def test_ignored_reasoning_does_not_consume_retained_output_bound(self):
+    async def test_continuation_reasoning_is_bounded_and_partial_state_is_retained(self):
         reasoning = frame({"choices": [{"delta": {"reasoning_content": "r" * (600 * 1024)}}]})
         self.assertGreater(len(reasoning) * 4, 2 * 1024 * 1024)
         stream = Stream([reasoning] * 4 + [frame({"choices": [{"delta": {"content": "Done"}, "finish_reason": "stop"}]}), b"data: [DONE]\n\n"])
         api = await self.make(stream)
-        result = await api.complete(self.model(), [{"role": "user", "content": "Read"}])
-        self.assertEqual(result.text, "Done")
+        with self.assertRaises(ModelFailure) as caught:
+            await api.complete(self.model(), [{"role": "user", "content": "Read"}])
+        self.assertEqual(caught.exception.code, "MODEL_RESPONSE_TOO_LARGE")
+        self.assertEqual(len(caught.exception.partial.continuation["reasoning_content"]), 3 * 600 * 1024)
         self.assertTrue(stream.closed)
+
+    async def test_reasoning_and_signed_tool_state_survive_a_followup_request(self):
+        signature = {"google": {"thought_signature": "opaque-signature"}}
+        detail = {"type": "reasoning.encrypted", "data": "opaque", "index": 0}
+        stream = Stream([frame({"choices": [{"delta": {"reasoning_content": "part one ", "reasoning_details": [detail]}}]}),
+            frame({"choices": [{"delta": {"reasoning_content": "part two", "tool_calls": [{"index": 0, "id": "call", "function": {"name": "inspect", "arguments": "{}"}, "extra_content": signature}]}, "finish_reason": "tool_calls"}]})])
+        api = await self.make(stream)
+        model = self.model().model_copy(update={"thinking": "enabled"})
+        result = await api.complete(model, [{"role": "user", "content": "Inspect"}])
+        self.assertEqual(result.continuation, {"reasoning_content": "part one part two", "reasoning_details": [detail]})
+        self.assertEqual(result.tool_calls[0]["extra_content"], signature)
+        from oea.models.request import prepare_request
+        assistant = {"role": "assistant", "content": None, "tool_calls": list(result.tool_calls), **result.continuation}
+        request = json.loads(prepare_request(model, [assistant, {"role": "tool", "tool_call_id": "call", "content": "done"}]).content)
+        self.assertEqual(request["messages"][0], assistant)
+        self.assertEqual(request["thinking"], {"type": "enabled"})
 
     async def test_high_output_request_accepts_large_decoded_text_without_lowering_tokens(self):
         # Repeated whitespace can occupy many bytes while using few provider tokens.

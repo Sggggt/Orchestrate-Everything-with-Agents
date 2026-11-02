@@ -88,7 +88,28 @@ def unresolved(group):
             continue
         if isinstance(value, dict):
             state, error = value.get("state"), value.get("error")
-            if (isinstance(state, str) and state in {"intent", "dispatched", "needs_review"}
+            if (isinstance(state, str) and state in {"intent", "dispatched", "needs_review", "starting", "running", "unknown"}
                 or isinstance(error, dict) and error.get("code") == "OUTCOME_UNCERTAIN" or value.get("unresolved_actions")):
                 return True
     return False
+
+
+def activity_group(group, records):
+    """Deterministic fallback evidence; every omitted body retains its original link."""
+    evidence = []
+    for message, row in zip(group, records):
+        item = {"history_id": row["id"], "after": row["position"] - 1, "role": message["role"]}
+        if message.get("tool_calls"):
+            item["calls"] = [{"id": call["id"], "tool": call["function"]["name"]} for call in message["tool_calls"]]
+        if message["role"] == "tool":
+            item["tool_call_id"] = message["tool_call_id"]
+            try:
+                value = json.loads(message["content"])
+            except (ValueError, TypeError):
+                value = {}
+            if isinstance(value, dict):
+                item["result"] = {key: value[key] for key in ("isError", "state", "exit_code", "termination", "error", "artifact", "artifact_id", "path", "sha256", "deleted", "output_refs", "reference", "content_view") if key in value}
+        if message.get("content"):
+            item["excerpt"] = str(message["content"])[:320]
+        evidence.append(item)
+    return {"role": "user", "content": "Persisted activity after working memory (evidence only; use read_history for full records):\n" + encode(evidence)}

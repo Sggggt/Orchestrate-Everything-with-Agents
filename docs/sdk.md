@@ -1,8 +1,10 @@
 # Python SDK
 
-OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; version 2 rejects legacy runtime contracts.
+OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; protocol 3 rejects old runtime contracts.
 
-Install OEA in the Python environment that runs your application using the [SDK installation steps](getting-started.md#sdk-installation). The recommended `uv tool install` platform setup provides the global `oea` command in an isolated tool environment; it does not make the package importable in another Python environment.
+Saved files can remain unpublished. Use `client.call("artifacts.candidates", {"run_id": run_id, "project_id": project_id})` to inspect patch receipts, or explicitly select `source="outputs"` to observe a run's output directory. `artifacts.candidate` can compare a saved candidate with its current source using `check_source=True`. These operations retain provenance and report changes without invoking a model or declaring acceptance; see [file candidates](artifacts/README.md#未发布文件候选).
+
+Install OEA in the Python environment that runs your application using the [SDK installation steps](getting-started.md#sdk-installation). Installing the CLI in one environment does not make the package importable in another interpreter.
 
 ## A standalone Agent
 
@@ -27,7 +29,7 @@ with Agent(
     print(result.artifacts)
 ```
 
-The project is a read-only input by default. Work and per-run output directories live under the external state directory unless explicitly configured. File tools and commands receive the same real paths. Commands run with the host user's permissions; file grants are not an operating-system sandbox. Selecting command tools in an owned standalone Agent enables its local command host. An existing shared host must also have enabled commands explicitly.
+The project is a read-only input by default. Work and per-run output directories live under the external state directory unless explicitly configured. File tools and commands receive the same real paths. Commands, patch workers and file capture use the same native OS policy. The default is `sandbox="native"`; `trusted` explicitly opts into host-user execution without isolation. Selecting command tools in an owned standalone Agent enables its local command host. An existing shared host must also have enabled commands explicitly.
 
 Construction and entering the context do not start a host. First use initializes the owned host, model transport, graph saver, and connections. Closing the Agent closes resources it owns and preserves state and partial files. Reopening the same state directory recovers the saved instance; a second host cannot own that directory concurrently.
 
@@ -115,7 +117,7 @@ async def inspect(data_dir):
         return await client.call("runs.inspect", {"run_id": "<run-id>"})
 ```
 
-The client reads loopback connection metadata and its local credential. It verifies protocol `2.0` and never starts a host. It cannot silently connect through an old response view. Pass an open client to `Agent(client=client, project_id=..., session_id=...)` to use an existing collaboration space. Python function implementations must be registered in the host process before binding them remotely.
+The client reads loopback connection metadata and its local credential. It verifies protocol `3.0` and never starts a host. It cannot silently connect through an old response view. Pass an open client to `Agent(client=client, project_id=..., session_id=...)` to use an existing collaboration space. Python function implementations must be registered in the host process before binding them remotely.
 
 Model, tools, Skills, workspace, memory, execution, and communication use `AgentDefinition.model_json_schema()`, also available through `agents.schema`. SDK, MCP, and Web consume that shared schema. Secret values are managed separately from configuration.
 
@@ -123,33 +125,43 @@ Model, tools, Skills, workspace, memory, execution, and communication use `Agent
 
 `host.budgets.create(project_id, Budget(...), idempotency_key, session_id=...)` creates an explicit shared cost ledger. An omitted session allows work in that project to share the budget across sessions. A run can select it with `RunSpec.budget_id`, or `instance.arun(..., budget_id=...)`. Child work inherits its parent's ledger. A workflow and all of its subgraphs, managers, instances, summaries, and repairs keep that same ownership. This budget does not limit execution slots.
 
-Usage separates provider-reported actual tokens, in-flight reservations, and estimates where the provider did not report usage. Cached input remains part of input tokens; billing currency requires provider pricing. A changed instance name does not reset an inherited budget.
+Usage separates provider reports, estimates, reservations and unresolved calls. Cache reads/writes remain part of full input and have their own prices in `ModelPricing`. `max_total_input_tokens` is an optional total-input limit; `max_uncached_input_tokens` is separate. Configured `max_cost` constrains estimated dispatch commitments in one currency. Provider reports may correct an estimate; unknown fields never become fabricated zero usage.
+
+`RunResult.usage` contains `run_direct`, `root_work` and `shared_budget`. Direct usage does not grow with siblings sharing a ledger. Finalization and recovery reserves stay inside the original budget. A large request must receive finalization guidance before drawing on that reserve; local preparation does not create another provider attempt. Saved files and partial results survive a hard boundary.
+
+## Context and summary recovery
+
+The working input target is separate from the model's maximum window. Large sources remain accessible by references and selected ranges; repeated text is removed from the active projection before incremental summary.
+
+`ContextPolicy.summary` is a `SummaryPolicy`: summary generation limit, maximum attempts, thinking and reasoning settings are separate from the memory body target. `AgentDefinition.summary_model` optionally selects an explicitly authorized summary configuration. Provider settings must be supported by that provider.
+
+Summary recovery is bounded, reuses original intent receipts and does not resend an unknown external result. Empty length-limited output may use a larger generation allowance. If no valid smaller summary is obtained, the previous memory plus every later durable fact/reference remains available. An input that still cannot fit suspends the original graph instead of silently dropping facts or rerunning the task.
 
 Use `UsePolicy(tools=CapabilityUse(allowed=(...), required=(...)), skills=...)` on a run or an Agent/map node. `allowed` narrows saved and current grants. `required` is checked against successful action receipts or persisted Skill loads before delivery. It cannot grant an unbound tool. Empty `allowed` excludes all capabilities in that group; `None` uses the existing bindings.
 
 `agents.check(agent_id, project_id=...)` inspects saved configuration without making model or tool calls. It reports main and manager model credentials independently, current tool grants, executable lookup and a workspace path preview that creates no directories. A missing manager credential cannot fall back to the main credential. These observations establish configuration readiness only; model connectivity, tool execution and task delivery require their own actual receipts.
 
-## Messages and departmental managers
+## Boards, inboxes and optional managers
 
-Messages name their actual purpose. `inform` and `report` persist information without starting inference. `request` accepts explicit work under one root budget. `reply` continues the original waiting run or enters its next safe input boundary.
+Messages contain free-form text. Select a board and an original key; replies, mentions and evidence references are optional:
 
 ```python
 from oea import MessageSpec
 
+board = await host.boards.create(project_id, "Review notes", session_id=session_id)
 receipt = await host.messages.send(MessageSpec(
-    session_id=session_id,
-    recipients=("instance:" + instance_id,),
-    purpose="inform",
+    board_id=board["id"],
     content="The assigned source references are ready.",
+    mentions=(instance_id,),
     idempotency_key="source-notice-001",
 ))
 ```
 
-Receivers may be instance IDs, `department:<agent-id>`, or `all`. The recipient set freezes on acceptance. Text mentions do not create work. A new request can supply an explicit `budget_id`; related work supplies its original root instead. Replies identify `reply_to` or `target_run_id`, and never create another budget. Inbox acceptance, start, input application, completion, and the user's read position are separate facts.
+The host derives the actual sender. A valid body remains saved when an optional mention or business reference cannot be resolved; inspect receipt issues and delivery results. Private inboxes use explicit reader grants. Mentions do not widen an audience or grant permissions.
 
-Direct sessions start no manager. Enable collaboration explicitly with `sessions.set_mode(session_id, "collaborative", expected_epoch)`, then address a configured department. `AgentDefinition.manager` owns its model, credentials, instructions, communication, and context settings. Instances inherit the saved main configuration. A manager has restricted instance, assignment, evidence, communication, wait, and cancellation tools; it has no business command tools or administrator client.
+Ordinary messages create no Run, budget or automatic model wakeup. Use `runs.submit` or an authorized `assign_work` for new work and the original resume operation for an existing wait. Directed messages enter existing model-input boundaries. `list_members` and `list_boards` expose reachable identities.
 
-A manager turn can end while instances continue. Cancel the root work to request cancellation along actual ownership. `runs.get` then reports the cancellation scope separately from a completed coordination turn. Switching back to direct mode changes subsequent manager authorization and leaves accepted instance work intact.
+The manager role is optional and has its own model/credentials. It inherits tools, Skills, workspace and execution unless explicitly narrowed. Assignment still requires `Communication.can_request`, current partner scope and original root ownership. A role name does not grant administrator access. A manager turn may finish while instances continue; root cancellation follows actual ownership.
 
 Explicit `context_refs` share read access to versioned evidence. They do not grant execution of the source tool. `contexts.revoke` withdraws the selected shared read grant; replaying an old send receipt cannot restore it. `read_artifact` reads UTF-8 evidence owned by the instance or currently granted related work, using bounded byte offsets. The controller can read a project-scoped page with `artifacts.read`.
 
@@ -159,7 +171,7 @@ Artifacts retain their project, optional session and actual origin: `run` public
 
 Pass `artifact_ids=(...)` in `RunSpec` or `Agent.arun` to assign uploaded or imported evidence to new work. Assignment verifies the project and session before accepting a Run. Instructions expose names and references, while `read_artifact` loads text only when needed. Mentioning an artifact ID in a message or goal grants no access. Managers can forward only evidence they can currently read through `assign_work`; child work retains the original root budget. An instance retains previously accepted conversation evidence, while a new read of the managed original still requires its owning or assigned grant.
 
-A bound `read_image` tool accepts either a workspace `path` or an assigned `artifact_id`. Both routes validate the actual PNG/JPEG/WebP content and retain the existing image and encoded-request limits. Assigned images keep their upload/import origin; reading does not republish them under a fabricated Run owner. Original references and current grants are checked again before image bytes enter a model request.
+A bound `view_image` tool accepts either a workspace `path` or an assigned `artifact_id`. Both routes validate the actual PNG/JPEG/WebP content and retain the existing image and encoded-request limits. Assigned images keep their upload/import origin; reading does not republish them under a fabricated Run owner. Original references and current grants are checked again before image bytes enter a model request.
 
 ## Retained model attempts
 
@@ -253,8 +265,12 @@ Keep one stable `consumer_id` per conversation. Discover one area/action, then c
 
 When instances intentionally share a writable file, the host serializes file-tool revision checks and replacements for that canonical path. A stale `expected_sha256` returns `REVISION_CONFLICT`; different files remain independent. This protection applies to cooperating file tools in one host. Shell programs and external editors use operating-system file access and can overwrite those files independently. Shared read/modify/write commands need an explicit application lock or a designated writer; SQLite transactions and atomic rename alone do not make arbitrary shell edits transactional.
 
-`Execution(program=(...))` runs an explicitly configured program under the host's command grant. The v2 SDK in `oea.stdio` exchanges UTF-8 JSONL on stdout and writes diagnostics to stderr. A process receives only its Run identity, input, workspace paths, capability descriptions, and explicit checkpoint. It calls the same authorized tools and model through its Run context; it receives no administrator client or model credentials.
+`Execution(program=(...))` runs an explicitly configured program under the host's command grant. The protocol-3 SDK in `oea.stdio` exchanges UTF-8 JSONL on stdout and writes diagnostics to stderr. A process receives only its Run identity, input, workspace paths, capability descriptions, and explicit checkpoint. It calls the same authorized tools and model through its Run context; it receives no administrator client or model credentials.
 
-Programs declare their implemented cancellation and suspension capabilities. They return a completed or suspended boundary, with a small JSON checkpoint when needed. The host persists a terminal receipt before acknowledging it. A resumed suspension starts a new process from that checkpoint and the original reply; it cannot depend on previous process memory. Managed process termination confirms local process cleanup, while any unresolved external tool action remains pending review. Processes retain host user permissions.
+Programs declare their implemented cancellation and suspension capabilities. They return a completed or suspended boundary, with a small JSON checkpoint when needed. The host persists a terminal receipt before acknowledging it. A resumed suspension starts a new process from that checkpoint and the original reply; it cannot depend on previous process memory. Managed process termination confirms local process cleanup, while any unresolved external tool action remains pending review. Native programs use the same OS policy as local commands. Only explicitly trusted mode retains unrestricted host-user execution.
 
 Reader cursors are scoped to the client's stable `consumer_id`. `sessions.unread` aggregates group-message and instance-reply counts; `instances.mark_read` advances only the selected instance. Use `PlatformClient(..., agent_name="example-agent")` to attribute new external messages. This display name grants no capability or authority.
+
+## Direct downloads
+
+`PlatformClient.download_artifact(artifact_id, destination, project_id=...)` streams and verifies the saved content hash. `download_command(run_id, command_session_id, stream, destination, project_id=...)` reads a byte-bounded snapshot of the retained stdout or stderr. Neither operation overwrites a local file or reexecutes work. `runs.command` also provides authenticated download URLs for browser clients.

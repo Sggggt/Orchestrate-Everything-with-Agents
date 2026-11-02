@@ -16,7 +16,7 @@ LOCAL_DOCUMENTS = {"AGENTS.md", "PROJECT_SPEC.md"}
 RETIRED_PATHS = {"src/ma_runtime", "agent", "src/oea/a2a.py", "src/oea/context.py", "src/oea/execution.py", "src/oea/workflows.py"}
 GENERATED = {
     "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache",
-    ".mypy_cache", ".ruff_cache", "dist", "build", "runtime-data", ".runtime",
+    ".mypy_cache", ".ruff_cache", "dist", "build", "target", "runtime-data", ".runtime",
     ".oea", ".multi-agent", "env", ".tox", ".nox", ".hypothesis",
     ".ipynb_checkpoints", ".nyc_output", "coverage", "htmlcov", ".cache",
     "test-results", "playwright-report", "blob-report", ".idea", ".vscode",
@@ -36,11 +36,12 @@ ARTIFACT_PATTERNS = (
     "*.key", "*.p12", "*.pfx", "*.p8", "*.webm", "*.trace", "*.zip",
     "*.tar", "*.tar.gz", "*.tgz", "*.7z", "*.rar", "*.pyc", "*.pyo",
     "*.bak", "*.orig", "*.rej", "*.local.md", "*.swp", "*.swo", "*~",
+    "*.exe", "*.dll", "*.so", "*.rlib", "*.rmeta", "*.o", "*.obj", "*.a", "*.pdb", "*.whl",
 )
 TEST_DATA_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml",
                       ".parquet", ".arrow", ".feather", ".pkl", ".pickle", ".npy", ".npz", ".xls", ".xlsx"}
 TEXT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".css", ".svg", ".html", ".md", ".toml", ".yaml", ".yml", ".txt", ".ps1", ".cmd", ".sql",
-                 ".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".xml", ".ini", ".cfg", ".env", ".ipynb"}
+                 ".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".xml", ".ini", ".cfg", ".env", ".ipynb", ".rs", ".lock"}
 PRIVATE = {
     "personal Windows path": re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+(?!Public\b|<)[^\\/\s\"']+", re.I),
     "personal Unix path": re.compile(r"/(?:home|Users)/[a-zA-Z0-9_.-]+/"),
@@ -143,8 +144,64 @@ def git_hygiene_issues(root=ROOT):
     return errors
 
 
+def archive_issues(path):
+    """Check exact release contents, with one manifest-listed native component."""
+    import hashlib
+    import json
+    import tarfile
+    import zipfile
+    errors = []
+    if path.suffix == ".whl":
+        with zipfile.ZipFile(path) as archive:
+            contents = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
+        native = "oea/_native/"
+        manifest_path = native + "manifest.json"
+        if manifest_path not in contents:
+            return [f"{path.name}: missing native runtime manifest"]
+        manifest = json.loads(contents[manifest_path])
+        if manifest.get("protocol") != 1 or manifest.get("sdk") != "1.0.1":
+            errors.append(f"{path.name}: incorrect native protocol or SDK")
+        expected_binary = "oea-sandbox.exe" if manifest.get("os") == "windows" else "oea-sandbox"
+        if manifest.get("binary") != expected_binary:
+            errors.append(f"{path.name}: unexpected native executable")
+        allowed = {manifest_path}
+        for item in [{"path":manifest["binary"],"sha256":manifest["sha256"]}, *manifest["licenses"]]:
+            name = native + item["path"]
+            allowed.add(name)
+            if name not in contents or hashlib.sha256(contents[name]).hexdigest() != item["sha256"]:
+                errors.append(f"{path.name}: native asset hash mismatch: {name}")
+        if not manifest["licenses"] or any(name.startswith(native) and name not in allowed for name in contents):
+            errors.append(f"{path.name}: native assets differ from the approved manifest")
+    else:
+        with tarfile.open(path) as archive:
+            contents = {"/".join(member.name.split("/")[1:]): archive.extractfile(member).read()
+                        for member in archive.getmembers() if member.isfile()}
+        allowed = set()
+        for required in ("native/sandbox/Cargo.toml", "native/sandbox/Cargo.lock", "scripts/build_native.py", "scripts/hatch_native.py"):
+            if required not in contents:
+                errors.append(f"{path.name}: missing source build input: {required}")
+    for name, data in contents.items():
+        relative = Path(name)
+        if relative.name in LOCAL_DOCUMENTS:
+            errors.append(f"{path.name}: local document included: {name}")
+        reason = artifact_reason(relative)
+        if reason and name not in allowed:
+            errors.append(f"{path.name}: {name}: {reason}")
+        if relative.suffix.lower() in TEXT_SUFFIXES:
+            for issue in content_issues(data.decode("utf-8-sig"), skill="codex_skill/" in name):
+                errors.append(f"{path.name}: {name}: {issue} (value withheld)")
+    return errors
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wheel", type=Path, action="append", default=[])
+    parser.add_argument("--sdist", type=Path, action="append", default=[])
+    args = parser.parse_args()
     errors = git_hygiene_issues()
+    for archive in (*args.wheel, *args.sdist):
+        errors.extend(archive_issues(archive))
     files = []
     # Prune Git rather than reading even ignored private history or hooks.
     import os

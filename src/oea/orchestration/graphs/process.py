@@ -45,4 +45,4 @@ def compile_process_graph(checkpointer):
     builder.add_conditional_edges("program", lambda value: value["decision"], {"wait": "wait", "deliver": "deliver"})
     builder.add_edge("wait", "program")
     builder.add_edge("deliver", END)
-    return builder.compile(checkpointer=checkpointer, name="oea-process-v2")
+    return builder.compile(checkpointer=checkpointer, name="oea-process")

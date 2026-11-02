@@ -48,6 +48,8 @@ async def model(state: AgentState, runtime: Runtime[AgentGraphContext]):
     try:
         return await runtime.context.oea.call_model(state)
     except RuntimeFault as error:
+        if error.code in {"CONTEXT_RECOVERY_REQUIRED", "MODEL_CONTEXT_BUDGET"}:
+            return {"decision": "wait", "wait": {"kind": "context", "reason": error.as_dict()}, "context_failure": error.as_dict()}
         if error.code != "MODEL_CONTEXT_REJECTED" or state.get("context_retries", 0):
             raise
         return {"decision": "recover_context", "context_failure": error.as_dict()}
@@ -88,4 +90,4 @@ def compile_agent_graph(checkpointer):
     builder.add_conditional_edges("observe", lambda state: state.get("decision", "model"), {"model": "model", "wait": "wait"})
     builder.add_edge("wait", "model")
     builder.add_edge("deliver", END)
-    return builder.compile(checkpointer=checkpointer, name="oea-agent-v2")
+    return builder.compile(checkpointer=checkpointer, name="oea-agent")

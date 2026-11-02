@@ -35,11 +35,11 @@ class FileModel:
         paths = json.loads(system.split("Real workspace paths: ", 1)[1].split("\n\n", 1)[0])
         observed = [message for message in messages if message["role"] == "tool"]
         if len(observed) == 0:
-            calls = [call("read", "read_file", {"path": str(Path(paths["project_dir"]) / "source.json")})]
+            calls = [call("read", "exec_command", {"argv": [sys.executable, "-B", "-c", "from pathlib import Path; print(Path(" + repr(str(Path(paths["project_dir"]) / "source.json")) + ").read_text(encoding='utf-8'))"]})]
         elif len(observed) == 1:
             source = str(Path(paths["project_dir"]) / "source.json")
             script = "import json; from pathlib import Path; data=json.loads(Path(" + repr(source) + ").read_text(encoding='utf-8')); Path('result.txt').write_text(str(sum(data['values'])),encoding='utf-8')"
-            calls = [call("compute", "run_command", {"argv": [sys.executable, "-B", "-c", script]})]
+            calls = [call("compute", "exec_command", {"argv": [sys.executable, "-B", "-c", script]})]
         elif len(observed) == 2:
             calls = [call("publish", "publish_artifact", {"path": "result.txt", "name": "result.txt"})]
         else:
@@ -90,7 +90,7 @@ class ToolModel:
 
 class CommandModel:
     async def complete(self, model, messages, **options):
-        return Completion(tool_calls=(call("command", "run_command", {"argv": [sys.executable, "-B", "-c", "import time; print('started',flush=True); time.sleep(30)"]}),),
+        return Completion(tool_calls=(call("command", "exec_command", {"argv": [sys.executable, "-B", "-c", "import time; print('started',flush=True); time.sleep(30)"]}),),
                           finish_reason="tool_calls", usage={"prompt_tokens": 40, "completion_tokens": 5})
 
 
@@ -201,7 +201,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Project", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
             model=Model(base_url="https://example.invalid/v1", model="protocol-fixture"),
-            tools=(tools or ToolKit.local(files=False)).bindings, workspace=workspace or Workspace()))
+            tools=(tools or ToolKit.local(files=False)).bindings, workspace=workspace or Workspace(sandbox="trusted", )))
         self.session = await self.host.sessions.create("p", session_id="session")
 
     async def submit(self, name="instance", key="work", text="Complete the assigned work"):
@@ -226,7 +226,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         source.write_text(json.dumps({"values": [2, 3, 5]}), encoding="utf-8")
         original = source.read_bytes()
         model = FileModel()
-        await self.open(model, tools=ToolKit.local(commands=True), workspace=Workspace(project=project))
+        await self.open(model, tools=ToolKit.local(commands=True), workspace=Workspace(sandbox="trusted", project=project))
         handle = await self.submit()
         result = await self.host.runs.result(handle.id, timeout=10)
         self.assertEqual(result.text, "Sum: 10")
@@ -388,7 +388,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 captured.append(process)
                 started.set()
 
-        with patch("oea.workspace.service.OwnedProcessTree", ObservedTree):
+        with patch("oea.stdio.process_tree.OwnedProcessTree", ObservedTree):
             handle = await self.submit()
             await asyncio.wait_for(started.wait(), 10)
             status = await self.host.runs.cancel(handle.id)
@@ -398,7 +398,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(status["stop_confirmed"])
         self.assertFalse(status["in_flight"])
         self.assertIsNotNone(captured[0].returncode)
-        receipt = await self.host.store.call(lambda db: one(db, "SELECT * FROM actions WHERE run_id=? AND name='run_command'", (handle.id,)))
+        receipt = await self.host.store.call(lambda db: one(db, "SELECT * FROM actions WHERE run_id=? AND name='exec_command'", (handle.id,)))
         self.assertEqual(receipt["state"], "completed")
         self.assertTrue(json.loads(receipt["result_json"])["process_stopped"])
 
@@ -442,7 +442,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         handle = await self.submit()
         await asyncio.wait_for(model.ready.wait(), 10)
         context = self.host.active[handle.id]
-        reference = await self.host.contexts.source(context.run, context.instance, "retained evidence", "tool:read_file")
+        reference = await self.host.contexts.source(context.run, context.instance, "retained evidence", "tool:apply_patch")
         arguments = {"reference": reference}
         first = await self.host.tools.invoke(handle.id, "read_context", arguments, "same-read")
         self.assertEqual(first["text"], "retained evidence")
@@ -593,7 +593,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         class ArtifactModel:
             async def complete(self, model, messages, **options):
                 observed = [message for message in messages if message["role"] == "tool"]
-                calls = [call("write", "write_file", {"path": "证据.txt", "content": text})] if not observed else [call("publish", "publish_artifact", {"path": "证据.txt", "name": "证据.txt"})] if len(observed) == 1 else []
+                calls = [call("write", "apply_patch", {"path": "证据.txt", "operation": "add", "content": text})] if not observed else [call("publish", "publish_artifact", {"path": "证据.txt", "name": "证据.txt"})] if len(observed) == 1 else []
                 return Completion(text="Artifact published" if not calls else "", tool_calls=tuple(calls), finish_reason="tool_calls" if calls else "stop", usage={"prompt_tokens": 50, "completion_tokens": 5})
         await self.open(ArtifactModel(), tools=ToolKit.local())
         owner = await self.submit(name="source")
@@ -630,8 +630,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         try:
             await asyncio.wait_for(model.ready.wait(), 10)
             context = self.host.active[related.id]
-            self.assertNotIn("write_file", context.tool_names())
-            self.assertNotIn("run_command", context.tool_names())
+            self.assertIn("apply_patch", context.tool_names())
+            self.assertNotIn("exec_command", context.tool_names())
             read = await self.host.tools.invoke(related.id, "read_artifact", {"artifact_id": artifact.id, "limit": 64}, "related-read")
             self.assertEqual(read["text"], text[:len(read["text"])])
             self.assertGreater(len(read["text"]), 0)
@@ -667,7 +667,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_instance_work_directory_survives_default_workspace_configuration_changes(self):
         model = BarrierModel()
-        await self.open(model, workspace=Workspace(work=self.root / "first-work"))
+        await self.open(model, workspace=Workspace(sandbox="trusted", work=self.root / "first-work"))
         handle = await self.submit()
         await asyncio.wait_for(model.ready.wait(), 10)
         first = await self.host.instances.get(handle.instance_id)
@@ -687,7 +687,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_workspace_configuration_fix_does_not_require_a_new_run_or_instance(self):
         model = FileModel()
-        await self.open(model, tools=ToolKit.local(commands=True), workspace=Workspace(project=self.root / "missing-input"))
+        await self.open(model, tools=ToolKit.local(commands=True), workspace=Workspace(sandbox="trusted", project=self.root / "missing-input"))
         handle = await self.submit()
         with self.assertRaises(RuntimeFault) as caught:
             await self.host.runs.result(handle.id, timeout=10)
@@ -703,7 +703,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.host.runs.get(handle.id))["instance_id"], handle.instance_id)
         self.assertEqual((await self.host.runs.get(handle.id))["budget_id"], handle.budget_id)
 
-    async def test_manager_uses_its_own_model_and_does_not_inherit_the_main_program_or_skills(self):
+    async def test_manager_explicitly_narrows_program_tools_and_skills(self):
         captured = []
 
         class ManagerModel:
@@ -717,7 +717,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         definition["instructions"] = {"system": "PRIVATE_MAIN_INSTRUCTION", "agent_md": ""}
         definition["execution"]["program"] = ["unavailable-business-program"]
         definition["skills"] = [SkillBinding(id="business", path=self.root / "private-skill", required=True).model_dump(mode="json")]
-        definition["manager"] = Manager(model=Model(base_url="https://example.invalid/v1", model="manager-only")).model_dump(mode="json")
+        definition["manager"] = Manager(model=Model(base_url="https://example.invalid/v1", model="manager-only"), tools=__import__("oea").Tools(), skills=(), execution=Execution()).model_dump(mode="json")
         await self.host.agents.save(definition)
         await self.host.store.call(lambda db: db.execute("UPDATE sessions SET mode='collaborative' WHERE id=?", (self.session["id"],)), transaction=True)
         instance = await self.host.instances.create(self.session["id"], "worker", name="manager", role="manager")
@@ -726,7 +726,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured[0][0].model, "manager-only")
         self.assertNotIn("PRIVATE_MAIN_INSTRUCTION", json.dumps(captured[0][1]))
         self.assertNotIn("private-skill", json.dumps(captured[0][1]))
-        self.assertNotIn("run_command", [item["function"]["name"] for item in captured[0][2]])
+        self.assertNotIn("exec_command", [item["function"]["name"] for item in captured[0][2]])
 
     async def test_non_cancellable_call_retains_original_result_then_waits_for_explicit_resume(self):
         model = ToolModel()
@@ -796,7 +796,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
                 super().__init__(process)
                 captured.append(process)
 
-        with patch("oea.workspace.service.OwnedProcessTree", ObservedTree):
+        with patch("oea.stdio.process_tree.OwnedProcessTree", ObservedTree):
             handle = await self.submit()
             with self.assertRaises(RuntimeFault) as caught:
                 await self.host.runs.result(handle.id, timeout=10)

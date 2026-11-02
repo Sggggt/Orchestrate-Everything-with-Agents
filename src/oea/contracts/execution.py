@@ -25,7 +25,8 @@ def resume_limits(value):
 
 
 def agent_steps(execution, budget):
-    return execution.max_steps or (budget["max_model_calls"] * 4 + 16 if execution.graph == "default" else 512)
+    calls = budget["max_model_calls"]
+    return execution.max_steps or (calls * 4 + 16 if calls is not None and execution.graph == "default" else 100000)
 
 
 def step_limit_fault(limit, graph, version, checkpoint, **owner):

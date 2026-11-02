@@ -1,6 +1,6 @@
 # Contributing
 
-Use Python 3.12 or newer. Keep the virtual environment, test temporary directories and generated output outside the checkout. Create and activate an external environment using the [Windows PowerShell](docs/getting-started.md#windows-powershell), [Windows Command Prompt](docs/getting-started.md#windows-cmd), or [Linux / macOS](docs/getting-started.md#linux-macos) instructions, then install in editable mode from the repository root. Start the platform with `oea serve`.
+Use Python 3.12 or newer. Keep the virtual environment, test temporary directories and generated output outside the checkout. Create and activate an external environment using the [Windows PowerShell](docs/getting-started.md#windows-powershell), [Windows Command Prompt](docs/getting-started.md#windows-cmd), or [Linux](docs/getting-started.md#linux-macos) instructions, then install in editable mode from the repository root. Start the platform with `oea serve`.
 
 Use an isolated absolute `OEA_HOME` for development and tests; normal user state lives under `~/.oea/data`. Existing production data is never moved by installing a package or changing this variable. Keep `PYTHONDONTWRITEBYTECODE=1` set when using editable source.
 
@@ -17,4 +17,4 @@ As an optional Windows convenience alternative, `Install-OEA.ps1 -Editable` prep
 
 Keep SDK, shared operations, CLI/MCP, browser and relevant module documentation consistent. Add tests for observable regressions. Preserve project ownership, revision checks, receipts and unknown-outcome handling. Code modules and matching interface documents are indexed in [docs/modules.md](docs/modules.md).
 
-Do not publish credentials, personal paths, business data, generated inputs or outputs, logs, populated state, captures or development context. Build outside the checkout with `python -B -m build --outdir EXTERNAL_BUILD_DIRECTORY`; inspect the actual wheel and source archive before distribution. Preserve the project license and applicable dependency licenses.
+Do not publish credentials, personal paths, business data, generated inputs or outputs, logs, populated state, captures or development context. For release builds, prepare the [native component](docs/native/README.md#build-and-package) and set `OEA_NATIVE_ASSETS` to its staged assets directory. Build outside the checkout with `python -B -m build --outdir EXTERNAL_BUILD_DIRECTORY`; inspect the actual wheel and source archive before distribution. Preserve the project license and applicable dependency licenses.

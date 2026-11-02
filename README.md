@@ -12,7 +12,7 @@ Orchestrate Everything with Agents is a lightweight multi-agent development and 
 ## What you can build
 
 - **Personal Agent workspaces.** Organize Agents, conversations, instructions and skills by project.
-- **Your own execution logic.** Use a model Agent, a v2 Python process Agent, or a registered Python graph. LangGraph drives Agent and business execution.
+- **Your own execution logic.** Use a model Agent, a protocol-3 Python process Agent, or a registered Python graph. LangGraph drives Agent and business execution.
 - **Independent parallel instances.** Reuse configurations with separate contexts, stable work directories, ordered results and cancellation along actual ownership.
 - **Reusable workflows.** Compose Agent, map, condition, template, function, subgraph, wait and end nodes, including loops and parallel joins. Every workflow belongs to one project.
 - **Tools and work artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and keep session files with source attribution and downloadable references.
@@ -20,28 +20,22 @@ Orchestrate Everything with Agents is a lightweight multi-agent development and 
 - **Durable local execution.** Keep task receipts, checkpoints, run history and backups outside the source tree, with explicit cancellation and uncertain-outcome handling.
 - **MCP control.** Connect a compatible client through two compact tools and a focused Codex skill. The browser remains available for configuration and observation.
 
-The frontend is served directly from local assets, with no build step. Saved Agent settings, group messages, durable receipts, complete results and artifacts share the same services as the SDK. Model configuration and credentials are separate for main and manager roles.
+The frontend is served directly from local assets, with no build step. Saved Agent settings, group messages, durable receipts, complete results and artifacts share the same services as the SDK. An optional manager has an independent model and credentials; all roles use the same capability types.
 
 ## Run locally
 
-The recommended platform installation uses [uv](https://docs.astral.sh/uv/getting-started/installation/) on Windows, Linux and macOS. Download or clone this source repository, open its root in a terminal, and install OEA as a command-line tool:
+Use Python 3.12+ and a prebuilt wheel matching Windows x64 or Linux x64. Normal installation needs no Rust compiler. Replace the placeholder below with the release wheel's full filename:
 
 ```sh
-uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
-uv tool update-shell
+python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+oea serve --allow-commands
 ```
 
-Reopen your terminal, then run this from any directory:
+Open the printed browser URL; the first-launch default is **http://127.0.0.1:8890**. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for system prerequisites and source development.
 
-```sh
-oea serve
-```
+Configure project directory/network defaults, then an Agent's model, credentials and capabilities. Start with one capable Agent and add independent instances when the work needs separate context or responsibility. Managers are optional; main and summary models can be configured independently.
 
-uv manages an isolated Python environment and exposes the `oea` command without manual environment activation. OEA requires Python 3.12+; the command selects Python 3.12, which uv can download if needed. See [quick installation](docs/getting-started.md#quick-install). To import OEA in Python code, use the [SDK environment instructions](docs/getting-started.md#sdk-installation) for Windows, Linux or macOS. Windows users can optionally use the [convenience scripts](docs/getting-started.md#windows-shortcuts).
-
-Open the URL printed by `oea serve`; the first-launch default is **http://127.0.0.1:8890**. The loopback page establishes a local authenticated browser session. Keep runtime state outside source repositories and synchronized folders.
-
-Create a project, configure an Agent and open a session. Save endpoint, model and credential through Agent settings. Keys stay in local secret storage. `--allow-commands` explicitly enables configured local commands and process Agents with host user permissions. Startup creates no demonstration work.
+Local tools default to the [native sandbox](docs/native/README.md): PSEC on Windows and Bubblewrap on Linux. Unavailable capabilities fail explicitly. Commands and process Agents also require the host's `--allow-commands` grant. Explicit `trusted` mode provides no OS isolation. Startup creates no demonstration work or model calls.
 
 ## Orchestrate with Python
 
@@ -89,10 +83,10 @@ Read the **[User Guide](docs/user-guide.md)** for concepts, a first task, browse
 
 [Documentation index](docs/README.md) · [Getting started](docs/getting-started.md) · [SDK](docs/sdk.md) · [Workflows](docs/workflows.md) · [MCP and skills](docs/mcp.md) · [API](docs/api.md) · [Architecture](docs/architecture.md) · [Module interfaces](docs/modules.md) · [Brand](docs/brand.md)
 
-Runtime state belongs on a local disk outside Git repositories and synchronized folders. Connect to an existing host with `PlatformClient`; one Host owns each state directory. Agents are trusted local programs, and managed subprocesses are not an OS sandbox. Context, action receipts and native graph checkpoints retain their own data ownership during recovery.
+Runtime state belongs on a local disk outside Git repositories and synchronized folders. Connect to an existing host with `PlatformClient`; one Host owns each state directory. Native commands and process Agents use the configured sandbox; explicit trusted execution and in-process function tools run with host authority. Context, action receipts and native graph checkpoints retain their own data ownership during recovery.
 
 ## Contributing and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and [SECURITY.md](SECURITY.md) for sensitive reports. The repository includes generic automated contract tests and source fixtures, with no populated workspace or generated test output.
 
-Licensed under [MIT](LICENSE). Version 2 uses the `oea` package, CLI and protocol. Upgrade existing state through an explicit offline migration into a new directory.
+Licensed under [MIT](LICENSE). OEA 3.0.0 uses the `oea` package and CLI with protocol 3.0. Upgrade existing state through an explicit offline migration into a new directory.

@@ -9,7 +9,7 @@ from typing import Literal
 
 import apsw
 
-from oea.contracts.configuration import AgentDefinition, CapabilityUse, UsePolicy
+from oea.contracts.configuration import AgentDefinition, CapabilityUse, UsePolicy, Workspace, ProjectWorkspace
 from oea.contracts.domain import RunHandle, RunSpec
 from oea.catalog import reading
 from oea.contracts.errors import RuntimeFault, require
@@ -30,21 +30,25 @@ class Projects:
 
     @staticmethod
     def view(row):
-        return {key: value for key, value in row.items() if key != "archived"}
+        return {**{key: value for key, value in row.items() if key not in {"archived", "workspace_json"}},
+                "workspace": json.loads(row["workspace_json"])}
 
-    async def create(self, name: str, *, folder: Path | None = None, project_id: str | None = None):
+    async def create(self, name: str, *, folder: Path | None = None, project_id: str | None = None, workspace: ProjectWorkspace | None = None):
         name = name.strip()
         require(0 < len(name) <= 80, "INVALID_REQUEST", "Project name must contain 1 to 80 characters")
         folder = str(Path(folder).expanduser().resolve()) if folder else None
         require(folder is None or Path(folder).is_dir(), "PROJECT_UNAVAILABLE", "Project folder is unavailable")
         identity = project_id or new_id("project")
+        explicit_workspace = workspace is not None
+        workspace = workspace or ProjectWorkspace()
         def write(db):
             self.host.assert_project_available(identity)
             previous = one(db, "SELECT * FROM projects WHERE id=?", (identity,))
             if previous:
                 require(previous["name"] == name and previous["folder"] == folder, "IDEMPOTENCY_CONFLICT", "Project ID has different configuration")
+                require(not explicit_workspace or json.loads(previous["workspace_json"]) == workspace.model_dump(mode="json"), "IDEMPOTENCY_CONFLICT", "Project ID has different environment defaults")
                 return previous
-            db.execute("INSERT INTO projects VALUES(?,?,?,0,?)", (identity, name, folder, now_ms()))
+            db.execute("INSERT INTO projects(id,name,folder,archived,created_at,workspace_json) VALUES(?,?,?,0,?,?)", (identity, name, folder, now_ms(), workspace.model_dump_json()))
             event(db, "project.created", project_id=identity)
             return need(db, "projects", identity)
         result = await self.host.store.call(write, transaction=True)
@@ -54,16 +58,20 @@ class Projects:
     async def get(self, project_id: str):
         return self.view(await self.host.store.call(lambda db: need(db, "projects", project_id)))
 
-    async def update(self, project_id: str, name: str):
-        """Rename a project without moving its files or changing ownership."""
+    async def update(self, project_id: str, name: str, *, workspace: ProjectWorkspace | None = None, expected_revision: int | None = None):
+        """Rename a project or change inherited execution defaults, without moving files."""
         require(0 < len(name.strip()) <= 80, "INVALID_REQUEST", "Project name must contain 1 to 80 characters")
         def write(db):
-            need(db, "projects", project_id)
+            current = need(db, "projects", project_id)
             self.host.assert_project_available(project_id)
-            db.execute("UPDATE projects SET name=? WHERE id=?", (name.strip(), project_id))
+            require(workspace is None or expected_revision == current["revision"], "REVISION_CONFLICT", "Project environment changed; read its current revision")
+            effective = workspace.model_dump_json() if workspace is not None else current["workspace_json"]
+            db.execute("UPDATE projects SET name=?,workspace_json=?,revision=revision+1 WHERE id=?", (name.strip(), effective, project_id))
             event(db, "project.updated", project_id=project_id)
             return need(db, "projects", project_id)
         value = await self.host.store.call(write, transaction=True)
+        if workspace is not None:
+            await self.host.revalidate_commands(project_id=project_id)
         self.host.notify()
         return self.view(value)
 
@@ -119,7 +127,8 @@ class Agents:
         workspace = definition.workspace
         absolute = lambda path: path.expanduser().resolve() if path is not None else None
         workspace = workspace.model_copy(update={"project": absolute(workspace.project), "work": absolute(workspace.work),
-                                                 "references": tuple(absolute(path) for path in workspace.references)})
+                                                 "references": tuple(absolute(path) for path in workspace.references),
+                                                 "writable_directories": tuple(absolute(path) for path in workspace.writable_directories)})
         definition = definition.model_copy(update={"workspace": workspace,
             "skills": tuple(skill.model_copy(update={"path": absolute(skill.path)}) for skill in definition.skills)})
         def write(db):
@@ -142,6 +151,7 @@ class Agents:
             return revision
         revision = await self.host.store.call(write, transaction=True)
         self.host.definitions[definition.id] = definition.model_copy(deep=True)
+        await self.host.revalidate_commands(agent_id=definition.id)
         self.host.notify()
         return {"definition": definition.model_dump(mode="json"), "revision": revision}
 
@@ -187,7 +197,7 @@ class Agents:
             self.host.notify()
         return {"agent_id": agent_id, "revision": revision, "removed": True, "enabled": False, "reused": reused}
 
-    async def set_credential(self, agent_id: str, project_id: str, role: str, value: str, expected_revision: int):
+    async def set_credential(self, agent_id: str, project_id: str, role: str, value: str, expected_revision: int, *, purpose: Literal["main", "summary"] = "main"):
         """Write a model secret without returning its value or reusing a live reference."""
         require(role in {"main", "manager"} and len(value) <= 16384, "INVALID_REQUEST", "Choose a model role and a bounded credential")
         saved = await self.get(agent_id)
@@ -196,15 +206,17 @@ class Agents:
         await self.host.projects.get(project_id)
         require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "Agent configuration changed")
         require(role != "manager" or definition.manager is not None, "MANAGER_UNAVAILABLE", "Configure the manager before assigning its credential")
+        owner = definition if role == "main" else definition.manager
+        model = owner.model if purpose == "main" else owner.summary_model
+        require(model is not None, "MODEL_NOT_CONFIGURED", "Configure the summary model before assigning its credential")
         reference = None
         if value:
             identity = new_id("credential")
             await asyncio.to_thread(self.host.vault.set, identity, value)
             reference = "vault:" + identity
-        model = definition.model if role == "main" else definition.manager.model
         model.credential_ref = reference
         result = await self.save(definition, expected_revision=expected_revision)
-        return {"agent_id": agent_id, "role": role, "configured": bool(value), "revision": result["revision"], "credential_ref": reference}
+        return {"agent_id": agent_id, "role": role, "purpose": purpose, "configured": bool(value), "revision": result["revision"], "credential_ref": reference}
 
     async def probe(self, agent_id: str, session_id: str, idempotency_key: str, *, role: Literal["main", "manager"] = "main"):
         """Accept one isolated model connection probe with persistent usage and receipts."""
@@ -230,9 +242,7 @@ class Agents:
         require(project_id is None or definition.project_id in {None, project_id}, "PERMISSION_DENIED", "Agent belongs to another project")
         project_id = project_id or definition.project_id
         project = await self.host.projects.get(project_id) if project_id else None
-        workspace = definition.workspace
-        if workspace.project is None and project and project["folder"]:
-            workspace = workspace.model_copy(update={"project": Path(project["folder"])})
+        workspace = definition.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]) if project else None, project["folder"] if project else None)
         def model_status(model):
             missing = [field for field in ("base_url", "model") if not getattr(model, field)]
             credential = self.host.secret(model.credential_ref) if model.credential_ref else None
@@ -248,8 +258,8 @@ class Agents:
                     unavailable.append("skill:" + binding.id)
             elif not source or not source[0].enabled or project_id is None or source[0].project_id not in {None, project_id}:
                 unavailable.append("skill:" + binding.id)
-        if "run_command" in definition.tools.local and not self.host.tools.providers["run_command"].commands_enabled:
-            unavailable.append("run_command:host_grant")
+        if "exec_command" in definition.tools.local and not self.host.tools.providers["exec_command"].commands_enabled:
+            unavailable.append("exec_command:host_grant")
         for binding in definition.tools.mcp:
             saved = self.host.mcp.configurations.get(binding.server_id)
             if not saved or not saved[0].enabled or project_id is None or saved[0].project_id not in {None, project_id} or (
@@ -263,6 +273,14 @@ class Agents:
         try:
             paths = WorkspacePaths.for_instance(workspace, "new-instance", "new-run", self.host.root)
             workspace_check["paths"] = paths.as_dict()
+            from oea.workspace.environment import ExecutionEnvironment
+            environment = ExecutionEnvironment(paths, workspace)
+            workspace_check["environment"] = environment.describe()
+            if definition.tools.local:
+                environment.available()
+                if workspace.sandbox == "native":
+                    from oea.workspace.native import inspect_component
+                    workspace_check["native_component"] = await inspect_component()
             workspace_check["issues"] = [{"code": "REFERENCE_UNAVAILABLE", "path": str(path)} for path in paths.reference_dirs if not path.is_dir()]
             if workspace_check["issues"]:
                 workspace_check["state"] = "needs_configuration"
@@ -270,7 +288,7 @@ class Agents:
             workspace_check.update(state="needs_configuration", issues=[error.as_dict()])
             paths = None
         executables = []
-        for kind, command in (("shell", definition.workspace.shell if "run_command" in definition.tools.local else ()), ("program", definition.execution.program)):
+        for kind, command in (("shell", workspace.shell if "exec_command" in definition.tools.local else ()), ("program", definition.execution.program)):
             if command:
                 program = Path(command[0])
                 if program.is_absolute():
@@ -285,7 +303,7 @@ class Agents:
                     unavailable.append(kind + ":program_unavailable")
         return {"agent_id": agent_id, "enabled": definition.enabled, "revision": value["revision"],
                 "model": model_status(definition.model),
-                "manager": {"model": model_status(definition.manager.model), "business_tools": False} if definition.manager else None,
+                "manager": {"model": model_status(definition.manager.model), "tools": (definition.manager.tools or definition.tools).model_dump(mode="json")} if definition.manager else None,
                 "tools": {"local": list(definition.tools.local), "functions": list(definition.tools.functions), "unavailable": unavailable,
                           "details": [{"name": name, "side_effects": self.host.tools.providers[name].describe().side_effects,
                                        "cancellation": self.host.tools.providers[name].describe().cancellation}
@@ -310,6 +328,7 @@ class Sessions:
                     "IDEMPOTENCY_CONFLICT", "Session identity has different configuration")
             return previous
         db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES(?,?,?,?)", (identity, project_id, name, now_ms()))
+        self.host.boards._create(db, project_id, "General", "session", identity)
         event(db, "session.created", project_id=project_id, session_id=identity)
         return need(db, "sessions", identity)
 
@@ -420,6 +439,7 @@ class Instances:
             config["workspace"]["project"] = need(db, "projects", session["project_id"])["folder"]
         db.execute("INSERT INTO instances VALUES(?,?,?,?,?,?,?,?,NULL,?)",
                    (identity, session["project_id"], session_id, agent_id, name, role, encode(config), "{}", now_ms()))
+        self.host.boards._create(db, session["project_id"], "Inbox", "inbox", session_id, identity)
         event(db, "instance.created", project_id=session["project_id"], session_id=session_id, instance_id=identity,
               data={"agent_id": agent_id, "role": role})
         return need(db, "instances", identity)

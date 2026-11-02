@@ -32,7 +32,7 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
         self.allowed = True
 
         def seed(db):
-            db.execute("INSERT INTO projects VALUES('p','Project',NULL,0,1)")
+            db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES('p','Project',NULL,0,1)")
             db.execute("INSERT INTO agent_definitions VALUES('worker','p','{}',1,1)")
             db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES('s','p','Session',1)")
             db.execute("INSERT INTO budgets(id,project_id,root_run_id,policy_json,started_at,created_at) VALUES('b','p','r','{}',1,1)")

@@ -33,7 +33,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
             model=Model(base_url="https://main.invalid/v1", model="main"),
             manager=Manager(model=Model(base_url="https://manager.invalid/v1", model="manager", credential_ref="vault:missing")),
-            workspace=Workspace(work=self.root / "work-not-created", shell=(sys.executable, "-B")), tools=Tools(local=("run_command",))))
+            workspace=Workspace(sandbox="trusted", work=self.root / "work-not-created", shell=(sys.executable, "-B")), tools=Tools(local=("exec_command",))))
         credential = "a synthetic readiness credential"
         await self.host.agents.set_credential("worker", "p", "main", credential, 1)
         before = await self.host.agents.get("worker")
@@ -42,10 +42,10 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(check["model"]["has_credential"])
         self.assertEqual(check["manager"]["model"]["missing"], ["credential"])
         self.assertFalse(check["manager"]["model"]["has_credential"])
-        self.assertFalse(check["manager"]["business_tools"])
+        self.assertEqual(check["manager"]["tools"]["local"], ["exec_command"])
         self.assertFalse(check["model"]["connection_verified"])
         self.assertFalse(check["manager"]["model"]["connection_verified"])
-        self.assertIn("run_command:host_grant", check["tools"]["unavailable"])
+        self.assertIn("exec_command:host_grant", check["tools"]["unavailable"])
         self.assertTrue(check["executables"][0]["available"])
         self.assertEqual(check["workspace_check"]["state"], "resolved")
         self.assertFalse((self.root / "work-not-created").exists())
@@ -62,7 +62,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         await self.host.mcp.save(MCPServer(id="foreign", project_id="q", command=(sys.executable, "-B")))
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
             tools=Tools(mcp=(MCPBinding(server_id="foreign"),)), skills=(SkillBinding(id="guide"),),
-            workspace=Workspace(project=self.root / "missing-project", work=self.root / "uncreated-work"),
+            workspace=Workspace(sandbox="trusted", project=self.root / "missing-project", work=self.root / "uncreated-work"),
             execution=Execution(program=(str(self.root / "unavailable-program.exe"),))))
         check = await self.host.agents.check("worker", project_id="p")
         self.assertIn("skill:guide", check["tools"]["unavailable"])
@@ -79,7 +79,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         from oea.workspace.service import WorkspacePaths
         project = self.root / "project"
         project.mkdir()
-        settings = Workspace(project=project, work=self.root / "uncreated-work", writable_project_paths=("../escape",))
+        settings = Workspace(sandbox="trusted", project=project, work=self.root / "uncreated-work", writable_project_paths=("../escape",))
         with self.assertRaises(RuntimeFault):
             WorkspacePaths.prepare(settings, "instance", "run", self.host.root)
         self.assertFalse((self.root / "uncreated-work").exists())
@@ -88,7 +88,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         project = self.root / "shared-project"
         project.mkdir()
         await self.host.projects.create("Folder project", folder=project, project_id="folder")
-        await self.host.agents.save(AgentDefinition(id="shared", name="Shared", workspace=Workspace(work=self.root / "uncreated-work")))
+        await self.host.agents.save(AgentDefinition(id="shared", name="Shared", workspace=Workspace(sandbox="trusted", work=self.root / "uncreated-work")))
         saved = await self.host.agents.get("shared")
         events_before = await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM events")["count"])
         check = await self.host.registry.call("agents.check", {"agent_id": "shared", "project_id": "folder"})

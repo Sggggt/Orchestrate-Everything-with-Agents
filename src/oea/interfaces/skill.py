@@ -18,4 +18,4 @@ def export_skill(output: Path):
     require(bundled.joinpath("SKILL.md").is_file(), "SKILL_UNAVAILABLE", "The installed distribution has no bundled Codex skill")
     with resources.as_file(bundled) as source:
         shutil.copytree(source, target)
-    return {"path": str(target), "protocol_version": "2.0"}
+    return {"path": str(target), "protocol_version": "3.0"}

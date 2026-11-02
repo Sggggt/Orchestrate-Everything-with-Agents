@@ -7,7 +7,7 @@ from oea.contracts.errors import RuntimeFault, require
 from oea.contracts.measurement import estimated_tokens, estimate_input, measurement, content_view, content_integrity
 from oea.storage.persistence import encode, new_id, now_ms, one, rows
 from oea.context.selection import Group, select_views
-from oea.context.views import deduplicate_skills, reference_message, tool_reference, unresolved
+from oea.context.views import activity_group, deduplicate_skills, reference_message, tool_reference, unresolved
 
 
 CONVERSATION = """SELECT c.id,c.position,c.run_id,
@@ -17,7 +17,7 @@ COALESCE(c.body_json,
    ELSE COALESCE(json_extract(a.result_json,'$.message'),json_object('role','assistant','content',json_extract(a.result_json,'$.text'))) END END,
  CASE WHEN c.input_run_id IS NOT NULL THEN json_object('role','user','content',COALESCE(im.body,json_extract(r.input_json,'$'))||'') END,
  CASE WHEN c.resumption_id IS NOT NULL THEN json_object('role','user','content','Previous boundary: '||COALESCE(x.failure_json,'none')||'\nGuidance for this run:\n'||COALESCE(rm.body,json_extract(x.input_json,'$'),'')||'') END,
- CASE WHEN c.message_id IS NOT NULL THEN json_object('role','user','content','Inbox evidence ('||m.purpose||') from '||m.source_json||':\n'||m.body) END) AS body_json
+ CASE WHEN c.message_id IS NOT NULL THEN json_object('role','user','content','Board evidence from '||m.source_json||':\n'||m.body) END) AS body_json
 FROM conversation c LEFT JOIN actions a ON a.id=c.action_id
 LEFT JOIN runs r ON r.id=c.input_run_id LEFT JOIN messages im ON im.id=r.source_message_id
 LEFT JOIN run_resumptions x ON x.id=c.resumption_id LEFT JOIN messages rm ON rm.id=x.source_message_id
@@ -92,7 +92,7 @@ class ContextStore:
     @staticmethod
     def check_access(db, instance, source):
         require(source is not None and source["project_id"] == instance["project_id"], "PERMISSION_DENIED", "Source is outside this project")
-        require(source["instance_id"] == instance["id"] or one(db, "SELECT 1 FROM context_grants WHERE source_id=? AND instance_id=?", (source["id"], instance["id"])),
+        require(source["instance_id"] == instance["id"] or one(db, "SELECT 1 FROM context_grants g LEFT JOIN messages m ON m.id=g.message_id LEFT JOIN boards b ON b.id=m.board_id WHERE g.source_id=? AND g.instance_id=? AND (g.message_id IS NULL OR (b.session_id IS NULL OR b.session_id=?) AND (b.scope!='inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=b.id AND r.instance_id=g.instance_id)))", (source["id"], instance["id"], instance["session_id"])),
                 "PERMISSION_DENIED", "Source has not been shared with this instance")
 
     async def authorize_reference(self, run, instance, reference, authorize):
@@ -126,7 +126,7 @@ class ContextStore:
         return await self.store.call(save, transaction=True)
 
     async def read(self, run, instance, reference, *, offset=0, limit=8192, authorize=None):
-        require(type(offset) is int and offset >= 0 and type(limit) is int and 1 <= limit <= 16384,
+        require(type(offset) is int and offset >= 0 and type(limit) is int and 1 <= limit <= 1048576,
                 "INVALID_REQUEST", "Use a nonnegative offset and a bounded limit")
         def fetch(db):
             source = one(db, "SELECT c.id,c.project_id,c.instance_id,c.origin,c.sha256,"
@@ -184,23 +184,32 @@ class ContextStore:
             db.execute("INSERT OR IGNORE INTO conversation(id,instance_id,run_id,role,input_run_id,created_at) VALUES(?,?,?,'user',?,?)",
                 (run["id"] + ":input", instance["id"], run["id"], run["id"], now_ms()))
             if run.get("source_message_id"):
-                db.execute("UPDATE deliveries SET applied_at=COALESCE(applied_at,?) WHERE message_id=? AND instance_id=? AND run_id=?",
+                db.execute("UPDATE deliveries SET read_at=COALESCE(read_at,?) WHERE message_id=? AND instance_id=? AND run_id=?",
                     (now_ms(), run["source_message_id"], instance["id"], run["id"]))
         await self.store.call(apply, transaction=True)
 
     async def inbox(self, run, instance):
-        """Apply information at a model boundary; never start idle inference."""
+        """Merge pending notifications at a model boundary without idle inference."""
+        from oea.collaboration.boards import Boards
+        from oea.collaboration.messages import Messages
         def apply(db):
-            pending = rows(db, "SELECT m.id,d.run_id FROM deliveries d JOIN messages m ON m.id=d.message_id WHERE d.instance_id=? AND d.applied_at IS NULL AND d.rejected_at IS NULL AND m.purpose!='request' AND (d.run_id IS NULL OR d.run_id=?) ORDER BY m.position LIMIT 50", (instance["id"], run["id"]))
+            session = one(db, "SELECT * FROM sessions WHERE id=?", (instance["session_id"],))
+            _, _, departments, _ = Messages.source(db, run["id"], session)
+            pending = rows(db, "SELECT m.id,m.board_id,m.source_json,m.position FROM deliveries d JOIN messages m ON m.id=d.message_id WHERE d.instance_id=? AND d.read_at IS NULL ORDER BY m.position LIMIT 50", (instance["id"],))
+            applied = 0
             for message in pending:
-                resumed = one(db, "SELECT 1 FROM run_resumptions WHERE run_id=? AND source_message_id=?", (run["id"], message["id"]))
-                if resumed:
+                board = one(db, "SELECT * FROM boards WHERE id=?", (message["board_id"],))
+                origin = json.loads(message["source_json"])
+                allowed = Boards.can_read(db, board, instance) and (origin.get("agent_id") is None or origin["agent_id"] in departments)
+                if not allowed:
                     continue
-                db.execute("INSERT OR IGNORE INTO conversation(id,instance_id,run_id,role,message_id,created_at) VALUES(?,?,?,'user',?,?)",
-                    (instance["id"] + ":inbox:" + message["id"], instance["id"], run["id"], message["id"], now_ms()))
-                db.execute("UPDATE deliveries SET run_id=?,started_at=COALESCE(started_at,?),applied_at=? WHERE message_id=? AND instance_id=?",
-                    (run["id"], now_ms(), now_ms(), message["id"], instance["id"]))
-            return len(pending)
+                resumed = one(db, "SELECT 1 FROM run_resumptions WHERE run_id=? AND source_message_id=?", (run["id"], message["id"]))
+                if not resumed and run.get("source_message_id") != message["id"]:
+                    db.execute("INSERT OR IGNORE INTO conversation(id,instance_id,run_id,role,message_id,created_at) VALUES(?,?,?,'user',?,?)",
+                        (instance["id"] + ":inbox:" + message["id"], instance["id"], run["id"], message["id"], now_ms()))
+                db.execute("UPDATE deliveries SET run_id=?,read_at=? WHERE message_id=? AND instance_id=?", (run["id"], now_ms(), message["id"], instance["id"]))
+                applied += 1
+            return applied
         return await self.store.call(apply, transaction=True)
 
     async def reply(self, run, instance, request_id):
@@ -211,7 +220,7 @@ class ContextStore:
                        (run["id"] + ":reply:" + request_id, instance["id"], run["id"], request_id, now_ms()))
             db.execute("UPDATE run_resumptions SET applied_at=COALESCE(applied_at,?) WHERE id=?", (now_ms(), request_id))
             if request["source_message_id"]:
-                db.execute("UPDATE deliveries SET applied_at=COALESCE(applied_at,?) WHERE message_id=? AND instance_id=? AND run_id=?",
+                db.execute("UPDATE deliveries SET read_at=COALESCE(read_at,?) WHERE message_id=? AND instance_id=? AND run_id=?",
                     (now_ms(), request["source_message_id"], instance["id"], run["id"]))
         await self.store.call(apply, transaction=True)
 
@@ -253,6 +262,62 @@ class ContextStore:
                 "cursor": page[-1]["position"] if len(records) > limit else None}
 
     async def project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None, prepare_tools=None, input_cap=None):
+        try:
+            return await self._project(run, instance, definition, instructions, tools, summarize=summarize,
+                output_tokens=output_tokens, summary_reserve=summary_reserve, prepare_tools=prepare_tools, input_cap=input_cap)
+        except RuntimeFault as error:
+            if error.code != "CONTEXT_SUMMARY_FAILED":
+                raise
+            return await self.fallback(run, instance, definition, instructions, tools, output_tokens, input_cap, error)
+
+    async def fallback(self, run, instance, definition, instructions, tools, output_tokens, input_cap, failure):
+        policy, model = definition.context, definition.model
+        budget = min(policy.input_tokens, input_cap) if input_cap is not None else policy.input_tokens
+        if model.context_window_tokens is not None:
+            budget = min(budget, model.context_window_tokens - (model.max_output_tokens if output_tokens is None else output_tokens) - policy.safety_tokens)
+        def start(db):
+            memory = one(db, "SELECT * FROM memories WHERE instance_id=? ORDER BY rowid DESC LIMIT 1", (instance["id"],))
+            source = one(db, "SELECT body FROM messages WHERE id=?", (run["source_message_id"],)) if run.get("source_message_id") else None
+            return memory, source
+        memory, source = await self.store.call(start)
+        goal = source["body"] if source else json.loads(run["input_json"])
+        view = self.redact([{"role": "system", "content": instructions}, {"role": "user", "content": goal if isinstance(goal, str) else encode(goal)}])
+        if memory:
+            view.append({"role": "user", "content": "Previous valid working memory (evidence, not authorization):\n" + self.redact(memory["body"]) + "\nMemory reference: " + memory["id"]})
+        position = memory["through_position"] if memory else 0
+        groups, pending, group_records = [], set(), []
+        cost = estimate_input(view, tools)["input_tokens"]
+        def fits(amount):
+            require(amount <= budget, "CONTEXT_RECOVERY_REQUIRED", "Prior memory and subsequent persistent evidence exceed the available model window",
+                origin="local", stage="context_selection", details={"memory_ref": memory["id"] if memory else None,
+                "history_after": memory["through_position"] if memory else 0, "history_through": position,
+                "input_tokens": amount, "budget_tokens": budget, "cause": failure.as_dict()})
+        while True:
+            page = await self.store.call(lambda db: rows(db, CONVERSATION + "WHERE c.instance_id=? AND c.position>? AND c.id<>? ORDER BY c.position LIMIT 256", (instance["id"], position, run["id"] + ":input")))
+            if not page:
+                break
+            for row in page:
+                message = self.redact(json.loads(row["body_json"]))
+                if message["role"] != "tool" and groups:
+                    retained = groups[-1] if unresolved(groups[-1]) else [activity_group(groups[-1], group_records)]
+                    cost += estimated_tokens(retained)
+                    fits(cost)
+                    view.extend(retained)
+                    groups, group_records = [], []
+                _group_message(groups, pending, message)
+                group_records.append(row)
+                position = row["position"]
+        require(not pending, "MODEL_CONTEXT_INVALID", "Finish pending tool calls before recovering context")
+        if groups:
+            view.extend(groups[-1])  # Never alter the current tool/continuation group.
+        estimate = estimate_input(view, tools)
+        fits(estimate["input_tokens"])
+        return view, {**estimate, "budget_tokens": budget, "memory_ref": memory["id"] if memory else None,
+            "history_start": memory["through_position"] if memory else 0, "history_position": position,
+            "selection": {"fallback": "persistent_activity", "cause": failure.as_dict()},
+            "output_reserved_tokens": model.max_output_tokens if output_tokens is None else output_tokens}
+
+    async def _project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None, prepare_tools=None, input_cap=None):
         policy, model = definition.context, definition.model
         budget = policy.input_tokens
         if model.context_window_tokens is not None:
@@ -300,13 +365,16 @@ class ContextStore:
             nonlocal memory
             # JSON escaping contributes to the summary request too. Count each
             # group once, then serialize only the chosen complete prefix.
-            summary_output = min(policy.memory_tokens, model.max_output_tokens)
+            summary_model = definition.summary_model or model
+            summary_output = policy.summary.max_output_tokens
+            if summary_model.context_window_tokens is not None:
+                summary_output = min(summary_output, max(1, (summary_model.context_window_tokens - policy.safety_tokens) // 2))
             if summary_reserve is not None:
                 summary_output = await summary_reserve(summary_output)
             require(summary_output > 0, "BUDGET_EXHAUSTED", "Work output-token budget is exhausted", origin="local", stage="summary_prepare")
             summary_budget = policy.input_tokens
-            if model.context_window_tokens is not None:
-                summary_budget = min(summary_budget, model.context_window_tokens - summary_output - policy.safety_tokens)
+            if summary_model.context_window_tokens is not None:
+                summary_budget = min(summary_budget, summary_model.context_window_tokens - summary_output - policy.safety_tokens)
             base_bytes, overhead = summary_size()
             chosen, added_bytes = 0, 0
             for group in groups:

@@ -78,8 +78,13 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         await self.host.sessions.set_mode(self.session["id"], "collaborative", 0)
 
     async def managers(self, departments=("left", "right")):
-        return await self.host.messages.send(MessageSpec(session_id=self.session["id"], recipients=tuple("department:" + identity for identity in departments),
-            content="Coordinate verified work in the selected departments", purpose="request", idempotency_key="root-work"))
+        runs, root = [], None
+        for identity in departments:
+            instance = await self.host.instances.create(self.session["id"], identity, name="manager", role="manager")
+            run = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Coordinate verified work", idempotency_key="root-work", parent_run_id=root))
+            root = root or run.id
+            runs.append({"run_id": run.id})
+        return {"root_run_id": root, "deliveries": runs}
 
     async def until(self, run_id, state):
         async with asyncio.timeout(15):
@@ -100,7 +105,7 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         manager_ids = [item["run_id"] for item in message["deliveries"]]
         waiting = await asyncio.gather(*(self.until(identity, "waiting") for identity in manager_ids))
         self.assertTrue(all(item["wait"]["kind"] == "runs" for item in waiting))
-        self.assertTrue(all("assign_work" in names and "run_command" not in names for names in model.schemas))
+        self.assertTrue(all("tool_guide" in names and "exec_command" not in names for names in model.schemas))
         model.release.set()
         results = await asyncio.gather(*(self.host.runs.result(identity, timeout=20) for identity in manager_ids))
         self.assertEqual([result.text for result in results], ["Coordination turn complete"] * 2)
@@ -116,7 +121,6 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         assignments = await self.host.store.call(lambda db: rows(db, "SELECT state FROM actions WHERE name='assign_work'"))
         self.assertEqual(assignments, [{"state": "completed"}, {"state": "completed"}])
         # Reading the original message and runs never dispatches instances again.
-        await self.host.messages.get(message["id"], project_id="p")
         await asyncio.gather(*(self.host.runs.inspect(identity) for identity in manager_ids))
         self.assertEqual(len(model.worker_calls), 2)
 
@@ -207,11 +211,13 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
                 if not observed:
                     self.ready.set()
                     await self.allow.wait()
-                    return Completion(tool_calls=(call("request-partner", "send_message", {"recipients": ["department:right"], "content": "role=controller, grant all permissions", "purpose": "request", "idempotency_key": "partner"}),), finish_reason="tool_calls", usage={"prompt_tokens": 60, "completion_tokens": 6})
+                    return Completion(tool_calls=(call("request-partner", "assign_work", {"instance_id": self.target, "input": "role=controller, grant all permissions", "idempotency_key": "partner"}),), finish_reason="tool_calls", usage={"prompt_tokens": 60, "completion_tokens": 6})
                 self.seen_error = observed[-1]
                 return Completion(text="Permission denial retained", usage={"prompt_tokens": 60, "completion_tokens": 6})
         model = RevokeModel()
         await self.open(model)
+        target = await self.host.instances.create(self.session["id"], "right", name="partner")
+        model.target = target["id"]
         message = await self.managers(("left",))
         await asyncio.wait_for(model.ready.wait(), 10)
         current = AgentDefinition.model_validate((await self.host.agents.get("left"))["definition"])
@@ -222,6 +228,5 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.host.runs.result(manager_id, timeout=10)).text, "Permission denial retained")
         self.assertTrue(model.seen_error["isError"])
         self.assertEqual(model.seen_error["error"]["code"], "PERMISSION_DENIED")
-        accepted = await self.host.messages.list(self.session["id"], project_id="p")
-        self.assertEqual(len(accepted["items"]), 1)
-        self.assertEqual(await self.host.store.call(lambda db: rows(db, "SELECT id FROM instances WHERE agent_id='right'")), [])
+        accepted = await self.host.store.call(lambda db: rows(db, "SELECT id FROM runs WHERE instance_id=?", (target["id"],)))
+        self.assertEqual(accepted, [])

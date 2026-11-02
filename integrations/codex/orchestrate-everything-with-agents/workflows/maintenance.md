@@ -1,6 +1,6 @@
 # 安装与宿主连接
 
-1. 安装当前公开包与需要的 web/mcp extras，核对 oea --version。虚拟环境、状态和构建输出放在源码外。
+1. 安装匹配平台的预编译 wheel 与需要的 web/mcp/workbench extras；普通安装不需要编译器，核对 oea --version。虚拟环境、状态和构建输出放在源码外。
 2. 新状态用 `oea serve`；命令和进程需要显式 --allow-commands。浏览器使用显示的 loopback 地址。
 3. 已有宿主用 PlatformClient.from_data_dir；MCP 用 `oea mcp`。它只连接已有宿主，不创建第二个 Host。
 4. 首先核对 /api/protocol 或 host.status。版本不符明确停止混用，不增加兼容开关。模型配置和连接状态分别验证。
@@ -9,4 +9,4 @@
 
 本机路径、实例 ID、业务连接和迁移清单留在本地配置与私有过程目录，不写入公共 Skill。
 
-已识别的 v2 状态修订使用 `oea upgrade-state` 显式检查，停止宿主后以新的外部 `--backup-file` 和 `--apply` 升级。未知 Schema 拒绝升级；不在启动时自动改库。
+协议 2 的已识别状态用 `oea upgrade-state --data-dir SOURCE` 检查，停止宿主后用 `--target NEW_TARGET --apply` 转换到新目录。旧总输入上限保留原口径，旧图与未知效果保留供核对；不重放旧执行，不原地升级。遗留 schema 29 使用 `oea migrate --source SOURCE`。

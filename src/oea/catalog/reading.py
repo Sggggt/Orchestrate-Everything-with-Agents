@@ -18,9 +18,8 @@ def reader(consumer_id=None, *, required=True):
 
 
 def summary(db, session_id, project_id, consumer_id):
-    position = one(db, "SELECT position FROM read_positions WHERE consumer_id=? AND session_id=?", (consumer_id, session_id))
-    position = position["position"] if position else 0
-    count = one(db, "SELECT COUNT(*) AS count FROM messages WHERE session_id=? AND position>?", (session_id, position))["count"]
+    count = one(db, "SELECT COUNT(*) AS count FROM messages m LEFT JOIN board_read_positions p ON p.board_id=m.board_id AND p.consumer_id=? WHERE m.session_id=? AND m.position>COALESCE(p.position,0)", (consumer_id, session_id))["count"]
+    position = one(db, "SELECT COALESCE(MAX(p.position),0) AS position FROM board_read_positions p JOIN boards b ON b.id=p.board_id WHERE p.consumer_id=? AND b.session_id=?", (consumer_id, session_id))["position"]
     agents = rows(db, "SELECT i.agent_id,COUNT(DISTINCT i.id) AS instances,SUM(CASE WHEN " + VISIBLE_REPLY + " THEN 1 ELSE 0 END) AS count "
         "FROM instances i LEFT JOIN instance_read_positions p ON p.instance_id=i.id AND p.consumer_id=? "
         "LEFT JOIN conversation c ON c.instance_id=i.id AND c.role='assistant' AND c.position>COALESCE(p.position,0) "

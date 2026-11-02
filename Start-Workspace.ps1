@@ -47,7 +47,7 @@ try {
     Stop-Launcher "Cannot run OEA Python '$Python'. Run Install-OEA.cmd to prepare the managed runtime. $($_.Exception.Message)"
 }
 try { $oeaValidation = ([string]($oeaValidated | Select-Object -Last 1)) | ConvertFrom-Json }
-catch { Stop-Launcher "Python '$Python' could not validate the OEA installation. See docs/getting-started.md and check that OEA 2 is installed in this environment." }
+catch { Stop-Launcher "Python '$Python' could not validate the OEA installation. See docs/getting-started.md and check that OEA 3 is installed in this environment." }
 if ($oeaValidationExitCode -ne 0) {
     $oeaReason = [string]$oeaValidation.error
     if ($oeaValidationExitCode -eq 2) {
@@ -69,7 +69,7 @@ function Test-WorkspaceService([string]$Url) {
         $token = (Get-Content -LiteralPath $oeaTokenPath -Raw -Encoding UTF8).Trim()
         if (-not $token) { return $false }
         $protocol = Invoke-RestMethod -Uri "$Url/api/protocol" -Method Get -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 2 -MaximumRedirection 0
-        return $protocol.protocol_version -eq '2.0' -and $protocol.engine -eq 'langgraph'
+        return $protocol.protocol_version -eq '3.0' -and $protocol.engine -eq 'langgraph'
     } catch { return $false }
 }
 function Show-Workspace([string]$Url) {

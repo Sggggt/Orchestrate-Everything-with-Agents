@@ -107,7 +107,7 @@ class LauncherTests(unittest.TestCase):
             "Authorization": "Bearer " + (state / "client-token").read_text(encoding="utf-8").strip()})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
             protocol = json.load(response)
-        self.assertEqual(protocol["protocol_version"], "2.0")
+        self.assertEqual(protocol["protocol_version"], "3.0")
         self.assertEqual(protocol["engine"], "langgraph")
 
     def startup_diagnostics(self, result):

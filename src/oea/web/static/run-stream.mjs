@@ -68,7 +68,7 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
       hydrate({action_id:state.actionId,attempt_id:state.attemptId});
     }
     if(value.kind==="action.accepted"){state.note="正在调用 "+(data.tool||"工具");paint();}
-    if(value.kind.startsWith("run.")||value.kind.startsWith("action."))sync();
+    if(value.kind.startsWith("run.")||value.kind.startsWith("action.")||value.kind==="command.settled")sync();
   }
   const listener=value=>receive({kind:"event",event:value});
   listeners?.add(listener);
@@ -86,7 +86,7 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
     }
     if(frame.kind==="event"){fact(frame.event);return;}
     if(frame.kind==="model.delta")delta(frame);
-    else if(frame.kind==="tool.observed"){state.note=(frame.isError?"工具返回错误 · ":"已运行 ")+frame.tool;paint();sync();}
+    else if(frame.kind==="tool.observed"){state.note=frame.command_session_id?(frame.state==="running"?"命令仍在运行 · 已保存当前输出":frame.state==="unknown"?"命令状态待核对":frame.exit_code!=null?"命令已退出 · 退出码 "+frame.exit_code:frame.stop_confirmed?"命令已停止":"命令回执已保存"):(frame.isError?"工具返回错误 · ":"已运行 ")+frame.tool;paint();sync();}
     else if(frame.kind==="program.progress"){state.note=frame.text;schedule();}
     else if(frame.kind==="run.snapshot"){state.run=frame.run;schedule();sync();hydrate();}
     else if(frame.kind==="resync"){state.note="正在补读原响应…";schedule();hydrate();}

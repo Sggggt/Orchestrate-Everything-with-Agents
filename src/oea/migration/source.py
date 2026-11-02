@@ -21,7 +21,7 @@ def file_sha256(path: Path) -> str:
 
 
 def _stopped(root: Path) -> None:
-    for name in ("runtime.sqlite-wal", "runtime.sqlite-journal"):
+    for name in ("runtime.sqlite-wal", "runtime.sqlite-journal", "oea.sqlite-wal", "oea.sqlite-journal", "graphs.sqlite-wal", "graphs.sqlite-journal"):
         path = root / name
         require(not path.exists() or path.stat().st_size == 0,
                 "MIGRATION_SOURCE_ACTIVE", "Stop the old host and checkpoint SQLite before offline migration")

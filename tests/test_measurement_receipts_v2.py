@@ -110,7 +110,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget["provider_reported"]["input_tokens"], 12)
         self.assertEqual(budget["provider_reported"]["cached_input_tokens"], 4)
         self.assertIsNone(budget["provider_reported"]["output_tokens"])
-        self.assertEqual(budget["estimated"]["model_calls"], 1)
+        self.assertEqual(budget["needs_review"]["model_calls"], 1)
         self.assertGreater(budget["usage"]["output_tokens"], 0)
 
     async def test_invalid_cache_report_is_not_silently_relabelled(self):
@@ -132,7 +132,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error["diagnostic"]["reason"], "unknown")
         self.assertTrue(error["diagnostic"]["response_received"])
         budget = await self.host.budgets.get(run.budget_id)
-        self.assertEqual(budget["needs_review"]["model_calls"], 1)
+        self.assertEqual(budget["needs_review"]["model_calls"], 0)
         self.assertIsNone(budget["provider_reported"]["input_tokens"])
 
     async def test_valid_looking_unfinished_tool_json_is_retained_but_never_executed(self):
@@ -151,7 +151,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_output_reservation_drives_the_effective_input_window(self):
         definition = self.definition.model_copy(deep=True)
         definition.model.context_window_tokens = 6200
-        definition.execution.budget = Budget(max_output_tokens=64)
+        definition.execution.budget = Budget(max_output_tokens=64, finalization_fraction=0, recovery_fraction=0)
         definition.instructions.system = "Current facts " * 300
         await self.host.agents.save(definition, expected_revision=1)
         run = await self.submit()
@@ -177,8 +177,8 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(summaries)
         for row in summaries:
             projection = json.loads(row["input_json"])["projection"]
-            self.assertEqual(projection["output_reserved_tokens"], 256)
-            self.assertLessEqual(projection["input_tokens"], 10000 - 256 - 1024)
+            self.assertEqual(projection["output_reserved_tokens"], (10000 - 1024) // 4)
+            self.assertLessEqual(projection["input_tokens"], 10000 - projection["output_reserved_tokens"] - 1024)
 
     async def test_missing_historical_facts_remain_unknown_after_reopen(self):
         run = await self.submit()
@@ -201,7 +201,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
         path = directory / identity
         path.write_text("saved", encoding="utf-8")
         def seed(db):
-            db.execute("INSERT INTO artifacts VALUES(?,'p',?,?,?,?,'hash',5,'text/plain',1,?,'run')", (identity, self.instance["id"], run.id, action_id + ".stdout.txt", str(path), self.session["id"]))
+            db.execute("INSERT INTO artifacts VALUES(?,'p',?,?,?,?,'hash',5,'text/plain',1,?,'run',?)", (identity, self.instance["id"], run.id, action_id + ".stdout.txt", str(path), self.session["id"], json.dumps({"truncated": True, "observed_bytes": 500})))
             receipt = json.dumps({"output_refs": [{"artifact": {"id": identity}, "truncated": True, "observed_bytes": 500}]})
             db.execute("INSERT INTO actions(id,run_id,operation_key,name,input_hash,input_json,side_effects,state,result_json,created_at,updated_at) VALUES(?,?,?,'run_command','hash','{}','local','completed',?,1,1)", (action_id, run.id, action_id, receipt))
         await self.host.store.call(seed, transaction=True)

@@ -23,6 +23,8 @@ def prepare_request(model, messages, *, tools=(), output_tokens=None):
         body["temperature"] = model.temperature
     if model.reasoning_effort is not None:
         body["reasoning_effort"] = model.reasoning_effort
+    if model.thinking is not None:
+        body["thinking"] = {"type": model.thinking}
     if tools:
         body["tools"] = tools
     try:

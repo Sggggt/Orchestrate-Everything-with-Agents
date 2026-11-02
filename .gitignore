@@ -17,6 +17,7 @@ htmlcov/
 
 # Dependencies, builds and generated test results
 build/
+target/
 dist/
 node_modules/
 coverage/

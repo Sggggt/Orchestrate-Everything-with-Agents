@@ -188,7 +188,7 @@ class ControllerCalls(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(reference)
             parts, offset = [], 0
             while True:
-                page = await self.host.results.read(reference["result_ref"], project_id="p", consumer_id="large-controller", json_pointer=pointer, offset=offset)
+                page = await self.host.results.read(reference["result_ref"], project_id="p", consumer_id="large-controller", json_pointer=pointer, offset=offset, limit=4096)
                 parts.append(page["text"])
                 if page["complete"]:
                     break

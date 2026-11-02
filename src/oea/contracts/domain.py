@@ -1,4 +1,4 @@
-"""Public identities and receipts for the single v2 execution contract."""
+"""Public identities and receipts for the single v3 execution contract."""
 
 from typing import Any, Literal
 
@@ -9,7 +9,6 @@ from pydantic import Field, field_validator, model_validator
 from oea.contracts.configuration import Configuration, UsePolicy
 
 RunState = Literal["accepted", "running", "waiting", "completed", "failed", "cancelled", "needs_review"]
-MessagePurpose = Literal["inform", "request", "reply", "report"]
 
 
 class Artifact(Configuration):
@@ -87,23 +86,19 @@ class RunSpec(Configuration):
 
 
 class MessageSpec(Configuration):
-    session_id: str
-    recipients: tuple[str, ...] = Field(min_length=1, max_length=256)
+    board_id: str
     content: str = Field(min_length=1, max_length=65536)
-    purpose: MessagePurpose = "inform"
-    root_run_id: str | None = None
-    root_workflow_run_id: str | None = None
-    target_run_id: str | None = None
-    budget_id: str | None = None
+    mentions: tuple[str, ...] = Field(default=(), max_length=256)
     reply_to: str | None = None
     topic_id: str | None = None
-    context_refs: tuple[str, ...] = ()
+    context_refs: tuple[str, ...] = Field(default=(), max_length=128)
+    artifact_ids: tuple[str, ...] = Field(default=(), max_length=32)
     idempotency_key: str = Field(min_length=1, max_length=256)
 
 
 class AgentDescriptor(Configuration):
     agent_id: str
-    protocol_version: Literal["2.0"] = "2.0"
+    protocol_version: Literal["3.0"] = "3.0"
     supports_cancel: bool = False
     supports_probe: bool = False
     supports_suspend: bool = False
@@ -125,3 +120,11 @@ class Completion(Configuration):
     measurements: tuple[dict, ...] = ()
     attempt_facts: dict = Field(default_factory=dict)
     content_view: dict | None = None
+    continuation: dict = Field(default_factory=dict)
+
+    @field_validator("continuation")
+    @classmethod
+    def continuation_fields(cls, value):
+        if set(value) - {"reasoning_content", "reasoning_details"}:
+            raise ValueError("Unknown model continuation field")
+        return value

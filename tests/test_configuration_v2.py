@@ -31,7 +31,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(model.model, "review")
         self.assertNotIn("private-value", model.model_dump_json())
 
-    def test_manager_schema_cannot_grant_business_tools(self):
+    def test_retired_tool_names_are_rejected_for_every_role(self):
         with self.assertRaises(ValidationError):
             Manager(tools={"local": ["run_command"]})
 

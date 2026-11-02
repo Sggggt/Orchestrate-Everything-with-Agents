@@ -5,7 +5,7 @@ import test from "node:test";
 // Exercise the real application and click handlers with deterministic RPC and
 // DOM boundaries. Layout and browser interaction are verified separately.
 class Node {
-  constructor(html="",dataset={}){this.innerHTML=html;this.dataset=dataset;this.value="";this.nodes=new Map();this.isConnected=true;this.parentElement={scrollTop:0};}
+  constructor(html="",dataset={}){this.innerHTML=html;this.dataset=dataset;this.value="";this.nodes=new Map();this.children=[];this.isConnected=true;this.parentElement={scrollTop:0};}
   querySelector(selector){
     if(!this.nodes.has(selector))this.nodes.set(selector,new Node());
     return this.nodes.get(selector);
@@ -25,6 +25,9 @@ class Node {
   }
   focus(){}
   replaceWith(){}
+  append(...nodes){this.children.push(...nodes);}
+  replaceChildren(...nodes){this.children=[...nodes];}
+  addEventListener(){}
 }
 
 test("active sessions, paginated archive restoration and confirmed project deletion stay in sync",async t=>{
@@ -44,7 +47,7 @@ test("active sessions, paginated archive restoration and confirmed project delet
     async rpc(operation,params={}){
       calls.push({operation,params:structuredClone(params)});
       let result;
-      if(operation==="agents.schema")result={};
+      if(operation==="agents.schema")result={$defs:{Workspace:{type:"object",properties:{network:{anyOf:[{type:"string",enum:["deny","allow"]},{type:"null"}],default:null}}}}};
       else if(operation==="host.status")result={version:"2",data_dir:"<platform-state>"};
       else if(operation==="projects.list")result={items:projects,cursor:null};
       else if(operation==="sessions.list"){
@@ -63,7 +66,7 @@ test("active sessions, paginated archive restoration and confirmed project delet
   };
   globalThis.__archiveUI=ui;
   globalThis.window={addEventListener(){}};
-  globalThis.document={querySelector:selector=>ui.$(selector),activeElement:null};
+  globalThis.document={querySelector:selector=>ui.$(selector),createElement:()=>new Node(),activeElement:null};
   globalThis.location={hash:"#workspace"};globalThis.history={replaceState(){}};
   globalThis.localStorage={getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key)};
   globalThis.EventSource=class{constructor(){streams.push(this);}close(){this.closed=true;}};

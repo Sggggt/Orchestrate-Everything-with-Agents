@@ -33,7 +33,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         await self.store.open()
         self.definition = AgentDefinition(id="worker", name="Worker")
         def seed(db):
-            db.execute("INSERT INTO projects VALUES('p','Project',NULL,0,1)")
+            db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES('p','Project',NULL,0,1)")
             db.execute("INSERT INTO agent_definitions VALUES('worker','p',?,1,1)", (self.definition.model_dump_json(),))
             db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES('s','p','Session',1)")
             db.execute("INSERT INTO budgets(id,project_id,root_run_id,policy_json,started_at,created_at) VALUES('b','p','r','{}',1,1)")
@@ -71,7 +71,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             payload = json.loads(messages[1]["content"])
             message_groups(payload["new_history"])
             self.assertLess(estimated_tokens(messages), definition.context.input_tokens)
-            self.assertEqual(limit, self.definition.model.max_output_tokens)
+            self.assertEqual(limit, definition.context.summary.max_output_tokens)
             requests.append(payload)
             archived.extend(payload["new_history"])
             return "Confirmed through " + archived[-1]["content"]
@@ -177,7 +177,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             return "Saved original references and facts."
         view, projection = await self.contexts.project(self.run, self.instance, definition, "Review", [], summarize=summarize, output_tokens=5000, summary_reserve=reserve)
         self.assertTrue(calls)
-        self.assertEqual(reservations, [256] * len(calls))
+        self.assertEqual(reservations, [(7000 - 1024) // 2] * len(calls))
         self.assertLessEqual(projection["input_tokens"], 7000 - 5000 - 1024)
         message_groups(view)
 
@@ -245,12 +245,14 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             successful.extend(json.loads(messages[1]["content"])["new_history"])
             return "First page confirmed"
 
-        with self.assertRaises(RuntimeFault) as caught:
-            await self.contexts.project(self.run, self.instance, definition, "Review", [], summarize=fail_second)
-        self.assertEqual(caught.exception.code, "CONTEXT_SUMMARY_FAILED")
+        fallback, projection = await self.contexts.project(self.run, self.instance, definition, "Review", [], summarize=fail_second)
+        self.assertEqual(projection["selection"]["fallback"], "persistent_activity")
         memory = await self.store.call(lambda db: one(db, "SELECT * FROM memories ORDER BY rowid DESC LIMIT 1"))
         self.assertEqual(memory["through_position"], len(successful))
-        self.assertEqual(caught.exception.details["memory_ref"], memory["id"])
+        self.assertEqual(projection["memory_ref"], memory["id"])
+        recovered = [json.loads(message["content"].split("\n", 1)[1])[0]["excerpt"] for message in fallback[3:-1]]
+        recovered.append(fallback[-1]["content"])
+        self.assertEqual([int(message["content"][5:]) for message in successful] + [int(text[5:]) for text in recovered], list(range(700)))
         prior = await self.store.call(lambda db: one(db, "SELECT * FROM memories WHERE id='prior'"))
         self.assertEqual(prior["body"], "Prior confirmed fact")
         resumed = []
@@ -374,7 +376,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RuntimeFault) as caught:
             await self.contexts.project(self.run, self.instance, self.definition, "Review", [], summarize=fail)
-        self.assertEqual(caught.exception.code, "CONTEXT_SUMMARY_FAILED")
+        self.assertEqual(caught.exception.code, "CONTEXT_RECOVERY_REQUIRED")
         memory = await self.store.call(lambda db: one(db, "SELECT * FROM memories WHERE id='memory'"))
         self.assertEqual(memory["body"], "Confirmed fact remains")
         self.assertEqual(len(await self.store.call(lambda db: rows(db, "SELECT * FROM conversation"))), 260)

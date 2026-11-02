@@ -12,11 +12,11 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 ## 可以用它做什么
 
 - **搭建个人 Agent 工作空间。** 按项目管理 Agent、会话、指令和技能。
-- **开发自己的执行逻辑。** 配置模型 Agent，编写 v2 Python 进程 Agent，或注册由 LangGraph 驱动的代码图。
+- **开发自己的执行逻辑。** 配置模型 Agent，编写 协议 3 Python 进程 Agent，或注册由 LangGraph 驱动的代码图。
 - **并行启动独立实例。** 复用 Agent 配置，按输入批量创建独立上下文；保留有序结果，并沿实际工作归属取消。
 - **编排可复用的工作流。** 在画布或 Python SDK 中连接开始、Agent、并行 map、条件、模板、函数、子图、中断和结束节点；每个工作流只属于一个项目。
 - **工具和工作产物。** 注册 MCP 服务，按需授权工具，交换完整协作消息；会话文件保留来源记录，并可通过引用下载。
-- **分配实际工作能力。** 通过统一[工作底座](docs/workbench.md)授权文件修改、图片、产物和可信本机命令，按任务复用外部语言环境，无需容器。
+- **分配实际工作能力。** 通过统一[工作底座](docs/workbench.md)授权命令会话、补丁、图片与产物，复用原生隔离环境和外部语言工具链。
 - **在本机持久运行。** 任务回执、检查点、运行历史与备份保存在源码目录之外，明确处理取消和结果不确定的情况。
 - **通过 MCP 操作平台。** 用两个紧凑工具和按需加载的 Codex 技能接入兼容客户端，浏览器负责配置与观察。
 
@@ -24,26 +24,18 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-Windows、Linux 和 macOS 推荐使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 安装平台。下载或克隆源码仓库，在仓库根目录打开终端，将 OEA 安装为命令行工具：
+OEA 需要 Python 3.12+。安装与 Windows x64 或 Linux x64 匹配的预编译 wheel，普通安装无需 Rust 编译器。把下方占位文件名替换为发布包中的完整文件名：
 
 ```sh
-uv tool install --python 3.12 -c constraints.txt ".[web,mcp,workbench]"
-uv tool update-shell
+python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+oea serve --allow-commands
 ```
 
-重新打开终端后，可以在任意目录运行：
+浏览器打开宿主打印的地址，首次默认是 **http://127.0.0.1:8890**。状态保存在本机源码和同步目录之外。Windows 也可用安装器的 `-Wheel` 参数准备托管环境和启动脚本；源码开发及系统依赖见[安装指南](docs/getting-started.md)。
 
-```sh
-oea serve
-```
+创建项目，配置默认目录与网络策略，再保存 Agent 的模型、密钥和能力。先让一个 Agent 完成工作，需要独立上下文或职责时再增加实例。manager 是可选角色；主模型和摘要可独立配置。
 
-uv 管理独立 Python 环境并提供 `oea` 命令，日常使用无需手动激活环境。OEA 需要 Python 3.12+；上述命令选择 Python 3.12，uv 可在需要时下载解释器。详见[快速安装](docs/getting-started.md#quick-install)。需要在 Python 代码中导入 OEA 时，使用覆盖 Windows、Linux、macOS 的 [SDK 环境安装步骤](docs/getting-started.md#sdk-installation)。Windows 用户也可以选择[便捷脚本](docs/getting-started.md#windows-shortcuts)。
-
-打开 `oea serve` 打印的地址，首次启动默认是 **http://127.0.0.1:8890**。本机页面会自动建立经过认证的浏览器会话。运行状态保存在源码仓库和同步目录之外。
-
-创建项目、添加 Agent，再开启会话。需要模型的 Agent 请在 **Agent → 配置 → 职责与模型** 中保存 API 地址、模型和密钥，检查已保存配置，再用一个小任务核验实际调用。密钥保存在本机，不进入源码仓库。
-
-启动不注册演示 Agent，也不发起真实模型调用。命令和进程 Agent 需显式加 `--allow-commands`，并具有已保存的工具授权。
+本地工具默认使用[原生沙箱](docs/native/README.md)，Windows 为 PSEC，Linux 为 Bubblewrap；不可用时明确报错。命令和进程 Agent 还需要宿主的 `--allow-commands` 授权。显式 `trusted` 模式没有 OS 隔离。启动不会创建演示工作或调用模型。
 
 ## 用 Python 编排
 
@@ -90,10 +82,10 @@ oea mcp
 
 [文档目录](docs/README.md) · [快速开始](docs/getting-started.md) · [SDK](docs/sdk.md) · [工作流](docs/workflows.md) · [MCP 与技能](docs/mcp.md) · [API](docs/api.md) · [架构](docs/architecture.md) · [品牌](docs/brand.md)
 
-运行数据必须位于 Git 仓库和同步文件夹之外的本机磁盘。连接已有宿主使用 `PlatformClient`，同一数据目录只由一个 Host 拥有。Agent 是需要信任的本机程序，受管子进程不等于操作系统沙箱。LangGraph 统一负责图、循环、并行汇合和持久中断。
+运行数据必须位于 Git 仓库和同步文件夹之外的本机磁盘。连接已有宿主使用 `PlatformClient`，同一数据目录只由一个 Host 拥有。本机命令和进程 Agent 使用配置的沙箱；显式 trusted 执行与进程内函数工具使用宿主权限。LangGraph 统一负责图、循环、并行汇合和持久中断。
 
 ## 参与贡献与许可证
 
 环境和验证方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，敏感问题报告方式见 [SECURITY.md](SECURITY.md)。仓库保留通用自动化契约测试及源码 fixture，不包含已填充的工作空间或生成的测试结果。
 
-采用 [MIT 许可证](LICENSE)。版本 2 统一使用 `oea` 包、命令与协议。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。
+采用 [MIT 许可证](LICENSE)。OEA 3.0.0 使用 `oea` 包和命令，公开协议版本为 3.0。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。

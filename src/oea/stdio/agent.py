@@ -6,11 +6,13 @@ import os
 import subprocess
 
 from oea.contracts.domain import AgentDescriptor
+from oea.contracts.configuration import PROTOCOL_VERSION
 from oea.contracts.errors import RuntimeFault, require
 from oea.storage.persistence import encode, event, one
 from oea.stdio.protocol import MAX_FRAME_BYTES, ProgramResult
 from oea.stdio.process_tree import OwnedProcessTree
 from oea.tools.contracts import ToolSpec
+from oea.workspace.environment import ExecutionEnvironment
 
 PROGRAM_TOOL = "_oea_program"
 
@@ -26,24 +28,13 @@ class ProcessAgentTool:
     async def invoke(self, request):
         context = self.host.active[request["run_id"]]
         definition, paths = context.definition, context.paths
-        settings = definition.workspace
-        temporary = paths.work_dir / "tmp"
-        temporary.mkdir(exist_ok=True)
-        environment = {**os.environ, **settings.environment, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1",
-            "TEMP": str(temporary), "TMP": str(temporary), "TMPDIR": str(temporary),
-            "OEA_PROJECT_DIR": str(paths.project_dir or ""), "OEA_WORK_DIR": str(paths.work_dir), "OEA_OUTPUT_DIR": str(paths.output_dir)}
-        if (definition.model.credential_ref or "").startswith("env:"):
-            environment.pop(definition.model.credential_ref[4:], None)
-        process = await asyncio.create_subprocess_exec(*definition.execution.program, cwd=paths.work_dir, env=environment,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=MAX_FRAME_BYTES,
-            **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}))
-        try:
-            tree = OwnedProcessTree(process)
-        except BaseException:
-            process.terminate()
-            await process.wait()
-            raise
-        log_path = paths.output_dir / (request["action_id"] + ".stderr.txt")
+        paths, settings = await self.host.resolve_workspace(request["run_id"])
+        execution = ExecutionEnvironment(paths, settings)
+        process, tree = await execution.spawn(definition.execution.program, paths.work_dir,
+            timeout=definition.execution.program_timeout_seconds, limit=MAX_FRAME_BYTES)
+        log_directory = self.host.root / "programs" / request["action_id"]
+        log_directory.mkdir(parents=True, exist_ok=True)
+        log_path = log_directory / "stderr.bin"
 
         async def stderr():
             count = 0
@@ -113,13 +104,13 @@ class ProcessAgentTool:
 
         try:
             async with asyncio.timeout(definition.execution.program_timeout_seconds):
-                await send({"id": "host:describe", "method": "agent.describe", "params": {"protocol_version": "2.0"}})
+                await send({"id": "host:describe", "method": "agent.describe", "params": {"protocol_version": PROTOCOL_VERSION}})
                 frame = await receive()
                 require(frame.get("id") == "host:describe" and isinstance(frame.get("result"), dict), "PROCESS_PROTOCOL_ERROR", "Process must answer describe before execution")
-                require(frame["result"].get("protocol_version") == "2.0", "PROTOCOL_VERSION_UNSUPPORTED", "Use the v2 process SDK; migrate old programs before execution")
+                require(frame["result"].get("protocol_version") == PROTOCOL_VERSION, "PROTOCOL_VERSION_UNSUPPORTED", "Use the current process SDK; migrate old programs before execution")
                 descriptor = AgentDescriptor.model_validate(frame["result"])
                 require(descriptor.agent_id == definition.id, "PROCESS_IDENTITY_MISMATCH", "Program descriptor does not match its configured Agent")
-                require(not descriptor.supports_probe, "UNSUPPORTED_CAPABILITY", "The v2 process transport does not implement probe")
+                require(not descriptor.supports_probe, "UNSUPPORTED_CAPABILITY", "The process transport does not implement probe")
                 previous = await self.host.tools.inspect(request["arguments"]["checkpoint_ref"]) if request["arguments"].get("checkpoint_ref") else None
                 checkpoint = json.loads(previous["result_json"])["checkpoint"] if previous else {}
                 if checkpoint:

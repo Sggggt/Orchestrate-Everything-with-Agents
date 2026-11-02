@@ -1,5 +1,6 @@
 param(
     [string]$Python,
+    [string]$Wheel,
     [switch]$Editable,
     [switch]$NoPath
 )
@@ -10,6 +11,14 @@ $env:PYTHONDONTWRITEBYTECODE = '1'
 $env:PYTHONUTF8 = '1'
 $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $OutputEncoding
+
+if ($Wheel) {
+    $Wheel = (Resolve-Path -LiteralPath $Wheel).Path
+    if ([IO.Path]::GetExtension($Wheel) -ne '.whl') { throw 'Select the matching OEA platform wheel.' }
+    if ($Editable) { throw 'Choose a platform wheel or editable source, not both.' }
+} elseif (-not $Editable -and -not [Environment]::GetEnvironmentVariable('OEA_NATIVE_ASSETS')) {
+    throw 'Use -Wheel with the matching platform wheel. For a source build, prepare OEA_NATIVE_ASSETS with scripts/build_native.py first. No compiler is required to install a wheel.'
+}
 
 if (-not $Python) {
     $oeaBootstrap = Get-Command python -ErrorAction SilentlyContinue
@@ -69,7 +78,7 @@ if (-not (Test-Path -LiteralPath $oeaRuntimePython)) {
 }
 $oeaInstallArguments = @('-B','-m','pip','install','--no-compile','-c',(Join-Path $PSScriptRoot 'constraints.txt'))
 if ($Editable) { $oeaInstallArguments += '--editable' }
-$oeaInstallArguments += ($PSScriptRoot + '[web,mcp,workbench]')
+$oeaInstallArguments += ($(if ($Wheel) { $Wheel } else { $PSScriptRoot }) + '[web,mcp,workbench]')
 & $oeaRuntimePython @oeaInstallArguments
 if ($LASTEXITCODE -ne 0) { throw 'OEA installation did not complete. User data was not moved or removed.' }
 $oeaSite = Join-Path $oeaRuntime 'Lib\site-packages'

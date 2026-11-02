@@ -162,4 +162,4 @@ def compile_workflow(definition, checkpointer):
         else:
             for edge in incoming:
                 builder.add_edge(finish[edge.source], node.id)
-    return builder.compile(checkpointer=checkpointer, name="oea-workflow-v2")
+    return builder.compile(checkpointer=checkpointer, name="oea-workflow")

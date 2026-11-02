@@ -26,7 +26,11 @@ class PlannedModel:
         self.plans = {}
 
     async def complete(self, model, messages, **options):
-        if any(message["role"] == "tool" for message in messages):
+        observed = [json.loads(message["content"]) for message in messages if message["role"] == "tool"]
+        if observed:
+            latest = observed[-1]
+            if latest.get("state") == "running":
+                return Completion(tool_calls=({"id": "observe-" + str(len(observed)), "type": "function", "function": {"name": "write_stdin", "arguments": json.dumps({"command_session_id": latest["command_session_id"], "yield_time_ms": 1000})}},), finish_reason="tool_calls", usage={"prompt_tokens": 20, "completion_tokens": 3})
             return Completion(text="Observed tool receipt", usage={"prompt_tokens": 20, "completion_tokens": 3})
         tool, arguments = self.plans[model.model]
         return Completion(tool_calls=({"id": "operation", "type": "function", "function": {"name": tool, "arguments": json.dumps(arguments)}},),
@@ -56,14 +60,19 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
     async def agent(self, identity, tool, arguments):
         self.model.plans[identity] = tool, arguments
         await self.host.agents.save(AgentDefinition(id=identity, name=identity, project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model=identity), tools=Tools(local=(tool,)),
-            workspace=Workspace(project=self.project, writable_project_paths=("shared",), shell=self.shell)))
+            model=Model(base_url="https://model.invalid/v1", model=identity), tools=Tools(local=(tool, "write_stdin") if tool == "exec_command" else (tool,)),
+            workspace=Workspace(sandbox="trusted", project=self.project, writable_project_paths=("shared",), shell=self.shell)))
         instance = await self.host.instances.create(self.session["id"], identity)
         return await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Apply the shared-file operation", idempotency_key="one-operation"))
 
     async def receipts(self, name):
-        values = await self.host.store.call(lambda db: rows(db, "SELECT id,state,result_json,error_json FROM actions WHERE name=? ORDER BY rowid", (name,)))
-        return [{**value, "result": json.loads(value["result_json"]) if value["result_json"] else None} for value in values]
+        values = await self.host.store.call(lambda db: rows(db, "SELECT id,run_id,state,result_json,error_json FROM actions WHERE name=? ORDER BY rowid", (name,)))
+        result = [{**value, "result": json.loads(value["result_json"]) if value["result_json"] else None} for value in values]
+        if name == "exec_command":
+            for value in result:
+                saved = self.host.command_sessions.load(value["id"], value["run_id"])
+                value["result"] = self.host.command_sessions.result(saved, {})
+        return result
 
     def script_command(self, arguments):
         if os.name == "nt":
@@ -76,16 +85,15 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
             if path == self.target:
                 time.sleep(0.05)
             return atomic_write(path, data)
-        with patch("oea.workspace.service.atomic_write", delayed_replace):
+        with patch("oea.workspace.patches.atomic_write", delayed_replace):
             runs = []
             for index in range(8):
                 identity = "writer" + str(index)
-                tool = "write_file" if index % 2 == 0 else "edit_file"
-                arguments = {"path": str(self.target), "expected_sha256": sha}
-                arguments.update({"content": identity} if tool == "write_file" else {"old_text": "0", "new_text": identity})
+                tool = "apply_patch"
+                arguments = {"path": str(self.target), "operation": "update", "expected_sha256": sha, "hunks": [{"old_text": "0", "new_text": identity}]}
                 runs.append(await self.agent(identity, tool, arguments))
             await asyncio.gather(*(self.host.runs.result(run.id, timeout=15) for run in runs))
-        receipts = await self.receipts("write_file") + await self.receipts("edit_file")
+        receipts = await self.receipts("apply_patch")
         successful = [value for value in receipts if not value["result"].get("isError")]
         conflicts = [value for value in receipts if value["result"].get("error", {}).get("code") == "REVISION_CONFLICT"]
         self.assertEqual(len(successful), 1)
@@ -103,10 +111,10 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
             if path in targets:
                 barrier.wait(timeout=10)
             return atomic_write(path, data)
-        with patch("oea.workspace.service.atomic_write", parallel_replace):
-            runs = [await self.agent("writer" + str(index), "write_file", {"path": str(target), "content": "1", "expected_sha256": hashlib.sha256(b"0").hexdigest()}) for index, target in enumerate(targets)]
+        with patch("oea.workspace.patches.atomic_write", parallel_replace):
+            runs = [await self.agent("writer" + str(index), "apply_patch", {"path": str(target), "operation": "update", "hunks": [{"old_text": "0", "new_text": "1"}], "expected_sha256": hashlib.sha256(b"0").hexdigest()}) for index, target in enumerate(targets)]
             await asyncio.gather(*(self.host.runs.result(run.id, timeout=15) for run in runs))
-        self.assertTrue(all(not value["result"].get("isError") for value in await self.receipts("write_file")))
+        self.assertTrue(all(not value["result"].get("isError") for value in await self.receipts("apply_patch")))
         self.assertEqual([target.read_text(encoding="utf-8") for target in targets], ["1", "1"])
 
     async def test_eight_shell_read_modify_write_commands_lose_updates_without_cooperation(self):
@@ -131,12 +139,12 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
         server = await asyncio.start_server(connected, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         try:
-            runs = [await self.agent("shell" + str(index), "run_command", {"script": self.script_command((sys.executable, "-B", script, self.target, port))}) for index in range(8)]
+            runs = [await self.agent("shell" + str(index), "exec_command", {"command": self.script_command((sys.executable, "-B", script, self.target, port))}) for index in range(8)]
             await asyncio.wait_for(ready.wait(), 30)
             self.assertEqual(len(connections), 8)
             release.set()
             await asyncio.gather(*(self.host.runs.result(run.id, timeout=30) for run in runs))
-            receipts = await self.receipts("run_command")
+            receipts = await self.receipts("exec_command")
             self.assertEqual(len(receipts), 8)
             self.assertTrue(all(value["result"]["exit_code"] == 0 for value in receipts))
             self.assertTrue(all(json.loads(value["result"]["stdout"].strip())["before"] == 0 for value in receipts))
@@ -155,13 +163,13 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
                 if not release.wait(timeout=15):
                     raise TimeoutError("Controlled test release was not received")
             return atomic_write(path, data)
-        with patch("oea.workspace.service.atomic_write", held_replace):
+        with patch("oea.workspace.patches.atomic_write", held_replace):
             try:
-                file_run = await self.agent("file-writer", "write_file", {"path": str(self.target), "content": "FILE", "expected_sha256": hashlib.sha256(b"0").hexdigest()})
+                file_run = await self.agent("file-writer", "apply_patch", {"path": str(self.target), "operation": "update", "hunks": [{"old_text": "0", "new_text": "FILE"}], "expected_sha256": hashlib.sha256(b"0").hexdigest()})
                 self.assertTrue(await asyncio.to_thread(blocked.wait, 5))
                 script = self.root / "shell_write.py"
                 script.write_text("import sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text('SHELL',encoding='utf-8')\n", encoding="utf-8")
-                shell_run = await self.agent("shell-writer", "run_command", {"script": self.script_command((sys.executable, "-B", script, self.target))})
+                shell_run = await self.agent("shell-writer", "exec_command", {"command": self.script_command((sys.executable, "-B", script, self.target))})
                 await self.host.runs.result(shell_run.id, timeout=15)
                 self.assertEqual(self.target.read_text(encoding="utf-8"), "SHELL")
                 release.set()
@@ -169,5 +177,5 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
         self.assertEqual(self.target.read_text(encoding="utf-8"), "FILE")
-        self.assertFalse((await self.receipts("write_file"))[0]["result"].get("isError"))
-        self.assertEqual((await self.receipts("run_command"))[0]["result"]["exit_code"], 0)
+        self.assertFalse((await self.receipts("apply_patch"))[0]["result"].get("isError"))
+        self.assertEqual((await self.receipts("exec_command"))[0]["result"]["exit_code"], 0)

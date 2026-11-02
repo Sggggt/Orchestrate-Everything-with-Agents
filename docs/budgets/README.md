@@ -1,32 +1,23 @@
 # budgets 模块接口
 
-工作根预算、在途预留和真实用量；不承担并发容量准入。
+工作成本账本、事务化预留、供应商用量归一化和可追溯更正；不承担执行槽位或并发准入。源码：[src/oea/budgets/](../../src/oea/budgets/)。
 
-源码：[src/oea/budgets/](../../src/oea/budgets/)
+`Budgets.create` 创建项目/会话预算；子 Run、子图、摘要与恢复沿用原根账本。`model` 发送前预留，`settle` 结算原 attempt；重复回执不重复扣费，迟到报告更正原项。`headroom`、`tails` 提供收尾和恢复余量，`get`、`for_run` 读取事实。
 
-## Python 接口
+`max_total_input_tokens` 是含缓存的累计总输入上限，默认不设置。`max_uncached_input_tokens` 单独约束非缓存量；未知缓存保持未知，并保守保留估算。模型最大窗口、日常工作输入目标与累计处理量不是同一口径。
 
-- `budgets/service.py`：`Budgets`
-  - `async create(self, project_id: str, policy: Budget, idempotency_key: str, *, session_id: str | None=None)`
-  - `require_scope(db, budget_id, *, project_id, session_id)`
-  - `model(self, db, run, identity, purpose, input_tokens, output_tokens)`
-  - `settle(db, identity, usage)`
-  - `tool(self, db, run, identity, name)`
-  - `progress(db, run_id, source, value)`
-  - `async get(self, budget_id: str)`
+`ModelPricing` 固定币种、修订及每百万 token 的输入、输出和缓存读写价格。缓存计入完整输入与上下文，费用按价折算。输出已包含推理时不重复相加。缺少缓存价格需要明确上界；缺少可靠价格不能伪称费用已知。热路径不自动查价或换汇。
 
-## 依赖与边界
+`max_cost` 限制基于请求估算和生成上限的本地费用承诺。供应商实际统计可更正原预留，本地输入估算不是供应商账单的绝对保证。
 
-依赖模块：catalog、contracts、storage。
+探索阶段保留 `finalization_fraction` 与 `recovery_fraction`。大请求将使用收尾预留时，先在本地加入收尾指引并重新准备输入，不新增供应商请求。收尾与恢复使用各自原预留；硬边界不阻止宿主保存已产生的文件、日志和部分结果。
 
-跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+| 统计范围 | 内容 |
+| --- | --- |
+| `run_direct` | 本 Run 自身动作 |
+| `root_work` | 本根工作及所属子工作 |
+| `shared_budget` | 完整共享预算总账 |
 
-## 用量口径
+直接用量不会随兄弟工作增长。报告包含范围、子工作标记、统计时间与价格修订。`provider_reported` 只含供应商报告，缺失为 null；`estimated`、`reserved`、`needs_review` 区分估算、在途和待核对。`cost.currencies` 按币种保留已结算、估算、在途与未决费用，不能机械相加。`reserves` 仅在共享预算范围显示，包含在原预算内。
 
-`usage` 是预算实际采用的核算总量，可能包含报告值、估算和未决预留。`provider_reported` 替代含义不清的 actual 字段，逐项返回供应商报告和覆盖次数；缺失报告为 null，报告值不是最终账单。缓存输入是输入子集，单独展示，不再次相加。缓存报告超出输入时，报告视图返回 null 并计入 invalid_cache_reports，原始报告仍保留在动作回执中。
-
-`estimated`、`reserved`、`needs_review` 分别展示已结算估算、在途预留、待核对部分。只有部分 usage 字段时，已报告字段仍可见，预算继续按现有估算规则核算该调用；这些展示分项不能机械相加。
-
-`attempts` 分别统计调用尝试、发送前拒绝、收到响应、生成完成、失败和各阶段的已知覆盖次数。旧回执缺少阶段事实时计入 historical_unknown，不从最终状态推断发送或计费。发送前拒绝的零值属于本地预算核算，不能伪装成供应商报告零用量。
-
-新增事实复用 actions、usage、model_failures 和事件的 JSON 内容，不改变 SQLite Schema；旧记录保留未知字段，不补写历史事实。
+原始 usage、规范化修订和价格快照保存在原调用的 `usage_measurements`。发送前拒绝的零值属于本地核算，不能伪装成供应商报告。尝试分别记录发送、响应、生成完成和失败；历史未知事实不从终态推断。

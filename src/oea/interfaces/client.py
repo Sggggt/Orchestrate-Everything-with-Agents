@@ -1,10 +1,10 @@
-"""Version-two client for an existing local host; never starts another host."""
+"""Client for an existing protocol-3 host; never starts another host."""
 
 import asyncio
 import hashlib
 import json
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 
 import httpx
 
@@ -51,7 +51,7 @@ class PlatformClient:
         try:
             response = await self.client.get("/api/protocol", timeout=10)
             response.raise_for_status()
-            require(response.json().get("protocol_version") == PROTOCOL_VERSION, "PROTOCOL_MISMATCH", "This client requires an OEA v2 host; migrate and connect explicitly")
+            require(response.json().get("protocol_version") == PROTOCOL_VERSION, "PROTOCOL_MISMATCH", "This client requires an OEA protocol-3 host; migrate and connect explicitly")
         except BaseException:
             await self.client.aclose()
             self.client = None
@@ -110,6 +110,41 @@ class PlatformClient:
                 raise RuntimeFault(**value["error"])
             response.raise_for_status()
         return await self.call("artifacts.get", {"artifact_id": receipt["id"]})
+
+    async def _download(self, url, destination, params, *, expected_sha256=None):
+        from oea.artifacts.service import file_io
+        require(self.opened and self.loop is asyncio.get_running_loop(), "CLIENT_CLOSED", "Use this open client on its original event loop")
+        path = Path(destination)
+        require(not path.exists(), "DESTINATION_EXISTS", "Choose a new destination; downloads do not overwrite files")
+        fingerprint, size = hashlib.sha256(), 0
+        async with self.client.stream("GET", url, params=params, headers={"Accept-Encoding":"identity"}, timeout=None) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                value = response.json()
+                if value.get("error"):
+                    raise RuntimeFault(**value["error"])
+                response.raise_for_status()
+            with path.open("xb") as output:
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    await file_io(output.write, chunk)
+                    size += len(chunk)
+                    fingerprint.update(chunk)
+            expected_size = response.headers.get("Content-Length")
+            require(expected_size is None or size == int(expected_size), "DOWNLOAD_INCOMPLETE", "Downloaded bytes differ from the original response")
+            digest = fingerprint.hexdigest()
+            require(expected_sha256 is None or digest == expected_sha256, "ARTIFACT_CHANGED", "Downloaded artifact differs from its saved hash")
+            return {"path":str(path.resolve()),"bytes":size,"sha256":digest,"source_state":response.headers.get("X-OEA-Source-State")}
+
+    async def download_artifact(self, artifact_id, destination, *, project_id):
+        record = await self.call("artifacts.get", {"artifact_id":artifact_id})
+        require(record["project_id"] == project_id, "PERMISSION_DENIED", "Artifact belongs to another project")
+        return await self._download("/api/artifacts/" + quote(artifact_id, safe="") + "/content", destination,
+                                    {"project_id":project_id}, expected_sha256=record["sha256"])
+
+    async def download_command(self, run_id, command_session_id, stream, destination, *, project_id):
+        require(stream in {"stdout", "stderr"}, "INVALID_REQUEST", "Choose stdout or stderr")
+        return await self._download("/api/commands/" + quote(command_session_id, safe="") + "/" + stream, destination,
+                                    {"project_id":project_id,"run_id":run_id})
 
     async def aclose(self):
         if self.client is not None:

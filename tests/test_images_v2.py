@@ -23,7 +23,7 @@ class ImageModel:
     async def complete(self, model, messages, **options):
         self.inputs.append(messages)
         if len(self.inputs) == 1:
-            return Completion(tool_calls=({"id": "image-evidence", "type": "function", "function": {"name": "read_image", "arguments": json.dumps({"path": str(self.path)})}},),
+            return Completion(tool_calls=({"id": "image-evidence", "type": "function", "function": {"name": "view_image", "arguments": json.dumps({"path": str(self.path)})}},),
                 finish_reason="tool_calls", usage={"prompt_tokens": 60, "completion_tokens": 6})
         return Completion(text="Image evidence received", usage={"prompt_tokens": 2200, "completion_tokens": 6})
 
@@ -36,7 +36,7 @@ class BatchImageModel(ImageModel):
         self.inputs.append(messages)
         if len(self.inputs) == 1:
             return Completion(tool_calls=tuple({"id": "image-" + str(index), "type": "function",
-                "function": {"name": "read_image", "arguments": json.dumps({"path": str(path)})}}
+                "function": {"name": "view_image", "arguments": json.dumps({"path": str(path)})}}
                 for index, path in enumerate(self.paths)), finish_reason="tool_calls",
                 usage={"prompt_tokens": 60, "completion_tokens": 6})
         return Completion(text="Image batch received", usage={"prompt_tokens": 9000, "completion_tokens": 6})
@@ -56,7 +56,7 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root / "state", model_api=self.model).__aenter__()
         await self.host.projects.create("Project", project_id="p", folder=self.project)
         await self.host.agents.save(AgentDefinition(id="review", name="Review", project_id="p", model=Model(base_url="https://example.invalid/v1", model="image-fixture"),
-            tools=Tools(local=("read_image",)), workspace=Workspace(project=self.project), context=ContextPolicy(input_tokens=131072)))
+            tools=Tools(local=("view_image",)), workspace=Workspace(sandbox="trusted", project=self.project), context=ContextPolicy(input_tokens=131072)))
         session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(session["id"], "review")
 
@@ -104,7 +104,7 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
                 await self.host.runs.result(run.id, timeout=10)
         self.assertEqual(error.exception.code, "PERMISSION_DENIED")
         self.assertEqual(len(self.model.inputs), 1)
-        receipts = await self.host.store.call(lambda db: rows(db, "SELECT state FROM actions WHERE run_id=? AND name='read_image'", (run.id,)))
+        receipts = await self.host.store.call(lambda db: rows(db, "SELECT state FROM actions WHERE run_id=? AND name='view_image'", (run.id,)))
         self.assertEqual(receipts, [{"state": "completed"}])
 
     async def test_legal_multiple_images_can_exceed_old_eight_mib_envelope(self):

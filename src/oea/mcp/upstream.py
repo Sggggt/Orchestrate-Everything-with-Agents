@@ -717,8 +717,6 @@ class UpstreamMCP:
 
     async def bind(self, context):
         context.mcp_tools = {}
-        if context.instance["role"] != "main":
-            return
         for binding in context.definition.tools.mcp:
             saved = await self.get(binding.server_id)
             definition = MCPServer.model_validate(saved["definition"])
@@ -739,7 +737,7 @@ class UpstreamMCP:
             context.mcp_tools.update({value["spec"]["name"]: self.host.tools.providers[value["spec"]["name"]] for value in selected})
 
     def names(self, context):
-        current = {value.server_id: value for value in self.host.definitions[context.instance["agent_id"]].tools.mcp}
+        current = {value.server_id: value for value in context.current_definition().tools.mcp}
         return [name for name, tool in context.mcp_tools.items() if tool.server_id in current and self.current_grant(context, tool) and
                 (current[tool.server_id].tools is None or tool.upstream_name in current[tool.server_id].tools)]
 

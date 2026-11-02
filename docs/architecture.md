@@ -10,4 +10,6 @@ Independent instances run directly in parallel. One instance has one mutable con
 
 Runtime state, secrets and working directories live outside Git and synchronized folders. A data directory has one host owner. `PlatformClient` and the MCP bridge connect to that host. Importing or declaring an Agent does not start a host, model, MCP session or background worker. Explicit context managers close owned resources.
 
-Agents and process programs are trusted local code with host user permissions. Tool authorization, project ownership, path boundaries and secret references are enforced at service boundaries. Skills, messages and tool output are evidence, never authority. See [security](../SECURITY.md) and [migration](migration/README.md).
+Native commands, patch workers, media capture and process Agents share one effective OS policy through an on-demand Rust/MXC component. Explicit trusted mode and in-process extensions retain host-user authority. Tool authorization, project ownership, path boundaries and secret references are enforced at service boundaries. Skills, messages and tool output are evidence, never authority. See [security](../SECURITY.md) and [migration](migration/README.md).
+
+Free-form boards and private inboxes carry collaboration without implicitly creating work. Manager roles are optional. Context uses bounded projections and incremental summaries; total usage, cache categories and currency-specific costs retain their distinct meanings.

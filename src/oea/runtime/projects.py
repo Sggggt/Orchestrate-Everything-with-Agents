@@ -49,6 +49,7 @@ async def prepare_project_deletion(host, project_id):
     pending = {owner for owner in host.tools.owners.values() if owner in owners}
     if pending:
         await asyncio.gather(*(host.tools.cancel(owner) for owner in pending))
+    await asyncio.gather(*(host.command_sessions.stop_run(owner, "project_deleted") for owner in scope["runs"]))
     # Any uncancellable external work retains its real lifetime. Deletion revokes
     # the local execution identity; its eventual result cannot recreate records.
     for identity in scope["runs"]:

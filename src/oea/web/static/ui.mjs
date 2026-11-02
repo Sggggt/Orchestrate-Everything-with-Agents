@@ -48,7 +48,7 @@ export function notify(message,error=false) {const root=$("#toast"); root.textCo
 export async function rpc(operation,params={}) {
   let consumer=localStorage.getItem("oea-consumer"); if(!consumer){consumer="browser-"+crypto.randomUUID();localStorage.setItem("oea-consumer",consumer);}
   let response;
-  try {response=await fetch("/api/rpc",{method:"POST",headers:{"Content-Type":"application/json","X-OEA-Protocol-Version":"2.0","X-OEA-Consumer-ID":consumer},body:JSON.stringify({protocol_version:"2.0",operation,params,...(operation==="messages.send"?{agent_name:"leader"}:{}),request_id:crypto.randomUUID()})});}
+  try {response=await fetch("/api/rpc",{method:"POST",headers:{"Content-Type":"application/json","X-OEA-Protocol-Version":"3.0","X-OEA-Consumer-ID":consumer},body:JSON.stringify({protocol_version:"3.0",operation,params,...(operation==="messages.send"?{agent_name:"leader"}:{}),request_id:crypto.randomUUID()})});}
   catch {throw new Error("连接中断。请先查询原回执，再继续原工作。");}
   const body=await response.json(); if(body.error){const detail=body.error.details?.errors?.map(item=>item.path.join(".")+": "+item.message).join("\n");throw Object.assign(new Error(body.error.safe_message+(detail?"\n"+detail:"")),body.error);} if(!response.ok)throw new Error("本地服务暂不可用"); return body.result;
 }

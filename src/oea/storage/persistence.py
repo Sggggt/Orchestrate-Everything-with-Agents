@@ -84,7 +84,7 @@ class Store:
         self.db.pragma("journal_mode", "wal")
         self.db.pragma("synchronous", "full")
         self.db.pragma("foreign_keys", "on")
-        script = Path(__file__).with_name("schema-v2.sql").read_text(encoding="utf-8")
+        script = Path(__file__).with_name("schema-v3.sql").read_text(encoding="utf-8")
         checksum = hashlib.sha256(script.encode("utf-8")).hexdigest()
         tables = rows(self.db, "SELECT name FROM sqlite_master WHERE type='table'")
         if tables:
@@ -102,7 +102,7 @@ class Store:
             self.db.execute(script)
             self.db.execute("INSERT INTO metadata VALUES('protocol_version',?)", (PROTOCOL_VERSION,))
             self.db.execute("INSERT INTO metadata VALUES('schema_sha256',?)", (checksum,))
-            self.db.execute("INSERT INTO metadata VALUES('schema_revision','3')")
+            self.db.execute("INSERT INTO metadata VALUES('schema_revision','1')")
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")

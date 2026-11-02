@@ -90,16 +90,16 @@ class ResultReferenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_schema_and_call_boundaries_match(self):
         schema = self.host.registry.describe("results.read")["parameters_schema"]["properties"]
-        self.assertEqual((schema["limit"]["minimum"], schema["limit"]["maximum"]), (1, 2048))
+        self.assertEqual((schema["limit"]["minimum"], schema["limit"]["maximum"]), (1, 65536))
         self.assertEqual(schema["json_pointer"]["maxLength"], 512)
         _, reference = await self.issue()
         params = {"result_ref": reference["result_ref"], "project_id": "p"}
-        for invalid in ({"limit": 0}, {"limit": 2049}, {"offset": -1}, {"offset": 2**63}, {"json_pointer": "/" * 513}):
+        for invalid in ({"limit": 0}, {"limit": 65537}, {"offset": -1}, {"offset": 2**63}, {"json_pointer": "/" * 513}):
             with self.subTest(invalid=invalid), self.assertRaises(RuntimeFault) as caught:
                 await self.host.registry.call("results.read", {**params, **invalid}, consumer_id="reader")
             self.assertEqual(caught.exception.code, "INVALID_REQUEST")
             self.assertEqual(caught.exception.details["errors"][0]["path"], [next(iter(invalid))])
-        await self.host.registry.call("results.read", {**params, "limit": 2048}, consumer_id="reader")
+        await self.host.registry.call("results.read", {**params, "limit": 65536}, consumer_id="reader")
 
     async def test_ownership_secret_changes_and_project_cleanup(self):
         value = {"id": self.run_id, "text": "newly-recognized-secret"}

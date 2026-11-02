@@ -10,22 +10,78 @@ export async function renderRuns(app,root){
   $("#new-run").onclick=()=>newRun(app);for(const button of root.querySelectorAll("[data-run]"))button.onclick=()=>showRun(app,button.dataset.run);
 }
 export async function showRun(app,identity){
-  const content=element('<div class="run-dialog"><div id="run-observation">正在读取任务…</div><footer class="dialog-footer"><button class="icon-btn" id="refresh-run" title="刷新任务" aria-label="刷新任务">'+icon("refresh")+'</button><button class="icon-btn" id="open-run-chat" title="打开对话" aria-label="打开对话">'+icon("chat")+'</button></footer></div>');
+  const content=element('<div class="run-dialog"><div id="run-observation">正在读取任务…</div><footer class="dialog-footer"><button class="btn" id="run-files">文件候选</button><button class="icon-btn" id="refresh-run" title="刷新任务" aria-label="刷新任务">'+icon("refresh")+'</button><button class="icon-btn" id="open-run-chat" title="打开对话" aria-label="打开对话">'+icon("chat")+'</button></footer></div>');
   const close=modal("任务详情",content,{size:"medium"});let closed=false,loading=false,run=null,timer=null;
   const listener=fact=>{if(fact.run_id===identity&&!timer)timer=setTimeout(()=>{timer=null;render().catch(error=>notify(error.message,true));},100);};
   app.runListeners.add(listener);close.onclose=()=>{closed=true;clearTimeout(timer);app.runListeners.delete(listener);};
   async function render(){
     if(closed||loading)return;loading=true;
     try{run=await rpc("runs.inspect",{run_id:identity});if(closed)return;
-      const summary=app.state.runs.find(value=>value.id===identity),usage=run.budget.usage;
-      $("#run-observation",content).innerHTML=`<div class="run-heading"><h3>${escape(compactTitle(run.display?.title||summary?.goal||"工作任务"))}</h3>${badge(run.state)}</div><dl class="v2-kv"><dt>实例</dt><dd>${escape(summary?.instance_name||run.instance_id)}</dd><dt>创建</dt><dd>${date(run.created_at)}</dd><dt>更新</dt><dd>${date(run.updated_at||run.created_at)}</dd>${usageRows(run.budget)}${projectionRows(run.model_input)}${run.display?.item_label?`<dt>条目</dt><dd>${escape(run.display.item_label)}</dd>`:""}<dt>任务标识</dt><dd>${escape(run.id)}</dd></dl>${cancellationHTML(run)}${diagnosisHTML(run.error)}${run.activity?.blocker?`<details><summary>最近阻断原因 · 重复 ${run.activity.blocker_repeats} 次</summary>${diagnosisHTML(run.activity.blocker)}</details>`:""}${run.wait?`<p class="run-wait">${escape(run.wait.prompt||"等待子工作回执")}</p>`:""}${["failed","waiting"].includes(run.state)&&!run.cancel_requested_at?'<button class="btn" id="resume-run">继续原工作</button>':""}`;
+      const summary=app.state.runs.find(value=>value.id===identity);
+      $("#run-observation",content).innerHTML=`<div class="run-heading"><h3>${escape(compactTitle(run.display?.title||summary?.goal||"工作任务"))}</h3>${badge(run.state)}</div><dl class="v2-kv"><dt>实例</dt><dd>${escape(summary?.instance_name||run.instance_id)}</dd><dt>创建</dt><dd>${date(run.created_at)}</dd><dt>更新</dt><dd>${date(run.updated_at||run.created_at)}</dd>${usageRows(run.usage.run_direct)}${projectionRows(run.model_input)}${run.display?.item_label?`<dt>条目</dt><dd>${escape(run.display.item_label)}</dd>`:""}<dt>任务标识</dt><dd>${escape(run.id)}</dd></dl><details><summary>根工作及共享预算用量</summary><dl class="v2-kv">${usageRows(run.usage.root_work)}${usageRows(run.usage.shared_budget)}</dl></details>${cancellationHTML(run)}${diagnosisHTML(run.error)}${run.activity?.blocker?`<details><summary>最近阻断原因 · 重复 ${run.activity.blocker_repeats} 次</summary>${diagnosisHTML(run.activity.blocker)}</details>`:""}${run.wait?`<p class="run-wait">${escape(run.wait.prompt||(run.wait.kind==="context"?(run.wait.reason?.safe_message||"等待上下文恢复处理"):"等待子工作回执"))}</p>`:""}${["failed","waiting"].includes(run.state)&&!run.cancel_requested_at?'<button class="btn" id="resume-run">继续原工作</button>':""}`;
+      if(run.actions.length)$("#run-observation",content).insertAdjacentHTML("beforeend",`<details><summary>动作与命令回执</summary>${run.actions.map(action=>`<section class="v2-panel"><p>${escape(action.name)} ${action.result_is_error?badge("failed"):badge(action.state,true)}${action.exit_code==null?"":` · 退出码 ${action.exit_code}`}</p><div class="inline-actions"><button class="btn btn-small" data-action-read="${escape(action.id)}">原回执</button>${action.command_session_id?`<button class="btn btn-small" data-command="${escape(action.command_session_id)}">命令输出</button>`:""}${action.archived_count?`<button class="btn btn-small" data-attempts="${escape(action.id)}">历史尝试</button>`:""}${action.state==="needs_review"?`<button class="btn btn-small" data-confirm="${escape(action.id)}">核对原动作</button>`:""}</div></section>`).join("")}</details>`);
       const resume=$("#resume-run",content);if(resume)resume.onclick=()=>resumeRun(run,render);
       for(const button of content.querySelectorAll("[data-evidence-action]"))button.onclick=()=>showAction(button.dataset.evidenceAction,button.dataset.evidenceAttempt||null);
+      for(const button of content.querySelectorAll("[data-action-read]"))button.onclick=()=>showAction(button.dataset.actionRead);
+      for(const button of content.querySelectorAll("[data-command]"))button.onclick=()=>showCommand(app,run.id,button.dataset.command);
+      for(const button of content.querySelectorAll("[data-attempts]"))button.onclick=()=>showAttempts(app,button.dataset.attempts);
+      for(const button of content.querySelectorAll("[data-confirm]"))button.onclick=()=>confirmAction(app,run.actions.find(action=>action.id===button.dataset.confirm),render);
     }finally{loading=false;}
   }
+  $("#run-files",content).onclick=()=>{if(run)showCandidates(app,run.id);};
   $("#refresh-run",content).onclick=()=>render().catch(error=>notify(error.message,true));
   $("#open-run-chat",content).onclick=async()=>{if(!run)return;try{close();await app.openInstance(run.instance_id);}catch(error){notify(error.message,true);}};
   try{await render();}catch(error){if(!closed)$("#run-observation",content).textContent=error.message;notify(error.message,true);}
+}
+export async function showCommand(app,runId,identity){
+  const content=element('<div><p id="command-status"></p><dl class="v2-kv" id="command-environment"></dl><p class="v2-muted" id="command-capture"></p><div id="command-downloads" class="inline-actions"></div><h3>标准输出</h3><pre id="command-stdout" class="v2-pre"></pre><h3>标准错误</h3><pre id="command-stderr" class="v2-pre"></pre><button class="btn" id="command-read">读取后续已保存输出</button></div>');
+  modal("原命令会话",content);let stdout=0,stderr=0;
+  const read=async()=>{const button=$("#command-read",content);button.disabled=true;try{
+    const result=await rpc("runs.command",{project_id:app.state.project.id,run_id:runId,command_session_id:identity,stdout_offset:stdout,stderr_offset:stderr});
+    $("#command-status",content).textContent=result.state==="unknown"?"执行归属已丢失 · 停止未确认":result.process_stopped?`进程已停止 · 退出码 ${result.exit_code??"未知"}${result.termination?" · "+result.termination:""}`:"命令仍在运行";
+    $("#command-environment",content).innerHTML=`<dt>后端</dt><dd>${escape(result.environment.backend)}</dd><dt>工作目录</dt><dd>${escape(result.cwd)}</dd><dt>环境修订</dt><dd>${escape(result.environment.revision)}</dd>`;
+    $("#command-capture",content).textContent=result.output_refs.some(value=>value.truncated===true)?"部分输出未被保留；下载只包含已保存字节。":result.state==="unknown"?"已保存的原日志仍可读取；原始输出完整性未知。":"下载不会重新执行命令；运行中的下载是当前保存内容的快照。";
+    $("#command-downloads",content).innerHTML=result.output_refs.filter(value=>value.available).map(value=>`<a class="btn btn-small" href="${escape(value.download_url)}" download>下载 ${escape(value.stream)} · ${value.saved_bytes} 字节</a>`).join("");
+    $("#command-stdout",content).textContent+=result.stdout;$("#command-stderr",content).textContent+=result.stderr;
+    stdout=result.stdout_next_offset;stderr=result.stderr_next_offset;
+  }catch(error){notify(error.message,true);}finally{button.disabled=false;}};
+  $("#command-read",content).onclick=read;await read();
+}
+export async function showCandidates(app,runId){
+  const project_id=app.state.project.id;
+  const content=element('<div><p class="v2-muted">候选记录文件来源与版本，不代表已发布或已验收。版本复核只在点击时读取当前文件。</p><label class="field">候选来源<select id="candidate-source"><option value="patches">补丁回执</option><option value="outputs">本次运行输出目录</option></select></label><div id="candidate-directory" class="inline-actions"></div><div id="candidate-list"></div><p id="candidate-notice" class="v2-muted"></p><div class="inline-actions"><button class="btn" id="candidate-refresh">重新读取</button><button class="btn" id="candidate-more" hidden>下一页</button></div></div>');
+  modal("文件候选与来源版本",content);let cursor=0,version=null,directory="",loading=false;
+  const read=async(reset=false)=>{
+    if(loading)return;loading=true;
+    for(const selector of ["#candidate-source","#candidate-refresh","#candidate-more"])$(selector,content).disabled=true;
+    for(const button of content.querySelectorAll("[data-directory]"))button.disabled=true;
+    $("#candidate-notice",content).textContent="正在读取候选…";
+    if(reset){cursor=0;version=null;}
+    try{
+      const source=$("#candidate-source",content).value;
+      const page=await rpc("artifacts.candidates",{project_id,run_id:runId,source,cursor,...(source==="outputs"?{directory,version}:{})});
+      $("#candidate-list",content).innerHTML=page.items.map(item=>`<section class="v2-panel"><strong>${escape(item.name)}</strong><pre class="v2-pre">${escape(item.path)}</pre><p>${item.published===true?"当前内容已有发布副本":item.published===false?"此版本尚未发布":"发布状态待内容校验"} · ${item.bytes} 字节 · ${item.sha256?escape(item.sha256):"尚未校验内容"}</p><p data-candidate-state="${escape(item.reference)}" class="v2-muted">保留原观察；当前来源尚未复核。</p><button class="btn btn-small" data-candidate-check="${escape(item.reference)}">复核当前文件版本</button></section>`).join("")||'<p class="quiet-state">此页没有文件候选。工作目录中的其他文件可通过实例命令查看。</p>';
+      $("#candidate-directory",content).innerHTML=source==="outputs"?`<span>输出目录 / ${escape(directory)}</span>${directory?'<button class="btn btn-small" data-directory="">返回输出根目录</button>':""}${(page.directories||[]).map(path=>`<button class="btn btn-small" data-directory="${escape(path)}">${escape(path)}/</button>`).join("")}`:"";
+      $("#candidate-notice",content).textContent=page.truncated?"当前目录仅观察前 1000 项。请选择更具体的目录，或用命令核验其余文件。":"文件需要明确发布后才会出现在工作产物中。";
+      cursor=page.cursor;version=page.version||null;$("#candidate-more",content).hidden=cursor==null;
+      for(const button of content.querySelectorAll("[data-directory]"))button.onclick=()=>{directory=button.dataset.directory;read(true);};
+      for(const button of content.querySelectorAll("[data-candidate-check]"))button.onclick=async()=>{
+        button.disabled=true;
+        try{
+          const result=await rpc("artifacts.candidate",{project_id,reference:button.dataset.candidateCheck,check_source:true});
+          const labels={unchanged:"内容与原候选版本一致。",changed:"来源已经变化，请复核引用旧版本的结论。",missing:"来源文件已不存在；原候选记录仍保留。",first_verification:"已完成首次内容校验，原观察只记录了文件元数据。"};
+          const target=button.parentElement.querySelector("[data-candidate-state]");target.textContent=labels[result.source_state]||result.source_state;
+          if(result.current?.sha256)target.textContent+=" 当前 SHA-256："+result.current.sha256;
+          if(result.current?.published!=null)target.textContent+=result.current.published?" · 当前内容已有发布副本。":" · 当前内容尚未发布。";
+        }catch(error){notify(error.message,true);}finally{button.disabled=false;}
+      }
+    }catch(error){$("#candidate-notice",content).textContent=error.message;notify(error.message,true);}finally{
+      loading=false;for(const selector of ["#candidate-source","#candidate-refresh","#candidate-more"])$(selector,content).disabled=false;
+      for(const button of content.querySelectorAll("[data-directory]"))button.disabled=false;
+    }
+  };
+  $("#candidate-source",content).onchange=()=>{directory="";read(true);};
+  $("#candidate-refresh",content).onclick=()=>read(true);$("#candidate-more",content).onclick=()=>read();await read();
 }
 function resumeRun(run,refresh){
   const form=element(`<form><p>沿原检查点和预算继续，已完成的动作保留原回执。</p><label class="field">补充输入<textarea name="input" rows="4" maxlength="1048576"></textarea></label><label class="field">本次图执行步数上限（可选）<input name="max_steps" type="number" min="1" max="100000" step="1" placeholder="沿用最近有效值"></label><p class="form-hint">步数按图的 super-step 计算；累计调用与 token 预算继续生效。</p><button class="btn primary">继续执行</button></form>`);

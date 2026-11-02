@@ -3,29 +3,19 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 import json
 import os
 import threading
-import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet
 
 from oea.contracts.errors import RuntimeFault
-
-
-def atomic_write(path: Path, data: bytes):
-    temporary = path.with_suffix(path.suffix + "." + uuid.uuid4().hex + ".new")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+from oea.security.files import atomic_write
 
 
 def dpapi(data: bytes, decrypt=False) -> bytes:
+    import ctypes
     from ctypes import wintypes
 
     class Blob(ctypes.Structure):

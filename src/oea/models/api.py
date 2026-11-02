@@ -85,6 +85,8 @@ class ModelAPI:
         if credential:
             headers["Authorization"] = "Bearer " + credential
         text, calls, usage, finished, finish_reason, response_bytes = [], {}, {}, False, "stop", 0
+        reasoning, details = [], []
+        reasoning_seen = False
         # Bound retained output, not repeated SSE envelopes or ignored provider
         # fields. The byte allowance is a local policy, not a tokenizer guarantee.
         response_limit = max(MODEL_OUTPUT_MIN_BYTES, prepared.output_tokens * MODEL_OUTPUT_BYTES_PER_TOKEN)
@@ -102,8 +104,13 @@ class ModelAPI:
 
         def ordered_calls(transform=lambda value: value):
             return tuple({"id": transform("".join(calls[index]["id"])), "type": "function",
-                          "function": {key: transform("".join(calls[index][key])) for key in ("name", "arguments")}}
+                          "function": {key: transform("".join(calls[index][key])) for key in ("name", "arguments")},
+                          **({"extra_content": calls[index]["extra_content"]} if "extra_content" in calls[index] else {})}
                          for index in sorted(calls))
+
+        def continuation():
+            return {**({"reasoning_content": "".join(reasoning)} if reasoning_seen else {}),
+                    **({"reasoning_details": details} if details else {})}
 
         def output_measurement():
             return measurement("captured_output_bytes", response_bytes, "byte", "measured", limit=response_limit,
@@ -112,6 +119,7 @@ class ModelAPI:
         def partial():
             return Completion(text=self.redact("".join(text)), tool_calls=ordered_calls(self.redact),
                               usage=usage, finish_reason="interrupted", measurements=(prepared.measurement, output_measurement()), attempt_facts=dict(facts),
+                              continuation=continuation(),
                               content_view=content_view("full", integrity="partial", source_complete=False))
 
         try:
@@ -124,6 +132,8 @@ class ModelAPI:
                     await fact("response_received")
                     if response.status_code >= 400:
                         provider = await provider_error(response, self.redact)
+                        if 400 <= response.status_code < 500:
+                            facts["provider_accepted"] = False
                         if response.status_code in {400, 413} and provider.get("provider_code") in {"context_length_exceeded", "max_context_length_exceeded"}:
                             facts["provider_accepted"] = False
                             raise RuntimeFault("MODEL_CONTEXT_REJECTED", "Model provider rejected the request's context length",
@@ -149,6 +159,14 @@ class ModelAPI:
                             if choice.get("index", 0) != 0:
                                 continue
                             delta = choice.get("delta", {})
+                            if "reasoning_content" in delta and delta["reasoning_content"] is not None:
+                                reasoning_seen = True
+                                append_output(delta["reasoning_content"], reasoning)
+                            if delta.get("reasoning_details"):
+                                require(isinstance(delta["reasoning_details"], list), "MODEL_PROTOCOL_ERROR", "Reasoning details must be an array")
+                                retained = []
+                                append_output(json.dumps(delta["reasoning_details"], ensure_ascii=False), retained)
+                                details.extend(delta["reasoning_details"])
                             if delta.get("refusal"):
                                 finish_reason = "refusal"
                                 append_output(delta["refusal"], text)
@@ -162,6 +180,11 @@ class ModelAPI:
                                 call = calls.setdefault(index, {"id": [], "name": [], "arguments": []})
                                 append_output(part.get("id", ""), call["id"])
                                 function = part.get("function", {})
+                                if "extra_content" in part:
+                                    require(isinstance(part["extra_content"], dict), "MODEL_PROTOCOL_ERROR", "Tool continuation metadata must be an object")
+                                    retained = []
+                                    append_output(json.dumps(part["extra_content"], ensure_ascii=False), retained)
+                                    call["extra_content"] = part["extra_content"]
                                 append_output(function.get("name", ""), call["name"])
                                 append_output(function.get("arguments", ""), call["arguments"])
                             if choice.get("finish_reason"):
@@ -195,7 +218,7 @@ class ModelAPI:
         except RuntimeFault as error:
             error.details["attempt_facts"] = dict(facts)
             error.identity.setdefault("stage", "stream")
-            if text or calls or usage:
+            if text or calls or usage or reasoning_seen or details:
                 value = partial()
                 if error.code == "MODEL_RESPONSE_TOO_LARGE":
                     value.content_view = content_view("full", integrity="truncated", source_complete=False)
@@ -208,5 +231,6 @@ class ModelAPI:
         facts["terminal_at"] = now_ms()
         integrity = "incomplete" if finish_reason in {"length", "max_tokens"} else "complete"
         return Completion(text="".join(text), tool_calls=ordered, usage=usage, finish_reason=finish_reason,
+                          continuation=continuation(),
                           measurements=(prepared.measurement, output_measurement()), attempt_facts=facts,
                           content_view=content_view("full", integrity=integrity, source_complete=integrity == "complete"))

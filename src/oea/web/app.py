@@ -79,7 +79,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             if not token or not hmac.compare_digest(token.encode("utf-8"), provided.encode("utf-8")):
                 return JSONResponse(envelope(error={"code": "PERMISSION_DENIED", "safe_message": "Local client authentication required"}), status_code=401)
             if request.headers.get("X-OEA-Protocol-Version", PROTOCOL_VERSION) != PROTOCOL_VERSION:
-                return JSONResponse(envelope(error={"code": "PROTOCOL_MISMATCH", "safe_message": "Use an OEA v2 client"}), status_code=409)
+                return JSONResponse(envelope(error={"code": "PROTOCOL_MISMATCH", "safe_message": "Use an OEA protocol-3 client"}), status_code=409)
         response = await call_next(request)
         response.headers.update({"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
@@ -178,5 +178,22 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
         preview = inline and (media in {"image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown", "application/json"})
         return FileResponse(path, filename=record["name"], media_type=media if preview else "application/octet-stream",
                             content_disposition_type="inline" if preview else "attachment")
+
+    @app.get("/api/commands/{command_session_id}/{stream}")
+    async def command_output(command_session_id: str, stream: str, run_id: str, project_id: str):
+        from oea.artifacts.service import file_io
+        path, record = await app.state.host.runs.command_output(run_id, command_session_id, project_id, stream)
+        size = path.stat().st_size
+        async def chunks():
+            remaining = size
+            with path.open("rb") as original:
+                while remaining:
+                    chunk = await file_io(original.read, min(1024 * 1024, remaining))
+                    require(chunk, "COMMAND_OUTPUT_CHANGED", "Retained command output became unavailable")
+                    remaining -= len(chunk)
+                    yield chunk
+        return StreamingResponse(chunks(), media_type="application/octet-stream", headers={
+            "Content-Length":str(size), "Content-Disposition":f'attachment; filename="{command_session_id}-{stream}.bin"',
+            "X-OEA-Source-State":record["state"], "X-OEA-Snapshot-Bytes":str(size)})
 
     return app

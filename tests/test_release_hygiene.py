@@ -47,7 +47,7 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_public_assets_templates_and_synthetic_examples_remain_allowed(self):
         for name in (
             "docs/images/diagram.svg", "src/oea/security/secrets.py",
-            "src/oea/storage/schema-v2.sql", ".env.example",
+            "src/oea/storage/schema-v3.sql", ".env.example",
             ".github/workflows/ci.yml", "tests/fixtures/mcp_server.py",
             "integrations/codex/example/references/local-instance.md",
         ):

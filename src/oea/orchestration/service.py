@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from oea.contracts.configuration import PROTOCOL_VERSION
+
 import asyncio
 import hashlib
 import json
@@ -710,6 +712,7 @@ class Workflows:
         if previous:
             require(previous["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Resume key has different input")
             return await self.get_run(workflow_run_id, project_id=project_id)
+        require(run["execution_version"] == PROTOCOL_VERSION, "EXECUTION_VERSION_UNSUPPORTED", "The original graph checkpoint is archived; inspect its receipts before creating new work")
         require(not self.inflight(workflow_run_id), "OUTCOME_UNCERTAIN", "Original computation is still in flight")
         require(run["state"] in {"waiting", "failed", "needs_review"} and run["cancel_requested_at"] is None, "WORKFLOW_NOT_RESUMABLE", "Choose an original waiting or recoverable graph")
         checkpoint_id, repair_steps, selected = None, [], interrupt_id

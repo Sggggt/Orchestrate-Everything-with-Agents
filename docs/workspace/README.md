@@ -1,36 +1,24 @@
 # workspace 模块接口
 
-真实目录解析、文件读写、Shell 和图片工具。
+目录授权、原生执行、命令会话、补丁与媒体读取复用同一个工具网关。源码：[src/oea/workspace/](../../src/oea/workspace/)。
 
-源码：[src/oea/workspace/](../../src/oea/workspace/)
+| 文件 | 责任 |
+| --- | --- |
+| `paths.py` | 本机状态目录、安装目录及安全子路径 |
+| `environment.py` | `WorkspacePaths`、有效环境、工具链发现和统一启动 |
+| `native.py` | 组件位置、版本检查、独立控制通道与实际终结回执 |
+| `commands.py` | 持久命令会话、增量输出、输入、超时、终止和原日志读取 |
+| `patches.py` | 同文件比较写入、唯一上下文补丁与修订冲突 |
+| `worker.py` | 在同一原生边界内执行文件操作，将捕获结果交回宿主 |
+| `media.py` | 对已捕获图片核验类型、尺寸和哈希 |
+| `service.py` | 五个本地工具的薄适配 |
 
-## Python 接口
+`ProjectWorkspace` 提供项目默认目录、Shell、环境变量和网络策略。`Workspace.resolved` 产生 Run 快照；执行时与当前授权取交集。配置撤权终止相关活命令，不能继续使用旧 stdin 扩权。等待中的 Run 仍保留命令归属和实例单写者边界。
 
-- `workspace/paths.py`：`require_local_state(path: Path)`
-- `workspace/paths.py`：`default_data_dir()`
-- `workspace/paths.py`：`user_home()`、`resolve_data_dir(path=None)`、`installation_paths()`
-- `workspace/paths.py`：`external_path(path: str | Path)`
-- `workspace/paths.py`：`safe_child(root: Path, relative: str)`
-- `workspace/service.py`：`digest(data)`
-- `workspace/service.py`：`WorkspacePaths`
-  - `for_instance(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None)`
-  - `prepare(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None)`
-  - `as_dict(self)`
-  - `resolve(self, value, *, write=False)`
-- `workspace/service.py`：`schema(properties, required)`
-- `workspace/service.py`：`FileWrites`
-  - `async run(self, path, write)`
-- `workspace/service.py`：`LocalTool`
-  - `describe(self)`
-  - `async invoke(self, request)`
-  - `image_type(path)`
-  - `files(self, args, paths)`
-  - `async command(self, request, paths, settings)`
+每个命令按需建立原生进程树，不建立驻留容器或第二个 Host。意图先落盘，yield 不终止进程。`runs.command` 可在完成后读取原日志；宿主重启失去所有权时保留未知结果，不重启命令。
 
-## 依赖与边界
+同文件锁只覆盖该文件。命令和外部编辑器仍须协调共享文件；显式共享和预先存在的硬链接不构成独立文件对象。补丁拒绝通过链接写入，实际文件与网络边界由原生后端执行。
 
-默认用户根是 `~/.oea`，主宿主数据在 `data/`。推荐的 `uv tool install` 方式由 uv 管理运行环境并提供用户级全局 `oea` 命令；通过 pip 安装后，命令位于所选 Python 环境；可选 Windows 安装器使用 `runtime/` 托管环境，并准备 `cache/` 与 `bin/`。这些程序安装位置与 OEA 持久状态分开，路径查询可以报告尚未创建的标准位置。`OEA_HOME` 可显式指定一个绝对路径以隔离测试或特殊部署；默认路径不从调用方的应用缓存、工作目录或旧 `OEA_DATA_DIR` 推导。路径查询不创建目录，宿主与客户端使用同一解析函数，并保留源码、同步目录和本地磁盘边界检查。
+默认用户根为 `~/.oea`，状态在 `data/`。`OEA_HOME` 可显式选择绝对本机目录；`oea paths` 只报告位置。已有宿主用 `PlatformClient` 连接。状态、构建输出和可变缓存位于源码与同步目录之外。
 
-依赖模块：contracts、security、stdio、tools。
-
-跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+精确参数以共享注册表为准。依赖 contracts、security、stdio、tools 和[原生组件](../native/README.md)。

@@ -19,7 +19,7 @@
 - `contracts/configuration.py`：`Tools`
   - `distinct(self)`
 - `contracts/configuration.py`：`SkillBinding`
-- `contracts/configuration.py`：`ContextPolicy`
+- `contracts/configuration.py`：`ContextPolicy`、`SummaryPolicy`、`ModelPricing`、`ProjectWorkspace`
 - `contracts/configuration.py`：`Workspace`
 - `contracts/configuration.py`：`Budget`
 - `contracts/configuration.py`：`Delivery`
@@ -67,3 +67,5 @@
 `content_view` 区分 full、excerpt、page、summarized，另带 integrity、source_ref、source_complete、range 和 next_offset。range 的 unit 与顶层 offset_unit 一致：文本与 JSON 页为 unicode_codepoint，产物页为 byte；调用方必须使用返回的续读位置。页面读取完毕不代表原始输出完整。partial、truncated、incomplete 分别表示中断后的部分内容、捕获上限截断和生成未完整结束。
 
 RuntimeFault 保留 cause，并公开 origin、stage、purpose、reason、action_id、attempt_id、measurement、evidence_ref、continuation。`diagnostic` 是普通函数从这些事实生成的展示投影，不再由各入口猜测原因。provider_accepted 未获明确证据时保持 null，进入发送、收到响应和计费用量不能互相代替。
+
+协议 3 的配置、MCP 和 Web 共用这些类型。预算总输入、非缓存输入、费用和收尾/恢复预留独立命名；MessageSpec 使用板块与自由正文，不再要求消息用途枚举；Workspace 原生策略与明确 trusted 模式分开。

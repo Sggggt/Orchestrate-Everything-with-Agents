@@ -1,4 +1,4 @@
-# v2 协议约定
+# 协议 3 约定
 
 共享注册表是参数、默认值、Schema 和错误的唯一来源。platform_guide 查看一个 area/action，platform_call 执行一个 operation；两者都使用稳定 consumer_id。
 
@@ -6,4 +6,8 @@
 
 同一意图使用原 idempotency_key。参数不同的新工作需要新的明确意图，未知结果不属于新工作。读回原 Run、WorkflowRun、action、model attempt 或产物之后，才决定修复和继续。
 
-状态、投递、应用、完成、阅读游标和用户业务核验分别表达不同事实。保留完整内容和来源，用简短摘要展示，不为 Markdown 格式发起模型修复。
+状态、保存、投递、阅读游标、工作完成和用户业务核验分别表达不同事实。保留完整内容和来源，用简短摘要展示，不为 Markdown 格式发起模型修复。
+
+报告和产物可使用授权原件下载，不必反复读取小片段。命令输出通过原 command_session_id 查询或下载，未知状态不重放。
+
+未发布文件可通过 artifacts.candidates 查看补丁回执或按需观察本次输出目录；artifacts.candidate 可复核当前来源版本。候选、明确发布与业务验收是不同事实；来源变化后只复核关联结论，不重放原写入。

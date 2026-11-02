@@ -29,11 +29,11 @@ def parser():
     migrate.add_argument("--source", type=Path, required=True)
     migrate.add_argument("--target", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Write a separate new target; the default is a read-only dry run")
-    upgrade = commands.add_parser("upgrade-state", help="Inspect or upgrade a recognized v2 state while its host is stopped")
+    upgrade = commands.add_parser("upgrade-state", help="Convert recognized v2 state into a new directory while its host is stopped")
     upgrade.add_argument("--data-dir", type=Path)
-    upgrade.add_argument("--backup-file", type=Path)
-    upgrade.add_argument("--apply", action="store_true", help="Apply the additive upgrade after creating the specified new backup")
-    request = commands.add_parser("request", help="Call one operation on an existing v2 host")
+    upgrade.add_argument("--target", type=Path)
+    upgrade.add_argument("--apply", action="store_true", help="Write the new target after verifying the unchanged source")
+    request = commands.add_parser("request", help="Call one operation on an existing protocol-3 host")
     request.add_argument("operation")
     request.add_argument("--params-file", type=Path)
     request.add_argument("--data-dir", type=Path)
@@ -76,10 +76,12 @@ def main(argv=None):
             print(json.dumps(export_skill(args.output), ensure_ascii=False))
         elif args.command == "migrate":
             from oea.migration.offline import migrate_legacy
-            print(json.dumps(migrate_legacy(args.source, target=args.target, apply=args.apply), ensure_ascii=False, indent=2))
+            from oea.migration.upgrade import upgrade_state
+            conversion = upgrade_state if (args.source / "oea.sqlite").exists() else migrate_legacy
+            print(json.dumps(conversion(args.source, target=args.target, apply=args.apply), ensure_ascii=False, indent=2))
         elif args.command == "upgrade-state":
             from oea.migration.upgrade import upgrade_state
-            print(json.dumps(upgrade_state(args.data_dir, backup_file=args.backup_file, apply=args.apply), ensure_ascii=False, indent=2))
+            print(json.dumps(upgrade_state(args.data_dir, target=args.target, apply=args.apply), ensure_ascii=False, indent=2))
         elif args.command == "request":
             print(json.dumps(asyncio.run(request(args)), ensure_ascii=False))
         elif args.command == "mcp":

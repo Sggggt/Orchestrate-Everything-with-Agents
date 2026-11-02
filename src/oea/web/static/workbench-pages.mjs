@@ -5,6 +5,7 @@ export { renderArtifactsPage };
 import { avatar,agentCards,unreadBadge } from "./workbench-shell.mjs";
 import { showRun } from "./runs.mjs";
 import { markdown } from "./markdown.mjs";
+import { formField } from "./configuration-form.mjs";
 
 export { renderConversation,disposeConversation } from "./conversation.mjs";
 export function bindWorkbench(app,root){
@@ -69,8 +70,12 @@ export async function openInstance(app,identity){
   if(!s.openTabs.includes(identity))s.openTabs.push(identity);await app.navigate("conversation");
 }
 function projectSettings(app){
-  const s=app.state,content=element(`<form><label class="field">项目名称<input id="rename-project" required maxlength="80" value="${escape(s.project.name)}"></label><dl class="v2-kv"><dt>原件目录</dt><dd>${escape(s.project.folder||"尚未绑定")}</dd><dt>数据位置</dt><dd>${escape(s.status.data_dir)}</dd></dl><div class="inline-actions"><button type="button" class="icon-btn danger-text" id="delete-project" title="永久删除项目" aria-label="永久删除项目">${icon("trash")}</button><button class="btn primary">保存名称</button></div></form>`),close=modal("项目设置",content);
-  content.onsubmit=async event=>{event.preventDefault();try{Object.assign(s.project,await rpc("projects.update",{project_id:s.project.id,name:$("#rename-project",content).value}));close();app.refreshFrame();await app.render();}catch(error){notify(error.message,true);}};
+  const s=app.state;let workspace=structuredClone(s.project.workspace||{});
+  const content=element(`<form><label class="field">项目名称<input id="rename-project" required maxlength="80" value="${escape(s.project.name)}"></label><dl class="v2-kv"><dt>原件目录</dt><dd>${escape(s.project.folder||"尚未绑定")}</dd><dt>数据位置</dt><dd>${escape(s.status.data_dir)}</dd></dl><p class="form-hint">Agent 默认继承这些目录、Shell 和网络设置。Agent 中填写的对应值会覆盖默认值，关闭继承可配置独立环境。</p><div id="project-environment"></div><div class="inline-actions"><button type="button" class="icon-btn danger-text" id="delete-project" title="永久删除项目" aria-label="永久删除项目">${icon("trash")}</button><button class="btn primary">保存设置</button></div></form>`),close=modal("项目设置",content);
+  const schema={...s.schema.$defs.Workspace,properties:Object.fromEntries(Object.entries(s.schema.$defs.Workspace.properties).filter(([key])=>["work","references","writable_project_paths","writable_directories","shell","environment","network"].includes(key)))};
+  schema.properties.network={...schema.properties.network.anyOf.find(value=>value.type!=="null"),default:"deny"};
+  $("#project-environment",content).append(formField({schema,root:s.schema,get:()=>workspace,set:value=>workspace=value,name:"workspace"}));
+  content.onsubmit=async event=>{event.preventDefault();try{Object.assign(s.project,await rpc("projects.update",{project_id:s.project.id,name:$("#rename-project",content).value,workspace,expected_revision:s.project.revision}));close();app.refreshFrame();await app.render();}catch(error){notify(error.message,true);}};
   $("#delete-project",content).onclick=()=>{close();deleteProject(app,s.project);};
 }
 function deleteProject(app,project){

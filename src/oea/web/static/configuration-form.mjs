@@ -7,15 +7,16 @@ export const labels = {
   context_window_tokens:"模型上下文窗口",token_parameter:"供应商输出参数",timeout_seconds:"请求超时（秒）",local:"本地工具",functions:"Python 函数工具",
   mcp:"MCP 服务绑定",server_id:"服务标识",tools:"允许的工具",skills:"Skills",path:"目录",required:"执行前必需",input_tokens:"工作输入 token",
   pressure:"记忆更新压力比例",tool_inline_tokens:"工具结果内联 token",memory_tokens:"阶段记忆 token",safety_tokens:"安全余量 token",recent_turns:"近期保留消息组",
-  project:"项目原件目录",work:"实例工作目录的根目录",references:"只读参考目录",writable_project_paths:"允许写入的项目子目录",shell:"Shell 参数",environment:"环境变量",
+  project:"项目原件目录",work:"实例工作目录的根目录",references:"只读参考目录",writable_project_paths:"允许写入的项目子目录",writable_directories:"允许写入的其他目录",inherit_project:"继承项目环境默认值",shell:"Shell 参数",environment:"环境变量",
   command_timeout_seconds:"命令超时（秒）",graph:"执行图",graph_version:"代码图版本",program:"进程程序与参数",program_uses_model:"程序需要模型",budget:"费用与时间预算",
   delivery:"交付要求",text_required:"要求正文",min_artifacts:"最少产物数",output_schema:"结构化结果 JSON Schema",max_model_calls:"最大模型调用次数",
-  max_input_tokens:"累计输入 token 上限",max_output_tokens_budget:"累计输出 token 上限",max_tool_calls:"最大工具调用次数",max_elapsed_seconds:"最长工作时间（秒）",
+  max_total_input_tokens:"累计总输入上限（含缓存，可选）",max_uncached_input_tokens:"累计非缓存输入上限（可选）",max_cost:"费用预算上限（按估算预留）",currency:"币种",finalization_fraction:"收尾预留比例",recovery_fraction:"恢复预留比例",max_output_tokens_budget:"累计输出 token 上限",max_tool_calls:"最大工具调用次数",max_elapsed_seconds:"最长工作时间（秒）",
   max_stalled_model_calls:"无新证据的模型调用上限",departments:"获准伙伴 Agent标识",can_request:"允许向伙伴请求工作",communication:"通信权限",manager:"manager",
   instructions:"运行指令",context:"上下文与记忆",workspace:"工作环境",execution:"执行与交付",max_steps:"图步数上限（可选）",
   transport:"连接方式",command:"程序与参数",cwd:"程序启动目录",url:"服务地址",environment_refs:"环境变量秘密引用",header_refs:"HTTP 头秘密引用",program_timeout_seconds:"单次进程执行超时（秒）",revision:"Skill 修订（留空采用最新）"
   ,outputs:"业务输出",input:"工作输入",agent_id:"Agent 能力标识",items:"映射列表",outcome:"结果策略",left:"左值",operator:"比较方式",right:"右值",value:"值",arguments:"函数参数",workflow_id:"子图标识",inputs:"子图输入",prompt:"等待提示"
 };
+Object.assign(labels,{summary_model:"独立摘要模型（可选）",summary:"摘要生成",thinking:"思考模式",max_attempts:"摘要尝试总上限",pricing:"计费价格",usage_format:"供应商用量格式",input_per_million:"非缓存输入 / 百万 token",output_per_million:"输出 / 百万 token",cache_read_per_million:"缓存读取 / 百万 token",cache_write_per_million:"缓存写入 / 百万 token",cache_upper_bound_per_million:"缓存未知时的保守单价上界",sandbox:"沙箱后端",network:"沙箱网络",command_output_bytes:"每路命令输出保留上限（字节）",command_inline_bytes:"命令内联输出上限（字节）"});
 const copy = value => structuredClone(value);
 export function resolveSchema(schema, root) {
   let value = schema;

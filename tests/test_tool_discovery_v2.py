@@ -187,9 +187,14 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 return call("load", "tool_guide", {"name": "calculate", "pin": True})
         self.host.model_api = ModelFixture()
         run = await self.submit()
-        with self.assertRaises(RuntimeFault) as caught:
-            await self.host.runs.result(run.id, timeout=5)
-        self.assertEqual(caught.exception.code, "MODEL_CONTEXT_BUDGET")
+        async with asyncio.timeout(5):
+            while True:
+                changed = self.host.run_signal(run.id)
+                retained = await self.host.runs.get(run.id)
+                if retained["state"] == "waiting":
+                    break
+                await changed.wait()
+        self.assertEqual(retained["wait"]["reason"]["code"], "MODEL_CONTEXT_BUDGET")
         self.assertEqual(len(calls), 1)
         self.assertFalse(huge.calls)
 

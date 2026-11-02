@@ -25,7 +25,7 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         async def create(name):
             def write(db):
-                db.execute("INSERT INTO projects VALUES('project',?,NULL,0,1)", (name,))
+                db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES('project',?,NULL,0,1)", (name,))
                 event(db, "project.created", project_id="project")
             await self.store.call(write, transaction=True)
             return name
@@ -41,7 +41,7 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exception_rolls_back_both_fact_and_event(self):
         def fail(db):
-            db.execute("INSERT INTO projects VALUES('project','Project',NULL,0,1)")
+            db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES('project','Project',NULL,0,1)")
             event(db, "project.created", project_id="project")
             raise ValueError("Abort transaction")
         with self.assertRaises(ValueError):

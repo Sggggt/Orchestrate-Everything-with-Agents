@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from oea import Agent, AgentDefinition, Artifact, Completion, Model, RunSpec, Tools
+from oea import Agent, AgentDefinition, Artifact, Completion, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.storage.persistence import one
@@ -217,7 +217,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         upload = await self.host.artifacts.begin_upload("p", "evidence.png", len(body), hashlib.sha256(body).hexdigest(), "image",
             session_id=self.session["id"], consumer_id="controller")
         await self.stream(upload["id"], body)
-        await self.host.agents.save(AgentDefinition(id="reader", name="Reader", tools=Tools(local=("read_image",)),
+        await self.host.agents.save(AgentDefinition(id="reader", name="Reader", tools=Tools(local=("view_image",)), workspace=Workspace(),
             model=Model(base_url="https://model.invalid/v1", model="protocol-fixture")))
         images, observed = [], []
         class ImageModel:
@@ -229,10 +229,11 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
                 if tools:
                     observed.append(tools[-1])
                     return Completion(text="Image inspected", usage={"prompt_tokens": 50, "completion_tokens": 4})
-                return Completion(tool_calls=({"id": "image", "type": "function", "function": {"name": "read_image",
+                return Completion(tool_calls=({"id": "image", "type": "function", "function": {"name": "view_image",
                     "arguments": json.dumps({"artifact_id": upload["id"]})}},), finish_reason="tool_calls",
                     usage={"prompt_tokens": 50, "completion_tokens": 4})
         self.host.model_api = ImageModel()
+        self.enterContext(patch("oea.workspace.environment.ExecutionEnvironment.available", side_effect=RuntimeFault("SANDBOX_UNAVAILABLE", "Component is absent")))
         async with Agent.from_saved("reader", host=self.host, session_id=self.session["id"]) as agent:
             self.assertEqual((await agent.arun("Inspect the assigned image", artifact_ids=(upload["id"],))).text, "Image inspected")
         self.assertEqual(len(images), 1)

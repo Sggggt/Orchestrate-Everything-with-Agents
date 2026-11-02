@@ -58,7 +58,7 @@ class ReleaseV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="oea-skill-export-") as temporary:
             target = Path(temporary) / "skill"
             exported = export_skill(target)
-            self.assertEqual(exported["protocol_version"], "2.0")
+            self.assertEqual(exported["protocol_version"], "3.0")
             self.assertTrue((target / "SKILL.md").is_file())
             self.assertTrue((target / "workflows/develop.md").is_file())
             self.assertTrue((target / "assets/mark.svg").is_file())

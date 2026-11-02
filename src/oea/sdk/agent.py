@@ -20,7 +20,7 @@ def plain(value):
 
 
 class Agent:
-    def __init__(self, *, name, model=None, instructions="", tools=None, skills=(), context=None,
+    def __init__(self, *, name, model=None, summary_model=None, instructions="", tools=None, skills=(), context=None,
                  workspace=None, execution=None, communication=None, manager=None, agent_id=None,
                  state_dir=None, host=None, client=None, project_id=None, session_id=None):
         require(not (host and client), "INVALID_REQUEST", "Choose a local host or an existing-host client")
@@ -31,7 +31,7 @@ class Agent:
         options = {"id": agent_id or slug, "name": name, "project_id": project_id, "model": model or Model.from_env(),
                    "instructions": Instructions(system=instructions) if isinstance(instructions, str) else instructions,
                    "tools": toolkit.bindings, "skills": skills, "workspace": workspace or Workspace(), "manager": manager}
-        options.update({key: value for key, value in (("context", context), ("execution", execution), ("communication", communication)) if value is not None})
+        options.update({key: value for key, value in (("summary_model", summary_model), ("context", context), ("execution", execution), ("communication", communication)) if value is not None})
         self.definition = AgentDefinition.model_validate(options)
         self.toolkit = toolkit
         self.state_dir = Path(state_dir) if state_dir is not None else None
@@ -85,7 +85,7 @@ class Agent:
                 from oea.runtime.host import Host
                 from oea.workspace.paths import default_data_dir
                 directory = self.state_dir or default_data_dir() / "sdk" / self.definition.id
-                backend = Host(directory, allow_commands=self._owned_commands if self._saved else "run_command" in self.definition.tools.local)
+                backend = Host(directory, allow_commands=self._owned_commands if self._saved else "exec_command" in self.definition.tools.local)
                 if self._saved:
                     require(not (backend.root / "runtime.sqlite").exists(), "SCHEMA_MISMATCH", "Use offline migration before opening legacy state")
                     require((backend.root / "oea.sqlite").is_file(), "NOT_FOUND", "Saved SDK state is unavailable")

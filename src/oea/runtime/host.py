@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import replace
 from pathlib import Path
 
 from oea.tools.gateway import ToolGateway
 from oea.artifacts.service import Artifacts
 from oea.budgets.service import Budgets
 from oea.catalog.service import Agents, Instances, Projects, Sessions, need
-from oea.contracts.configuration import AgentDefinition
+from oea.contracts.configuration import AgentDefinition, PROTOCOL_VERSION
 from oea.context.store import ContextStore
 from oea.contracts.errors import RuntimeFault, require
 from oea.security.lock import WorkspaceLock
@@ -25,10 +24,12 @@ from oea.runtime.context import BUILTIN_SCHEMAS, BuiltinTool, RunContext
 from oea.runtime.runs import Runs
 from oea.security.secrets import SecretVault
 from oea.workspace.service import SCHEMAS, FileWrites, LocalTool, WorkspacePaths
+from oea.workspace.commands import CommandSessions
 from oea.orchestration.service import Workflows
 from oea.orchestration.registry import AgentGraphs
 from oea.collaboration.messages import Messages
-from oea.collaboration.coordination import Coordination, CoordinationTool, MANAGER_TOOLS, INSTANCE_TOOLS
+from oea.collaboration.boards import Boards
+from oea.collaboration.coordination import Coordination, CoordinationTool, COORDINATION_TOOLS, INSTANCE_TOOLS
 from oea.collaboration.dependencies import RunDependencies
 from oea.storage.events import Events
 from oea.storage.result_refs import ResultReferences
@@ -60,7 +61,7 @@ class Host:
                                  authorize_intent=self.authorize_intent, on_intent_settle=self.on_intent_settle)
         self.projects, self.agents, self.sessions, self.instances = Projects(self), Agents(self), Sessions(self), Instances(self)
         self.runs, self.artifacts = Runs(self), Artifacts(self)
-        self.messages = Messages(self)
+        self.messages, self.boards = Messages(self), Boards(self)
         self.coordination, self.dependencies = Coordination(self), RunDependencies(self)
         self.events_service = Events(self)
         self.results = ResultReferences(self)
@@ -75,24 +76,26 @@ class Host:
         self.agent_graphs.register("default", compile_agent_graph, version="1")
         self.registry = OperationRegistry()
         self.file_writes = FileWrites()
+        self.command_sessions = CommandSessions(self.root / "commands", on_settle=self._command_settled)
         self.saver_scope = self.saver = self.graph = None
         for name in SCHEMAS:
-            self.tools.register(LocalTool(name, resolve_run=self.resolve_workspace, publish=self.artifacts.publish, commands_enabled=allow_commands, file_writes=self.file_writes, image_artifact=self.artifacts.image_for_run))
+            self.tools.register(LocalTool(name, resolve_run=self.resolve_workspace, publish=self.artifacts.publish, commands_enabled=allow_commands, file_writes=self.file_writes, image_artifact=self.artifacts.image_for_run, sessions=self.command_sessions))
         self.tools.register(ProcessAgentTool(self, enabled=allow_commands))
         for name in BUILTIN_SCHEMAS:
             self.tools.register(BuiltinTool(self, name))
-        for name in sorted(MANAGER_TOOLS):
+        for name in sorted(COORDINATION_TOOLS):
             self.tools.register(CoordinationTool(self, name))
         for area, service, names in (("projects", self.projects, ("create", "get", "list", "update", "delete")),
                                      ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
                                      ("instances", self.instances, ("create", "get", "list", "history", "mark_read")),
-                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "attempts", "response", "result", "resume", "cancel", "confirm_action")),
-                                     ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "begin_upload", "get_upload", "commit_upload")),
+                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action")),
+                                     ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "candidates", "candidate", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),
+                                     ("boards", self.boards, ("create", "get", "list", "set_reader")),
                                      ("budgets", self.budgets, ("create", "get"))):
             for name in names:
-                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread"})
+                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "command", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread", "candidates", "candidate"})
         for name in ("send", "get", "list", "mark_read", "unread"):
             self.registry.register("messages." + name, getattr(self.messages, name), read_only=name in {"get", "list", "unread"})
         self.registry.register("host.status", self.status, read_only=True)
@@ -150,13 +153,14 @@ class Host:
 
     async def status(self):
         from oea import __version__
+        from oea.workspace.native import inspect_component
         def read(db):
             return (rows(db, "SELECT state,COUNT(*) AS count FROM runs WHERE state IN ('accepted','running','waiting','needs_review') GROUP BY state"),
                     rows(db, "SELECT state,COUNT(*) AS count FROM workflow_runs WHERE state IN ('accepted','running','waiting','needs_review') GROUP BY state"))
         counts, workflow_counts = await self.store.call(read)
         workflows = {row["state"]: row["count"] for row in workflow_counts}
         active_workflows = workflows.get("running", 0) + len(set(self.workflows.computation_owners.values()) & self.workflows.reviewing)
-        return {"version": __version__, "protocol_version": "2.0", "opened": self.opened, "closing": self.closing,
+        return {"version": __version__, "protocol_version": "3.0", "opened": self.opened, "closing": self.closing, "native_component": await inspect_component(),
                 "data_dir": str(self.root), "active_executions": len(self.active) + active_workflows,
                 "active_agent_executions": len(self.active), "active_workflow_executions": active_workflows,
                 "active_artifact_uploads": len(self.artifacts.receiving),
@@ -223,7 +227,7 @@ class Host:
     def on_action_settle(self, run_id):
         self.notify()
         self.mcp.after_settle()
-        if self.closing or run_id not in self.reviewing or self.tools.has_inflight(run_id):
+        if self.closing or run_id not in self.reviewing or self.tools.has_inflight(run_id) or self.command_sessions.has_live(run_id):
             return
         job = self.jobs.get(run_id)
         if job is not None and not job.done():
@@ -244,19 +248,21 @@ class Host:
         self.mcp.after_settle()
 
     async def _after_settle(self, run_id):
-        if self.closing or self.tools.has_inflight(run_id):
+        if self.closing or self.tools.has_inflight(run_id) or self.command_sessions.has_live(run_id):
             return
         context = self.active.get(run_id)
         row = await self.store.call(lambda db: one(db, "SELECT * FROM runs WHERE id=?", (run_id,)))
         if row is None:
             self.reviewing.discard(run_id)
             return
+        if row["execution_version"] != PROTOCOL_VERSION:
+            return
         if row["state"] != "needs_review":
             self.reviewing.discard(run_id)
             return
-        await self.store.call(lambda db: db.execute("UPDATE runs SET stopped_at=COALESCE(stopped_at,?) WHERE id=? AND state='needs_review'", (now_ms(), run_id)), transaction=True)
         if await self._unresolved(run_id):
             return
+        await self.store.call(lambda db: db.execute("UPDATE runs SET stopped_at=COALESCE(stopped_at,?) WHERE id=? AND state='needs_review'", (now_ms(), run_id)), transaction=True)
         if row["cancel_requested_at"] is not None:
             changed = await self.finish(run_id, "cancelled", expected_state="needs_review")
             if changed:
@@ -266,6 +272,33 @@ class Host:
             changed = await self.finish(run_id, "waiting", wait={**previous_wait, "kind": "confirmation", "prompt": "The original action result is available. Explicitly resume this run to continue."}, expected_state="needs_review")
         if changed and self.active.get(run_id) is context:
             self.active.pop(run_id, None)
+
+    async def _command_settled(self, record):
+        run_id = record["run_id"]
+        job = self.jobs.get(run_id)
+        idle = (job is None or job.done()) and not self.tools.has_inflight(run_id) and not self.command_sessions.has_live(run_id)
+        unknown = not record["process_stopped"]
+        def write(db):
+            run = one(db, "SELECT r.state,r.instance_id,i.project_id,i.session_id FROM runs r JOIN instances i ON i.id=r.instance_id WHERE r.id=?", (run_id,))
+            if run is None:
+                return False  # Project deletion remains final.
+            facts = {key: record.get(key) for key in ("command_session_id", "state", "process_stopped", "exit_code", "termination", "termination_requested", "stopped_at")}
+            event(db, "command.settled", project_id=run["project_id"], session_id=run["session_id"], instance_id=run["instance_id"], run_id=run_id, data=facts)
+            if unknown and run["state"] not in {"completed", "cancelled"}:
+                error = {"code": "OUTCOME_UNCERTAIN", "safe_message": "Command control was lost; inspect the original session before continuing",
+                         "evidence_ref": {"action_id": record["action_id"], "command_session_id": record["command_session_id"]}}
+                db.execute("UPDATE actions SET state='needs_review',error_json=?,updated_at=? WHERE id=? AND run_id=?", (encode(error), now_ms(), record["action_id"], run_id))
+                db.execute("UPDATE runs SET state='needs_review',stopped_at=NULL,error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), run_id))
+            elif idle and not unknown:
+                db.execute("UPDATE runs SET stopped_at=COALESCE(stopped_at,?) WHERE id=? AND state='waiting'", (now_ms(), run_id))
+            return True
+        if await self.store.call(write, transaction=True):
+            if unknown:
+                self.reviewing.add(run_id)
+            elif idle:
+                self.active.pop(run_id, None)
+            self.notify_run(run_id)
+            self.on_action_settle(run_id)
 
     async def emit_progress(self, run_id, frame):
         for queue in tuple(self.subscribers.get(run_id, ())):
@@ -306,20 +339,26 @@ class Host:
             if not subscribers:
                 self.subscribers.pop(run_id, None)
 
-    async def authorize_model(self, context):
+    async def authorize_model(self, context, *, purpose="model"):
         self.assert_open()
         self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
         model = current.model
+        summary_model = current.summary_model
         if context.instance["role"] == "manager":
             session = await self.sessions.get(context.instance["session_id"])
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager is no longer enabled")
             model = current.manager.model
-        require(model.credential_ref == context.definition.model.credential_ref, "MODEL_CONFIGURATION_CHANGED", "Model credentials changed; inspect and resume at an explicit boundary")
-        require(context.definition.model.base_url and context.definition.model.model, "MODEL_NOT_CONFIGURED", "Save an endpoint and model before running")
-        credential = self.secret(context.definition.model.credential_ref)
-        require(not context.definition.model.credential_ref or credential, "MODEL_NOT_CONFIGURED", "The configured model credential is unavailable")
+            summary_model = current.manager.summary_model
+        saved = context.definition.model
+        if purpose == "summary":
+            model = summary_model or model
+            saved = context.definition.summary_model or saved
+        require(model.credential_ref == saved.credential_ref, "MODEL_CONFIGURATION_CHANGED", "Model credentials changed; inspect and resume at an explicit boundary")
+        require(saved.base_url and saved.model, "MODEL_NOT_CONFIGURED", "Save an endpoint and model before running")
+        credential = self.secret(saved.credential_ref)
+        require(not saved.credential_ref or credential, "MODEL_NOT_CONFIGURED", "The configured model credential is unavailable")
 
     async def authorize(self, run_id, name, *, source_path=None):
         self.assert_open()
@@ -328,17 +367,16 @@ class Host:
         self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
-        if name == PROGRAM_TOOL:
-            require(context.instance["role"] == "main" and self.tools.providers[name].enabled and context.definition.execution.program
-                    and context.definition.execution.program == current.execution.program, "PERMISSION_DENIED", "Process program needs its current Agent binding and host command grant")
-            return
-        context.check_tool_policy(name)
         if context.instance["role"] == "manager":
             session = await self.sessions.get(context.instance["session_id"])
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager is no longer enabled")
-            require(name in MANAGER_TOOLS | {"read_context", "read_history", "read_action", "read_artifact", "wait_for_input"}, "PERMISSION_DENIED", "Manager has no business tools")
+            current = context.current_definition()
+        if name == PROGRAM_TOOL:
+            require(self.tools.providers[name].enabled and context.definition.execution.program
+                    and context.definition.execution.program == current.execution.program, "PERMISSION_DENIED", "Process program needs its current Agent binding and host command grant")
             return
-        if name in INSTANCE_TOOLS:
+        context.check_tool_policy(name)
+        if name in COORDINATION_TOOLS:
             require(name in context.coordination_tools(), "PERMISSION_DENIED", "Communication capability is not currently bound")
             return
         if name in BUILTIN_SCHEMAS:
@@ -359,19 +397,34 @@ class Host:
     async def resolve_workspace(self, run_id):
         context = self.active.get(run_id)
         require(context is not None, "STALE_RUN", "Run no longer owns this workspace")
-        current = self.definitions[context.instance["agent_id"]]
+        current = context.current_definition()
         paths = context.paths
-        configured_project = current.workspace.project
-        if configured_project is None:
-            project = await self.projects.get(context.instance["project_id"])
-            configured_project = Path(project["folder"]) if project["folder"] else None
-        current_project = configured_project.expanduser().resolve() if configured_project else None
-        project = paths.project_dir if current_project == paths.project_dir else None
-        references = {path.expanduser().resolve() for path in current.workspace.references}
-        writable = {(current_project / relative).resolve() for relative in current.workspace.writable_project_paths} if current_project else set()
-        paths = replace(paths, project_dir=project, reference_dirs=tuple(path for path in paths.reference_dirs if path in references),
-                        writable_project_dirs=tuple(path for path in paths.writable_project_dirs if path in writable))
-        return paths, context.definition.workspace
+        project = await self.projects.get(context.instance["project_id"])
+        from oea.contracts.configuration import ProjectWorkspace
+        current_workspace = current.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
+        from oea.workspace.environment import intersect_workspace
+        paths, settings = intersect_workspace(paths, context.definition.workspace, current_workspace)
+        if context.deadline is not None:
+            settings = settings.model_copy(update={"command_timeout_seconds": min(settings.command_timeout_seconds, max(.001, (context.deadline - now_ms()) / 1000))})
+        return paths, settings
+
+    async def revalidate_commands(self, *, agent_id=None, project_id=None):
+        """Configuration changes revoke affected live command environments."""
+        for owner in tuple(self.command_sessions.live.values()):
+            run_id = owner["record"]["run_id"]
+            context = self.active.get(run_id)
+            if context is None or (agent_id and context.instance["agent_id"] != agent_id) or (project_id and context.instance["project_id"] != project_id):
+                continue
+            saved = self.definitions[context.instance["agent_id"]]
+            if not saved.enabled or (context.instance["role"] == "manager" and saved.manager is None):
+                await self.command_sessions.stop(owner, "permission_changed")
+                continue
+            current = context.current_definition()
+            paths, settings = await self.resolve_workspace(run_id)
+            from oea.workspace.environment import ExecutionEnvironment
+            changed = owner["record"]["environment"]["revision"] != ExecutionEnvironment(paths, settings).describe()["revision"]
+            if changed or not current.enabled or "exec_command" not in current.tools.local:
+                await self.command_sessions.stop(owner, "permission_changed")
 
     def launch(self, run_id):
         if self.closing:
@@ -399,7 +452,8 @@ class Host:
         from oea.orchestration.graphs import AgentGraphContext
 
         def claim(db):
-            run = need(db, "runs", run_id)
+            run = one(db, "SELECT r.*,(SELECT json_extract(e.data_json,'$.purpose') FROM events e WHERE e.run_id=r.id AND e.kind='run.accepted' ORDER BY e.position LIMIT 1) AS purpose FROM runs r WHERE r.id=?", (run_id,))
+            require(run is not None, "NOT_FOUND", "Run does not exist")
             if run["state"] not in {"accepted", "running"}:
                 return None
             instance = need(db, "instances", run["instance_id"])
@@ -409,7 +463,6 @@ class Host:
                 return None
             db.execute("UPDATE instances SET active_run_id=? WHERE id=?", (run_id, instance["id"]))
             db.execute("UPDATE runs SET state='running',wait_json=NULL,updated_at=? WHERE id=?", (now_ms(), run_id))
-            db.execute("UPDATE deliveries SET started_at=COALESCE(started_at,?) WHERE run_id=? AND applied_at IS NULL AND rejected_at IS NULL", (now_ms(), run_id))
             resumption = one(db, "SELECT * FROM run_resumptions WHERE run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,))
             budget = need(db, "budgets", run["budget_id"])
             started = budget["started_at"] or now_ms()
@@ -430,7 +483,7 @@ class Host:
             graph = self.agent_graphs.resolve(definition.execution)
             paths = WorkspacePaths.prepare(definition.workspace, instance["id"], run_id, self.root, binding=json.loads(instance["workspace_json"]))
             await self.store.call(lambda db: db.execute("UPDATE instances SET workspace_json=? WHERE id=?", (encode(paths.as_dict()), instance["id"])), transaction=True)
-            context = RunContext(self, run, instance, definition, paths, resumption=resumption)
+            context = RunContext(self, run, instance, definition, paths, resumption=resumption, deadline=deadline)
             self.active[run_id] = context
             await self.mcp.bind(context)
             self.notify()
@@ -488,7 +541,7 @@ class Host:
                 await self.store.call(lambda db: self.budgets.annotate_stop(db, run_id, fault))
             await self.finish(run_id, "needs_review" if await self._unresolved(run_id) else "failed", error=fault)
         finally:
-            if not self.tools.has_inflight(run_id):
+            if not self.tools.has_inflight(run_id) and not self.command_sessions.has_live(run_id):
                 self.active.pop(run_id, None)
             if not self.closing:
                 await self._launch_next(instance["id"])
@@ -497,21 +550,25 @@ class Host:
         return await self.store.call(lambda db: one(db, "SELECT 1 FROM actions WHERE run_id=? AND (state='needs_review' OR state='dispatched' AND side_effects!='none') LIMIT 1", (run_id,)))
 
     async def finish(self, run_id, state, *, error=None, wait=None, expected_state=None):
-        locally_stopped = not self.tools.has_inflight(run_id)
+        if state not in {"waiting", "needs_review"}:
+            await self.command_sessions.stop_run(run_id)
+        locally_stopped = not self.tools.has_inflight(run_id) and not self.command_sessions.has_live(run_id)
         def write(db):
             run = need(db, "runs", run_id)
             if run["state"] in {"completed", "cancelled"} or expected_state is not None and run["state"] != expected_state:
                 return False
+            unresolved = one(db, "SELECT 1 FROM actions WHERE run_id=? AND (state='needs_review' OR state='dispatched' AND side_effects!='none') LIMIT 1", (run_id,))
             if state == "completed":
                 require(run["result_json"] is not None, "DELIVERY_MISSING", "Graph ended without a persisted delivery")
+                require(not unresolved, "OUTCOME_UNCERTAIN", "Inspect unresolved effects before completing this run")
+            if state == "waiting" and run["state"] == "needs_review" and unresolved:
+                return False
             instance = need(db, "instances", run["instance_id"])
             db.execute("UPDATE runs SET state=?,error_json=?,wait_json=?,stopped_at=?,updated_at=? WHERE id=?",
                        (state, encode(self.redact(error.as_dict())) if error else None, encode(wait) if wait else None,
-                        now_ms() if locally_stopped else None, now_ms(), run_id))
+                        now_ms() if locally_stopped and not unresolved else None, now_ms(), run_id))
             if state not in {"waiting", "needs_review"}:
                 db.execute("UPDATE instances SET active_run_id=NULL WHERE id=? AND active_run_id=?", (instance["id"], run_id))
-            if state == "completed":
-                db.execute("UPDATE deliveries SET completed_at=COALESCE(completed_at,?) WHERE run_id=? AND applied_at IS NOT NULL AND rejected_at IS NULL", (now_ms(), run_id))
             event(db, "run." + state, project_id=instance["project_id"], session_id=instance["session_id"], instance_id=instance["id"], run_id=run_id,
                   data={"state": state, "error": self.redact(error.as_dict()) if error else None, "wait": wait})
             return True
@@ -533,7 +590,26 @@ class Host:
             self.launch(row["id"])
 
     async def _recover(self):
+        commands = await self.store.call(lambda db: rows(db,
+            "SELECT a.id,a.run_id FROM actions a JOIN runs r ON r.id=a.run_id WHERE a.name='exec_command' AND a.state='completed' "
+            "AND json_extract(a.result_json,'$.state') IN ('starting','running') AND r.state IN ('running','waiting','needs_review')"))
+        unknown_commands = []
+        for command in commands:
+            try:
+                saved = self.command_sessions.load(command["id"], command["run_id"])
+            except RuntimeFault as error:
+                if error.code != "COMMAND_NOT_FOUND":
+                    raise
+                saved = {"state": "unknown"}
+            if saved["state"] == "unknown":
+                unknown_commands.append(command)
         def recover(db):
+            for command in unknown_commands:
+                error = {"code": "OUTCOME_UNCERTAIN", "safe_message": "Command ownership was lost; inspect its saved output before continuing",
+                         "action_id": command["id"], "command_session_id": command["id"]}
+                db.execute("UPDATE actions SET state='needs_review',error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), command["id"]))
+                db.execute("UPDATE runs SET state='needs_review',error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), command["run_id"]))
+                event(db, "action.needs_review", run_id=command["run_id"], data={"action_id": command["id"], "error": error})
             interrupted = rows(db, "SELECT * FROM actions WHERE state='dispatched'")
             for action in interrupted:
                 model = action["name"] == "model.complete"
@@ -569,6 +645,7 @@ class Host:
         await asyncio.gather(*pending, return_exceptions=True)
         await self.mcp.aclose()
         await self.tools.aclose()
+        await self.command_sessions.close()
         await asyncio.gather(*tuple(self.maintenance), return_exceptions=True)
         self.active.clear()
         for run_id in tuple(self.subscribers):

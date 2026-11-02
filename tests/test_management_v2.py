@@ -114,10 +114,10 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         definition = AgentDefinition(id="worker", name="Worker", project_id="p",
             model=Model(base_url="https://model.invalid/v1", model="main", temperature=0.2),
             instructions=Instructions(system="Review assigned inputs.", agent_md="Retain evidence."),
-            tools=Tools(local=("read_file", "write_file"), functions=("review",), mcp=(MCPBinding(server_id="business", tools=("inspect",)),)),
+            tools=Tools(local=("exec_command", "apply_patch"), functions=("review",), mcp=(MCPBinding(server_id="business", tools=("inspect",)),)),
             skills=(SkillBinding(id="guide", path=skill, name="Guide", description="Review guidance", required=True),),
             context=ContextPolicy(input_tokens=8192, recent_turns=3),
-            workspace=Workspace(project=project, work=self.root / "work", references=(skill,), writable_project_paths=("output",), environment={"REVIEW_MODE": "local"}),
+            workspace=Workspace(sandbox="trusted", project=project, work=self.root / "work", references=(skill,), writable_project_paths=("output",), environment={"REVIEW_MODE": "local"}),
             execution=Execution(budget=Budget(max_model_calls=12), delivery=Delivery(min_artifacts=1)),
             communication=Communication(departments=("review",), can_request=True),
             manager=Manager(model=Model(base_url="https://manager.invalid/v1", model="manager"), instructions=Instructions(system="Coordinate reviewers.")))

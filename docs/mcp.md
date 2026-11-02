@@ -1,6 +1,6 @@
 # MCP and Codex skills
 
-The control MCP connects to an already running OEA 2 host. The [recommended uv tool installation](getting-started.md#quick-install) includes the `mcp` extra. Use the installed command:
+The control MCP connects to an already running OEA 3 host using protocol 3.0. Install the matching [platform wheel](getting-started.md#quick-install) with the `mcp` extra, then use the installed command:
 
 ```sh
 oea mcp
@@ -8,13 +8,13 @@ oea mcp
 
 The normal connection needs no directory argument. It reads the saved endpoint and authentication from `~/.oea/data`, or an explicitly isolated `OEA_HOME`. The server only connects to the existing host; start `oea serve` first. A Codex connection uses command `oea` and arguments `["mcp"]`. Calls create OEA-owned records in that host, not a new database for each Codex chat.
 
-After `uv tool update-shell`, restart your MCP client so it sees the updated PATH. With a manually managed Python environment, a graphical client may not inherit the activated terminal's PATH. Use `(Get-Command oea).Source` in Windows PowerShell, `where oea` in Windows Command Prompt, or `command -v oea` on Linux/macOS to find the installed executable. Set that absolute executable path as the client command when needed; keep arguments `["mcp"]`. The [cross-platform setup guide](getting-started.md#mcp-client) covers command lookup. Windows convenience scripts are optional.
+After installation or PATH changes, restart your MCP client so it sees the updated environment. With a manually managed Python environment, a graphical client may not inherit the activated terminal's PATH. Use `(Get-Command oea).Source` in Windows PowerShell, `where oea` in Windows Command Prompt, or `command -v oea` on Linux to find the installed executable. Set that absolute executable path as the client command when needed; keep arguments `["mcp"]`. The [setup guide](getting-started.md#mcp-client) covers command lookup. Windows convenience scripts are optional.
 
 It exposes `platform_guide(consumer_id, area, action)` and `platform_call(consumer_id, operation, params)`. Discover the current action, then execute the exact shared operation. SDK, HTTP and MCP use the same registry, authorization and receipts. Read the [interface module](interfaces/README.md) for the maintained transport contract.
 
 Keep a stable consumer identity within one conversation. Independent conversations use separate identities. Lists return bounded pages. Large results return `result_ref`; `results.read` reads the selected JSON Pointer with its original project and consumer ownership. Reading a result never repeats the mutation that created it.
 
-Continue with the returned `next_offset` on the same reference and Pointer. Pages expose a fixed content version and selected-text hash; dynamic responses retain their original snapshot even while execution progresses. `limit` is 1..2048 Unicode code points, and a Pointer is at most 512 characters. To observe newer state, issue a new read-only query. An unavailable old version must not be recovered by repeating a write.
+Continue with the returned `next_offset` on the same reference and Pointer. Pages expose a fixed content version and selected-text hash; dynamic responses retain their original snapshot even while execution progresses. `limit` defaults to 16,384 and accepts 1..65,536 Unicode code points, and a Pointer is at most 512 characters. To observe newer state, issue a new read-only query. An unavailable old version must not be recovered by repeating a write.
 
 `projects.delete` is the confirmed permanent project revocation operation: exact name confirmation and a stable key revoke work and remove all owned records, unresolved usage and graph checkpoints. Former ledger or execution status does not veto deletion. Reuse the original key after an interrupted cleanup. Source files, backups and other projects remain; external effects already issued are not rolled back.
 

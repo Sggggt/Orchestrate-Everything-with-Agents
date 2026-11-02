@@ -1,0 +1,19 @@
+[package]
+name = "oea-sandbox"
+version = "3.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+mxc-sdk = { version = "=1.0.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

@@ -3,10 +3,12 @@
 import asyncio
 import codecs
 import hashlib
+import json
 import mimetypes
 import os
 from pathlib import Path
 import re
+from typing import Literal
 
 from oea.contracts.domain import Artifact
 from oea.contracts.measurement import content_view
@@ -32,10 +34,28 @@ class Artifacts:
         self.receiving = set()
         self.receiving_projects = {}
 
-    async def publish(self, run_id, source, name, *, media_type=None, expected_sha256=None):
+    async def candidates(self, run_id: str, project_id: str, *, source: Literal["patches", "outputs"] = "patches",
+                         directory: str = "", cursor: int = 0, limit: int = 25, version: str | None = None):
+        """Read persisted patch candidates or explicitly inspect a bounded output directory."""
+        require(type(cursor) is int and 0 <= cursor < 2**63 and type(limit) is int and 1 <= limit <= 100,
+                "INVALID_REQUEST", "Read a bounded candidate page")
+        require(len(directory) <= 4096 and "\0" not in directory, "INVALID_REQUEST", "Choose a bounded relative directory")
+        from oea.artifacts.candidates import CandidateFiles
+        service = CandidateFiles(self.host)
+        if source == "patches":
+            require(not directory and version is None, "INVALID_REQUEST", "Directory selection applies only to output candidates")
+            return await service.patches(run_id, project_id, cursor, limit)
+        return await service.outputs(run_id, project_id, directory, cursor, limit, version)
+
+    async def candidate(self, reference: str, project_id: str, *, check_source: bool = False):
+        """Read a candidate observation; optional live verification never publishes it."""
+        from oea.artifacts.candidates import CandidateFiles
+        return await CandidateFiles(self.host).check(reference, project_id, check_source)
+
+    async def publish(self, run_id, source, name, *, media_type=None, expected_sha256=None, validate_image=False):
         context = self.host.active.get(run_id)
         require(context is not None, "STALE_RUN", "Run no longer owns this publication")
-        paths, _ = await self.host.resolve_workspace(run_id)
+        paths, settings = await self.host.resolve_workspace(run_id)
         source = paths.resolve(str(source))
         require(name and Path(name).name == name and name not in {".", ".."}, "ARTIFACT_INVALID", "Artifact name cannot contain directories")
         identity = new_id("artifact")
@@ -45,7 +65,7 @@ class Artifacts:
 
         def copy():
             fingerprint, size = hashlib.sha256(), 0
-            with source.open("rb") as original, destination.open("xb") as output:
+            with paths.open_read(str(source)) as original, destination.open("xb") as output:
                 while chunk := original.read(1024 * 1024):
                     size += len(chunk)
                     require(size <= 50 * 1024 * 1024, "ARTIFACT_TOO_LARGE", "Artifact exceeds the publication size limit")
@@ -53,15 +73,29 @@ class Artifacts:
                     output.write(chunk)
             return size, fingerprint.hexdigest()
 
-        size, fingerprint = await asyncio.to_thread(copy)
-        require(expected_sha256 is None or expected_sha256 == fingerprint, "ARTIFACT_CHANGED", "Source changed after image validation")
+        try:
+            if settings.sandbox == "native":
+                from oea.workspace.environment import ExecutionEnvironment
+                from oea.contracts.configuration import MODEL_IMAGE_MAX_BYTES
+                size, fingerprint = await ExecutionEnvironment(paths, settings).copy_to(source, destination,
+                    max_bytes=MODEL_IMAGE_MAX_BYTES if validate_image else 50 * 1024 * 1024)
+            else:
+                size, fingerprint = await file_io(copy)
+            if validate_image:
+                from oea.workspace.media import image_type
+                media_type, verified = await file_io(image_type, destination)
+                require(verified == fingerprint, "ARTIFACT_CHANGED", "Captured image revision changed")
+            require(expected_sha256 is None or expected_sha256 == fingerprint, "ARTIFACT_CHANGED", "Source changed after image validation")
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
         media = media_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
         artifact = Artifact(id=identity, name=name, sha256=fingerprint, bytes=size, media_type=media,
                             project_id=context.instance["project_id"], session_id=context.instance["session_id"], run_id=run_id, instance_id=context.instance["id"])
         def write(db):
             run = one(db, "SELECT state FROM runs WHERE id=?", (run_id,))
             require(run and run["state"] == "running", "STALE_RUN", "Run no longer owns this publication")
-            db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,'run')",
+            db.execute("INSERT INTO artifacts(id,project_id,instance_id,run_id,name,path,sha256,bytes,media_type,created_at,session_id,origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,'run')",
                        (identity, context.instance["project_id"], context.instance["id"], run_id, name, str(destination), fingerprint, size, media, now_ms(), context.instance["session_id"]))
             event(db, "artifact.published", project_id=context.instance["project_id"], session_id=context.instance["session_id"],
                   instance_id=context.instance["id"], run_id=run_id, data=artifact.model_dump(mode="json"))
@@ -121,7 +155,7 @@ class Artifacts:
             prior = one(db, "SELECT * FROM artifacts WHERE id=?", (record["id"],))
             if prior:
                 return
-            db.execute("INSERT INTO artifacts VALUES(?,?,NULL,NULL,?,?,?,?,?,?,?,'upload')", (record["id"], record["project_id"], record["name"], str(path), record["sha256"], record["bytes"], record["media_type"], now_ms(), record["session_id"]))
+            db.execute("INSERT INTO artifacts(id,project_id,instance_id,run_id,name,path,sha256,bytes,media_type,created_at,session_id,origin) VALUES(?,?,NULL,NULL,?,?,?,?,?,?,?,'upload')", (record["id"], record["project_id"], record["name"], str(path), record["sha256"], record["bytes"], record["media_type"], now_ms(), record["session_id"]))
             event(db, "artifact.published", project_id=record["project_id"], session_id=record["session_id"], data={"artifact_id": record["id"], "origin": "upload"})
         await self.host.store.call(save, transaction=True)
         self.host.notify()
@@ -219,14 +253,7 @@ class Artifacts:
         return self.view(record) | {"content_view": await self.capture_view(record)}
 
     async def capture_view(self, record):
-        # A managed log name narrows the lookup; the saved artifact ID and run
-        # must also match the original command receipt before using its facts.
-        capture = None
-        if record["run_id"] and record["name"].endswith((".stdout.txt", ".stderr.txt")):
-            action_id = record["name"][:-11]
-            capture = await self.host.store.call(lambda db: one(db,
-                "SELECT json_extract(v.value,'$.truncated') AS truncated,json_extract(v.value,'$.observed_bytes') AS observed_bytes FROM actions a,json_each(a.result_json,'$.output_refs') v WHERE a.id=? AND a.run_id=? AND a.name='run_command' AND json_extract(v.value,'$.artifact.id')=?",
-                (action_id, record["run_id"], record["id"])))
+        capture = json.loads(record["capture_json"]) if record.get("capture_json") else None
         complete = not bool(capture["truncated"]) if capture is not None else True if record["origin"] == "upload" else None
         view = content_view("full", integrity="complete" if complete is True else "truncated" if complete is False else "unknown",
                             source_ref=record["id"], source_complete=complete, length=record["bytes"], offset_unit="byte")
@@ -235,13 +262,13 @@ class Artifacts:
         return view
 
     async def read(self, artifact_id: str, project_id: str, *, offset: int = 0, limit: int = 8192):
-        """Read a bounded UTF-8 artifact page; offsets refer to bytes."""
+        """Read UTF-8 artifact content up to 1 MiB per request; offsets refer to bytes. Binary and larger files can use the authorized download."""
         record = await self.host.store.call(lambda db: one(db, "SELECT * FROM artifacts WHERE id=? AND project_id=?", (artifact_id, project_id)))
         require(record is not None, "PERMISSION_DENIED", "Artifact belongs to another project or is unavailable")
         return await self._page(record, offset, limit)
 
     async def _page(self, record, offset, limit):
-        require(0 <= offset < 2**63 and 64 <= limit <= 16384, "INVALID_REQUEST", "Use the returned byte offset and a bounded artifact page")
+        require(0 <= offset < 2**63 and 64 <= limit <= 1048576, "INVALID_REQUEST", "Use the returned byte offset and a bounded artifact page")
         require(record["media_type"].startswith("text/") or record["media_type"] in {"application/json", "application/xml"},
             "ARTIFACT_BINARY", "Use the artifact download for this binary format")
         path = safe_child(self.host.root / "artifacts", record["id"])
@@ -267,6 +294,9 @@ class Artifacts:
         record = one(db, "SELECT * FROM artifacts WHERE id=?", (artifact_id,))
         require(record is not None and record["project_id"] == instance["project_id"], "PERMISSION_DENIED", "Artifact is outside this project")
         if record["instance_id"] == instance["id"] or one(db, "SELECT 1 FROM run_artifacts WHERE run_id=? AND artifact_id=?", (run_id, artifact_id)):
+            return record
+        shared = one(db, "SELECT 1 FROM message_artifacts a JOIN messages m ON m.id=a.message_id JOIN deliveries d ON d.message_id=m.id JOIN boards b ON b.id=m.board_id WHERE a.artifact_id=? AND d.instance_id=? AND (b.session_id IS NULL OR b.session_id=?) AND (b.scope!='inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=b.id AND r.instance_id=d.instance_id))", (artifact_id, instance["id"], instance["session_id"]))
+        if shared:
             return record
         require(record["origin"] == "run", "PERMISSION_DENIED", "Assign this source explicitly before the Run can read it")
         actor = self.host.coordination.actor(db, run_id)

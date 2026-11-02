@@ -14,11 +14,11 @@ class ToolKit:
 
     @classmethod
     def local(cls, *, files=True, commands=False, images=False):
-        names = ["read_file", "search_files", "write_file", "edit_file", "publish_artifact"] if files else []
+        names = ["apply_patch", "publish_artifact"] if files else []
         if commands:
-            names.append("run_command")
+            names.extend(("exec_command", "write_stdin"))
         if images:
-            names.append("read_image")
+            names.append("view_image")
         return cls(Tools(local=tuple(names)))
 
     def with_tools(self, *functions):

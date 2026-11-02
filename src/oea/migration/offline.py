@@ -144,7 +144,7 @@ class Converter:
 
     def configurations(self):
         for row in self.core["projects"]:
-            self.db.execute("INSERT INTO projects VALUES(?,?,?,?,?)", (row["id"], row["name"], row.get("local_folder") or None,
+            self.db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES(?,?,?,?,?)", (row["id"], row["name"], row.get("local_folder") or None,
                 int(row.get("state") != "OPEN"), row["created_at"]))
             self.link("projects", row["id"], "project", row["id"])
         modes = {row["session_id"]: row for row in self.core["collaboration_sessions"]}
@@ -156,6 +156,8 @@ class Converter:
             self.db.execute("INSERT INTO sessions(id,project_id,name,mode,epoch,created_at,archived) VALUES(?,?,?,?,?,?,?)",
                 (row["id"], row["project_id"], row.get("title") or row["id"], mode.get("mode", "direct"), mode.get("epoch", 0),
                  row["created_at"], int(row.get("state") != "OPEN")))
+            self.db.execute("INSERT INTO boards VALUES(?,?,?,'session',NULL,'General',?)", ("board_legacy_" + row["id"], row["project_id"], row["id"], row["created_at"]))
+            self.db.execute("INSERT INTO boards VALUES(?,?,?,'inbox',NULL,'Imported messages',?)", ("board_archive_" + row["id"], row["project_id"], row["id"], row["created_at"]))
             self.link("sessions", row["id"], "session", row["id"])
         for row in self.core["agent_configs"]:
             old = _decode(row["config_json"])
@@ -163,7 +165,8 @@ class Converter:
             workbench = old.get("workbench") or {}
             # Environment programs and legacy process transports require explicit v2 review.
             compatible = old.get("kind", "llm") == "llm" and not workbench
-            tools = {"local": ["run_command" if name == "exec_command" else name for name in workbench.get("tools", [])],
+            from oea.migration.upgrade import names
+            tools = {"local": names(workbench.get("tools", [])),
                      "mcp": [{"server_id": item["server_id"], "tools": item.get("tools")} for item in old.get("mcp_bindings", [])]}
             value = {"id": row["id"], "project_id": old.get("project_id"), "name": old.get("name") or row["id"],
                 "enabled": bool(old.get("enabled", True) and compatible), "description": old.get("card_description", ""),
@@ -254,6 +257,8 @@ class Converter:
                 binding = {"work_dir": workspaces[row["id"]]["work"]}
             # Legacy titles need not be unique; immutable IDs are stable instance names.
             self.db.execute("INSERT INTO instances VALUES(?,?,?,?,?,?,?,?,NULL,?)", (row["id"], session["project_id"], row["session_id"], row["agent_id"], row["id"], role, config.model_dump_json(), _json(binding), row["created_at"]))
+            self.db.execute("INSERT INTO boards VALUES(?,?,?,'inbox',?,'Inbox',?)", ("board_inbox_" + row["id"], session["project_id"], row["session_id"], row["id"], row["created_at"]))
+            self.db.execute("INSERT INTO board_readers VALUES(?,?)", ("board_inbox_" + row["id"], row["id"]))
             self.link("threads", row["id"], "instance", row["id"])
 
     def messages(self):
@@ -278,8 +283,8 @@ class Converter:
                           "legacy_source": row.get("source_id") or row.get("source_key"), "legacy_purpose": row.get("kind") or envelope.get("message_type")}
                 purpose = "report" if row.get("kind") == "report" else "inform"
                 key = "import:" + table + ":" + row["id"]
-                self.db.execute("INSERT INTO messages(id,project_id,session_id,source_json,purpose,body,idempotency_key,input_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (row["id"], session["project_id"], row["session_id"], _json(source), purpose, body, key, hashlib.sha256(body.encode("utf-8")).hexdigest(), row["created_at"]))
+                self.db.execute("INSERT INTO messages(id,project_id,session_id,source_json,board_id,body,idempotency_key,input_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (row["id"], session["project_id"], row["session_id"], _json(source), "board_archive_" + row["session_id"], body, key, hashlib.sha256(body.encode("utf-8")).hexdigest(), row["created_at"]))
                 self.link(table, row["id"], "message", row["id"])
                 mapped.add(row["id"])
         # Exact, possibly non-contiguous old reads remain in the history archive.
@@ -310,7 +315,7 @@ class Converter:
                 path.parent.mkdir(exist_ok=True)
                 shutil.copyfile(original, path)
                 require(_sha(path) == row["sha256"], "MIGRATION_COPY_FAILED", "Copied artifact content changed")
-            self.db.execute("INSERT INTO artifacts VALUES(?,?,NULL,NULL,?,?,?,?,?,?,?,'import')",
+            self.db.execute("INSERT INTO artifacts(id,project_id,instance_id,run_id,name,path,sha256,bytes,media_type,created_at,session_id,origin) VALUES(?,?,NULL,NULL,?,?,?,?,?,?,?,'import')",
                 (row["id"], session["project_id"], row["name"], str(path), row["sha256"], row["size"], row["media_type"], row["created_at"], row["session_id"]))
             self.link("artifacts", row["id"], "artifact", row["id"])
         self.report["artifacts"] = {"total": total, "verified": verified, "bytes": byte_count, "issues": issues}
@@ -441,7 +446,7 @@ def _convert(source, source_db, destination, apply, source_check):
             require(_sha(destination / "imported" / "legacy.sqlite") == source_hash, "MIGRATION_SOURCE_CHANGED", "Legacy database changed while copying")
         output = sqlite3.connect(destination / "oea.sqlite" if apply else ":memory:")
         output.execute("PRAGMA foreign_keys=ON")
-        script = Path(__file__).parents[1].joinpath("storage/schema-v2.sql").read_text(encoding="utf-8")
+        script = Path(__file__).parents[1].joinpath("storage/schema-v3.sql").read_text(encoding="utf-8")
         output.executescript(script)
         output.execute("BEGIN")
         converter = Converter(original, output, tables, vault, files, report)

@@ -18,11 +18,16 @@ def saved_output_measurement(value):
     size = len((message.get("content") or "").encode("utf-8"))
     for call in message.get("tool_calls", []) + value.get("discarded_tool_calls", []):
         size += sum(len(part.encode("utf-8")) for part in (call["id"], call["function"]["name"], call["function"]["arguments"]))
+        if "extra_content" in call:
+            size += len(encode(call["extra_content"]).encode("utf-8"))
+    for name in ("reasoning_content", "reasoning_details"):
+        if name in message:
+            size += len(encode(message[name]).encode("utf-8"))
     return measurement("saved_output_bytes", size, "byte", "measured")
 
 
 def input_comparison(projection, usage):
-    reported = usage.get("prompt_tokens", usage.get("input_tokens"))
+    reported = usage.get("input_total") if usage and usage.get("source") in {"provider", "historical_provider"} else None
     reported = reported if type(reported) is int and reported >= 0 else None
     return {"projection_revision": projection["projection_revision"], "predicted_input_tokens": projection["input_tokens"],
             "provider_input_tokens": reported, "difference_tokens": reported - projection["input_tokens"] if reported is not None else None,
@@ -34,22 +39,27 @@ class ModelExecutor:
         self.host = host
         self.streams = ResponseStreams()
 
-    async def complete(self, context, key, build_input, *, purpose="model", output_tokens=None, conversation=True, recovery=None):
+    async def complete(self, context, key, build_input, *, purpose="model", output_tokens=None, conversation=True, recovery=None, model=None):
         host, run_id = self.host, context.run["id"]
-        requested_output = context.definition.model.max_output_tokens if output_tokens is None else output_tokens
+        model = model or context.definition.model
+        requested_output = model.max_output_tokens if output_tokens is None else output_tokens
         def lookup(db):
             previous = one(db, "SELECT * FROM actions WHERE run_id=? AND operation_key=?", (run_id, key))
             # A local input ceiling without a configured model window does
             # not depend on output reserve; its transaction remains the sole
             # budget aggregate on the normal path.
-            allowance = requested_output if (previous and previous["state"] == "completed" or context.definition.model.context_window_tokens is None) else host.budgets.output_allowance(db, context.run, requested_output)
-            return previous, allowance
-        previous, planned_output = await host.store.call(lookup)
+            if previous and previous["state"] == "completed":
+                return previous, requested_output, {}
+            allowance, hint = host.budgets.headroom(db, context.run, requested_output, purpose="recovery" if recovery else purpose)
+            return previous, allowance, hint
+        previous, planned_output, budget_hint = await host.store.call(lookup)
         if previous and previous["state"] == "completed":
             return previous["id"], json.loads(previous["result_json"])
-        await host.authorize_model(context)
+        await host.authorize_model(context, purpose=purpose)
         reviewed = False
         if previous:
+            if purpose == "summary" and previous["state"] == "failed":
+                raise saved_fault(json.loads(previous["error_json"]))
             require(previous["state"] in {"intent", "failed"}, "MODEL_IN_FLIGHT", "The original model invocation has not settled", run_id=run_id, action_id=previous["id"])
             failure = await host.store.call(lambda db: one(db, "SELECT MAX(position) AS position FROM events WHERE run_id=? AND kind='model.failed' AND json_extract(data_json,'$.action_id')=?", (run_id, previous["id"])))
             reviewed = previous["state"] == "intent" or context.resumption and context.resumption["event_position"] > (failure["position"] or 0)
@@ -58,18 +68,20 @@ class ModelExecutor:
             require(reviewed or recovery, "MODEL_REVIEW_REQUIRED",
                     "Inspect the original model request before explicitly resuming this work", run_id=run_id, action_id=previous["id"])
         require(planned_output > 0, "BUDGET_EXHAUSTED", "Work output-token budget is exhausted", origin="local", stage="prepare")
+        if purpose == "model":
+            context.budget_hint = budget_hint
         messages, tools, projection = await build_input(output_tokens=planned_output)
         contracts = context.request_contracts if projection.get("tool_contracts") else {}
         require(not host.vault.contains_secret(tools), "TOOL_SCHEMA_CONTAINS_SECRET", "Tool metadata contains protected credentials; correct its declaration before calling a model")
-        fingerprint = input_fingerprint(messages, tools, context.definition.model)
+        fingerprint = input_fingerprint(messages, tools, model)
         projection.update(projection_revision=fingerprint,
-            model_fingerprint=hashlib.sha256(encode(context.definition.model).encode("utf-8")).hexdigest(),
+            model_fingerprint=hashlib.sha256(encode(model).encode("utf-8")).hexdigest(),
             tools_fingerprint=hashlib.sha256(encode(projection.get("tool_contracts", {})).encode("utf-8")).hexdigest())
         action_id = previous["id"] if previous else new_id("model")
         usage_id = new_id("usage")
         facts = {"attempt_id": usage_id, "prepared_at": None, "send_started_at": None, "response_received_at": None,
                  "terminal_at": None, "send_started": None, "response_received": None, "provider_accepted": None}
-        metadata = {"attempt": facts, "model": context.definition.model.model_dump(mode="json"), "purpose": purpose, "input_hash": fingerprint,
+        metadata = {"attempt": facts, "model": model.model_dump(mode="json"), "purpose": purpose, "budget_phase": budget_hint.get("phase"), "input_hash": fingerprint,
                     "tool_names": [tool["function"]["name"] for tool in tools], "projection": projection}
         if recovery and not reviewed:
             metadata["continuation"] = {"kind": "context_recovery", "attempt_id": recovery["attempt_id"]}
@@ -93,9 +105,12 @@ class ModelExecutor:
                         "MODEL_REVIEW_REQUIRED", "Context recovery no longer matches the rejected attempt and reduced input", action_id=action_id)
             prior_usage = one(db, "SELECT id,created_at FROM usage WHERE action_id=? AND kind='model' ORDER BY created_at DESC,rowid DESC LIMIT 1", (action_id,)) if previous and previous["state"] == "failed" else None
             require(not previous or previous["state"] != "failed" or prior_usage is not None, "MODEL_RECEIPT_UNAVAILABLE", "Original model usage evidence is unavailable")
-            reserve = host.budgets.model(db, run, usage_id, purpose, projection["input_tokens"], planned_output)
+            reserve = host.budgets.model(db, run, usage_id, purpose, projection["input_tokens"], planned_output, model=model,
+                                        prepared_phase="recovery" if recovery else budget_hint.get("phase", "exploring"))
+            if budget_hint.get("phase") == "finalizing":
+                db.execute("UPDATE budgets SET phase='finalizing' WHERE id=?", (run["budget_id"],))
             budget = context.definition.context.input_tokens
-            window = context.definition.model.context_window_tokens
+            window = model.context_window_tokens
             if window is not None:
                 budget = min(budget, window - reserve - context.definition.context.safety_tokens)
             projection.update(budget_tokens=budget, output_reserved_tokens=reserve,
@@ -117,7 +132,19 @@ class ModelExecutor:
                   data={"action_id": action_id, "usage_id": usage_id, "attempt_id": usage_id, "purpose": purpose, "model_role": context.instance["role"], "projection": projection})
             return reserve, position
 
-        reserve, position = await host.store.call(dispatch, transaction=True)
+        try:
+            reserve, position = await host.store.call(dispatch, transaction=True)
+        except RuntimeFault as error:
+            if error.code != "BUDGET_FINALIZATION_REQUIRED":
+                raise
+            # The phase is monotonic, so at most one such preparation is needed.
+            def finalize(db):
+                db.execute("UPDATE budgets SET phase='finalizing' WHERE id=? AND phase!='finalizing'", (context.run["budget_id"],))
+                if db.changes():
+                    event(db, "budget.finalizing", run_id=run_id, data={"budget_id": context.run["budget_id"]})
+            await host.store.call(finalize, transaction=True)
+            return await self.complete(context, key, build_input, purpose=purpose, output_tokens=output_tokens,
+                                       conversation=conversation, recovery=recovery, model=model)
         stream = self.streams.start(run_id, action_id, usage_id, position)
         host.notify()
         async def emit(frame):
@@ -141,10 +168,10 @@ class ModelExecutor:
             host.notify()
         api_started = False
         try:
-            await host.authorize_model(context)
+            await host.authorize_model(context, purpose=purpose)
             wire_messages = await context.model_messages(messages)
             api_started = True
-            completion = await host.model_api.complete(context.definition.model, wire_messages, tools=tools, output_tokens=reserve,
+            completion = await host.model_api.complete(model, wire_messages, tools=tools, output_tokens=reserve,
                 emit=emit, on_fact=record_fact)
             completion = Completion.model_validate(completion)
         except BaseException as error:
@@ -161,23 +188,24 @@ class ModelExecutor:
             fault.details["attempt_facts"] = dict(facts)
             partial = error.partial if isinstance(error, (ModelFailure, ModelCancelled)) else None
             fault.details["integrity"] = partial.content_view["integrity"] if partial and partial.content_view else "unknown"
-            partial_value = {"message": {"role": "assistant", "content": partial.text}, "usage": partial.usage,
+            partial_value = {"message": {"role": "assistant", "content": partial.text, **partial.continuation}, "usage": partial.usage,
                              "finish_reason": "interrupted", "discarded_tool_calls": list(partial.tool_calls),
                              "measurements": partial.measurements, "content_view": partial.content_view or content_view("full", integrity="partial", source_complete=False),
                              "attempt_facts": dict(facts)} if partial else {"attempt_facts": dict(facts), "usage": {}, "content_view": content_view("full", integrity="unknown", source_complete=None)}
             partial_value = host.redact(partial_value)
             partial_value["content_view"]["source_ref"] = {"action_id": action_id, "attempt_id": usage_id}
             partial_value["measurements"] = [*partial_value.get("measurements", ()), saved_output_measurement(partial_value)]
-            partial_value["input_comparison"] = input_comparison(projection, partial_value["usage"])
             def fail(db):
-                if window_rejected(fault.as_dict(), partial_value):
-                    host.budgets.reject_before_send(db, usage_id)
+                normalized = None
+                if facts.get("provider_accepted") is False:
+                    host.budgets.reject_before_send(db, usage_id, provider_rejected=True)
                 elif facts["send_started"] is not False:
                     db.execute("UPDATE usage SET state='needs_review' WHERE id=?", (usage_id,))
                 else:
                     host.budgets.reject_before_send(db, usage_id)
                 if partial and partial.usage:
-                    host.budgets.settle(db, usage_id, partial.usage)
+                    normalized = host.budgets.settle(db, usage_id, partial.usage)
+                partial_value["input_comparison"] = input_comparison(projection, normalized)
                 db.execute("UPDATE actions SET state='failed',input_json=?,result_json=?,error_json=?,updated_at=? WHERE id=? AND json_extract(input_json,'$.attempt.attempt_id')=?",
                            (encode(metadata), encode(partial_value), encode(host.redact(fault.as_dict())), now_ms(), action_id, usage_id))
                 if db.changes():
@@ -189,7 +217,7 @@ class ModelExecutor:
             if isinstance(error, asyncio.CancelledError) or error is fault:
                 raise
             raise fault from error
-        message = {"role": "assistant", "content": completion.text if not completion.tool_calls else completion.text or None}
+        message = {"role": "assistant", "content": completion.text if not completion.tool_calls else completion.text or None, **completion.continuation}
         if completion.tool_calls and completion.finish_reason in {"tool_calls", "stop"}:
             message["tool_calls"] = list(completion.tool_calls)
         facts.update(completion.attempt_facts)
@@ -202,9 +230,9 @@ class ModelExecutor:
             result["discarded_tool_calls"] = host.redact(list(completion.tool_calls))
         result["content_view"]["source_ref"] = {"action_id": action_id, "attempt_id": usage_id}
         result["measurements"] = [*result["measurements"], saved_output_measurement(result)]
-        result["input_comparison"] = input_comparison(projection, completion.usage)
         def complete(db):
-            host.budgets.settle(db, usage_id, completion.usage)
+            normalized = host.budgets.settle(db, usage_id, completion.usage)
+            result["input_comparison"] = input_comparison(projection, normalized)
             db.execute("UPDATE actions SET state='completed',input_json=?,result_json=?,error_json=NULL,updated_at=? WHERE id=? AND json_extract(input_json,'$.attempt.attempt_id')=?",
                        (encode(metadata), encode(result), now_ms(), action_id, usage_id))
             if not db.changes():
