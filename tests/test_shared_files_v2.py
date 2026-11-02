@@ -17,7 +17,7 @@ from unittest.mock import patch
 from oea import AgentDefinition, Completion, Model, RunSpec, Tools, Workspace
 from oea.runtime.host import Host
 from oea.storage.persistence import rows
-from oea.security.secrets import atomic_write
+from oea.workspace.patches import patch_bytes
 
 
 class PlannedModel:
@@ -81,11 +81,12 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_eight_agents_write_and_edit_the_same_revision_have_one_winner(self):
         sha = hashlib.sha256(b"0").hexdigest()
-        def delayed_replace(path, data):
-            if path == self.target:
+        def delayed_patch(arguments, previous):
+            data = patch_bytes(arguments, previous)
+            if Path(arguments["path"]) == self.target:
                 time.sleep(0.05)
-            return atomic_write(path, data)
-        with patch("oea.workspace.patches.atomic_write", delayed_replace):
+            return data
+        with patch("oea.workspace.patches.patch_bytes", delayed_patch):
             runs = []
             for index in range(8):
                 identity = "writer" + str(index)
@@ -107,11 +108,12 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
         for target in targets:
             target.write_text("0", encoding="utf-8")
         barrier = threading.Barrier(2)
-        def parallel_replace(path, data):
-            if path in targets:
+        def parallel_patch(arguments, previous):
+            data = patch_bytes(arguments, previous)
+            if Path(arguments["path"]) in targets:
                 barrier.wait(timeout=10)
-            return atomic_write(path, data)
-        with patch("oea.workspace.patches.atomic_write", parallel_replace):
+            return data
+        with patch("oea.workspace.patches.patch_bytes", parallel_patch):
             runs = [await self.agent("writer" + str(index), "apply_patch", {"path": str(target), "operation": "update", "hunks": [{"old_text": "0", "new_text": "1"}], "expected_sha256": hashlib.sha256(b"0").hexdigest()}) for index, target in enumerate(targets)]
             await asyncio.gather(*(self.host.runs.result(run.id, timeout=15) for run in runs))
         self.assertTrue(all(not value["result"].get("isError") for value in await self.receipts("apply_patch")))
@@ -157,13 +159,14 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shell_write_can_bypass_a_file_tool_compare_and_replace_boundary(self):
         blocked, release = threading.Event(), threading.Event()
-        def held_replace(path, data):
-            if path == self.target:
+        def held_patch(arguments, previous):
+            data = patch_bytes(arguments, previous)
+            if Path(arguments["path"]) == self.target:
                 blocked.set()
                 if not release.wait(timeout=15):
                     raise TimeoutError("Controlled test release was not received")
-            return atomic_write(path, data)
-        with patch("oea.workspace.patches.atomic_write", held_replace):
+            return data
+        with patch("oea.workspace.patches.patch_bytes", held_patch):
             try:
                 file_run = await self.agent("file-writer", "apply_patch", {"path": str(self.target), "operation": "update", "hunks": [{"old_text": "0", "new_text": "FILE"}], "expected_sha256": hashlib.sha256(b"0").hexdigest()})
                 self.assertTrue(await asyncio.to_thread(blocked.wait, 5))
