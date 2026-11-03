@@ -46,6 +46,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(check["model"]["connection_verified"])
         self.assertFalse(check["manager"]["model"]["connection_verified"])
         self.assertIn("exec_command:host_grant", check["tools"]["unavailable"])
+        self.assertFalse((await self.host.status())["allow_commands"])
         self.assertTrue(check["executables"][0]["available"])
         self.assertEqual(check["workspace_check"]["state"], "resolved")
         self.assertFalse((self.root / "work-not-created").exists())
@@ -53,6 +54,12 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.host.agents.get("worker"), before)
         for table in ("instances", "runs", "actions", "usage", "budgets"):
             self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM " + table)["count"]), 0)
+
+    async def test_command_observation_also_reports_the_host_grant(self):
+        await self.host.agents.save(AgentDefinition(id="observer", name="Observer", project_id="p",
+            tools=Tools(local=("write_stdin",)), workspace=Workspace(sandbox="trusted")))
+        check = await self.host.agents.check("observer", project_id="p")
+        self.assertIn("write_stdin:host_grant", check["tools"]["unavailable"])
 
     async def test_check_reports_foreign_capabilities_missing_directories_and_programs(self):
         source = self.root / "guide"

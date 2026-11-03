@@ -88,4 +88,4 @@ oea mcp
 
 环境和验证方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，敏感问题报告方式见 [SECURITY.md](SECURITY.md)。仓库保留通用自动化契约测试及源码 fixture，不包含已填充的工作空间或生成的测试结果。
 
-采用 [MIT 许可证](LICENSE)。OEA 3.0.0 使用 `oea` 包和命令，公开协议版本为 3.0。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。
+采用 [MIT 许可证](LICENSE)。OEA 3.1.0 使用 `oea` 包和命令，公开协议版本为 3.0。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。

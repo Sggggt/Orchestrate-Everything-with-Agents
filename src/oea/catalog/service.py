@@ -258,8 +258,9 @@ class Agents:
                     unavailable.append("skill:" + binding.id)
             elif not source or not source[0].enabled or project_id is None or source[0].project_id not in {None, project_id}:
                 unavailable.append("skill:" + binding.id)
-        if "exec_command" in definition.tools.local and not self.host.tools.providers["exec_command"].commands_enabled:
-            unavailable.append("exec_command:host_grant")
+        for name in ("exec_command", "write_stdin"):
+            if name in definition.tools.local and not self.host.tools.providers[name].commands_enabled:
+                unavailable.append(name + ":host_grant")
         for binding in definition.tools.mcp:
             saved = self.host.mcp.configurations.get(binding.server_id)
             if not saved or not saved[0].enabled or project_id is None or saved[0].project_id not in {None, project_id} or (

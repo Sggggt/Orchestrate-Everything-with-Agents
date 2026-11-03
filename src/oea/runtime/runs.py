@@ -142,12 +142,21 @@ class Runs:
         row = need(db, "runs", run_id)
         value = self.view(row)
         if row["cancel_requested_at"] is not None:
-            def scope(db):
-                values = rows(db, "WITH RECURSIVE owned(id) AS (SELECT ? UNION ALL SELECT r.id FROM runs r JOIN owned o ON r.parent_run_id=o.id) SELECT r.state,COUNT(*) AS count FROM runs r JOIN owned o ON o.id=r.id GROUP BY r.state", (run_id,))
-                counts = {item["state"]: item["count"] for item in values}
-                return {"state": "needs_review" if counts.get("needs_review") else "requested" if any(counts.get(state) for state in ("accepted", "running", "waiting")) else "confirmed", "runs": counts}
-            value["cancellation"] = scope(db)
+            value["cancellation"] = self._cancellations(db, [run_id])[run_id]
         return value
+
+    @staticmethod
+    def _cancellations(db, run_ids):
+        if not run_ids:
+            return {}
+        values = rows(db, "WITH RECURSIVE owned(root,id) AS (SELECT value,value FROM json_each(?) UNION ALL "
+                      "SELECT o.root,r.id FROM runs r JOIN owned o ON r.parent_run_id=o.id) "
+                      "SELECT o.root,r.state,COUNT(*) AS count FROM owned o JOIN runs r ON r.id=o.id GROUP BY o.root,r.state", (encode(run_ids),))
+        scopes = {identity: {} for identity in run_ids}
+        for item in values:
+            scopes[item["root"]][item["state"]] = item["count"]
+        return {identity: {"state": "needs_review" if counts.get("needs_review") else "requested" if any(
+            counts.get(state) for state in ("accepted", "running", "waiting")) else "confirmed", "runs": counts} for identity, counts in scopes.items()}
 
     @staticmethod
     def view(row):
@@ -164,9 +173,11 @@ class Runs:
             require(need(db, "sessions", session_id)["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
             if instance_id:
                 require(need(db, "instances", instance_id)["session_id"] == session_id, "PERMISSION_DENIED", "Instance belongs to another session")
-            return rows(db, "SELECT r.rowid AS position,r.*,i.name AS instance_name,i.agent_id,substr(COALESCE(m.body,json_extract(r.input_json,'$')),1,240) AS goal FROM runs r JOIN instances i ON i.id=r.instance_id LEFT JOIN messages m ON m.id=r.source_message_id WHERE i.session_id=? AND (? IS NULL OR i.id=?) AND (?=0 OR r.rowid<?) ORDER BY r.rowid DESC LIMIT ?", (session_id, instance_id, instance_id, cursor, cursor, limit + 1))
-        values = await self.host.store.call(read)
-        return {"items": [{**self.observe(self.view(row)), **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal")}} for row in values[:limit]],
+            values = rows(db, "SELECT r.rowid AS position,r.*,i.name AS instance_name,i.agent_id,substr(COALESCE(m.body,json_extract(r.input_json,'$')),1,240) AS goal FROM runs r JOIN instances i ON i.id=r.instance_id LEFT JOIN messages m ON m.id=r.source_message_id WHERE i.session_id=? AND (? IS NULL OR i.id=?) AND (?=0 OR r.rowid<?) ORDER BY r.rowid DESC LIMIT ?", (session_id, instance_id, instance_id, cursor, cursor, limit + 1))
+            return values, self._cancellations(db, [row["id"] for row in values[:limit] if row["cancel_requested_at"] is not None])
+        values, cancellations = await self.host.store.call(read, transaction="read")
+        return {"items": [{**self.observe({**self.view(row), **({"cancellation": cancellations[row["id"]]} if row["id"] in cancellations else {})}),
+                           **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal")}} for row in values[:limit]],
             "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
     async def inspect(self, run_id: str):
@@ -423,8 +434,14 @@ class Runs:
             return
         job = self.host.jobs.get(run_id)
         if job:
-            job.cancel()
-            await asyncio.gather(job, return_exceptions=True)
+            if not job.cancelling():
+                job.cancel()
+            await asyncio.wait({job}, timeout=3)
+            if not job.done():
+                await self.host.tools.cancel(run_id, wait=False)
+                if await self.host._unresolved(run_id):
+                    await self.host.finish(run_id, "needs_review")
+                return
             current = await self.get(run_id)
             if current["state"] in {"accepted", "running", "waiting"} and not await self.host._unresolved(run_id):
                 await self.host.finish(run_id, "cancelled")

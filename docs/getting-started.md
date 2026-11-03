@@ -96,12 +96,12 @@ Refresh the browser after static frontend changes and restart an idle host after
 
 ```powershell
 .\Install-OEA.ps1 -Wheel .\PLATFORM_WHEEL.whl
-.\Start-Workspace.ps1 -AllowCommands
+.\Start-Workspace.ps1
 ```
 
 The installer creates the managed runtime, installs the wheel and places `oea` and launchers in `~/.oea/bin`. It does not install a compiler. Source builders may instead provide `OEA_NATIVE_ASSETS`; `-Editable` is an explicit development mode. Stop the host before updating its Python environment.
 
-The launcher starts or reuses the host and opens the browser. It supports `-Port`, `-NoBrowser`, `-AllowCommands`, `-DataDir` and `-Python`. It does not migrate state, install dependencies or modify models.
+The launcher starts or reuses the host and opens the browser. New hosts enable configured command/process tools by default, including when opening `Start-Workspace.cmd`. Use `-AllowCommands:$false` in PowerShell to start without that grant. It supports `-Port`, `-NoBrowser`, `-AllowCommands`, `-DataDir` and `-Python`. Reusing a host preserves its existing grant; `host.status.allow_commands` and `agents.check` report it. Changing that grant requires restarting the host after its active work is handled. The launcher does not migrate state, install dependencies or modify models.
 
 <a id="update-tool"></a>
 ## Update existing data and installations

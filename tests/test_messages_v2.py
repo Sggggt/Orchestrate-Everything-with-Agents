@@ -85,6 +85,51 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
             await self.host.tools.invoke(run.id, "read_messages", {"board_id": self.inbox}, "read-granted")
         self.assertEqual(len((await self.host.messages.list(self.inbox, project_id="p"))["items"]), 1)
 
+    async def test_session_feed_merges_boards_with_one_ordered_cursor_and_keeps_scope(self):
+        first = await self.host.messages.send(self.spec("general-one", "General one", mentions=(self.instance["id"],)))
+        private = await self.host.messages.send(self.spec("private-one", "Private one", board_id=self.inbox))
+        last = await self.host.messages.send(self.spec("general-two", "General two"))
+        other_session = await self.host.sessions.create("p")
+        other_board = next(item for item in (await self.host.boards.list("p", session_id=other_session["id"]))["items"] if item["scope"] == "session")
+        await self.host.messages.send(MessageSpec(board_id=other_board["id"], content="Other session", idempotency_key="other"))
+        page = await self.host.registry.call("messages.list", {"session_id": self.session["id"], "project_id": "p", "order": "desc", "limit": 2})
+        self.assertEqual([item["id"] for item in page["items"]], [last["id"], private["id"]])
+        self.assertEqual(page["items"][1]["board"]["scope"], "inbox")
+        self.assertEqual(page["items"][1]["board"]["owner_name"], "second")
+        earlier = await self.host.messages.list(project_id="p", session_id=self.session["id"], order="desc", before=page["cursor"], limit=2)
+        self.assertEqual([item["id"] for item in earlier["items"]], [first["id"]])
+        self.assertEqual(earlier["items"][0]["deliveries"][0]["instance_name"], "first")
+        self.assertIsNone(earlier["cursor"])
+        for params in ({"session_id": self.session["id"], "project_id": "other"},
+                       {"board_id": self.board, "session_id": self.session["id"], "project_id": "p"}, {"project_id": "p"}):
+            with self.subTest(params=params), self.assertRaises(RuntimeFault):
+                await self.host.messages.list(**params)
+        with self.assertRaises(RuntimeFault):
+            await self.host.store.call(lambda db: self.host.messages.page(db, None, project_id="p", session_id=self.session["id"], instance=self.instance))
+
+    async def test_session_read_positions_batch_boards_without_marking_agent_deliveries(self):
+        first = await self.host.messages.send(self.spec("general-one", mentions=(self.instance["id"],)))
+        private = await self.host.messages.send(self.spec("private-one", board_id=self.inbox))
+        last = await self.host.messages.send(self.spec("general-two"))
+        unread = await self.host.messages.unread(None, "reader-a", project_id="p", session_id=self.session["id"])
+        self.assertEqual(unread["count"], 3)
+        read = await self.host.messages.mark_read(None, "reader-a", private["position"], project_id="p", session_id=self.session["id"])
+        self.assertEqual(read["positions"], {self.board: first["position"], self.inbox: private["position"]})
+        self.assertEqual(read["summary"]["messages"]["count"], 1)
+        self.assertEqual((await self.host.messages.unread(None, "reader-b", project_id="p", session_id=self.session["id"]))["count"], 3)
+        replay = await self.host.messages.mark_read(None, "reader-a", first["position"], project_id="p", session_id=self.session["id"])
+        self.assertEqual(replay["positions"], read["positions"])
+        await self.host.messages.mark_read(None, "reader-a", last["position"], project_id="p", session_id=self.session["id"])
+        self.assertEqual((await self.host.messages.unread(None, "reader-a", project_id="p", session_id=self.session["id"]))["count"], 0)
+        self.assertIsNone((await self.host.messages.get(first["id"], project_id="p"))["deliveries"][0]["read_at"])
+        self.assertIsNone((await self.host.messages.get(private["id"], project_id="p"))["deliveries"][0]["read_at"])
+        other = await self.host.sessions.create("p")
+        board = next(item for item in (await self.host.boards.list("p", session_id=other["id"]))["items"] if item["scope"] == "session")
+        foreign = await self.host.messages.send(MessageSpec(board_id=board["id"], content="Other", idempotency_key="other"))
+        with self.assertRaises(RuntimeFault):
+            await self.host.messages.mark_read(None, "reader-a", foreign["position"], project_id="p", session_id=self.session["id"])
+        self.assertEqual((await self.host.messages.unread(None, "reader-a", project_id="p", session_id=other["id"]))["count"], 1)
+
     async def test_members_and_boards_return_stable_scope_without_creating_manager(self):
         run = await self.active()
         members = await self.host.tools.invoke(run.id, "list_members", {}, "members")

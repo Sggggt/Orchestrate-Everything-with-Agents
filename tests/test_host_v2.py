@@ -208,6 +208,43 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         instance = await self.host.instances.create(self.session["id"], "worker", name=name)
         return await self.host.runs.submit(RunSpec(instance_id=instance["id"], input=text, idempotency_key=key))
 
+    async def test_cancel_returns_pending_and_repeated_requests_do_not_interrupt_cleanup(self):
+        await self.open(WaitModel())
+        with patch.object(self.host, "launch"):
+            handle = await self.submit()
+        await self.host.store.call(lambda db: db.execute("UPDATE runs SET state='running' WHERE id=?", (handle.id,)), transaction=True)
+        started, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def work():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release.wait()
+                await self.host.finish(handle.id, "cancelled")
+        job = asyncio.create_task(work())
+        self.host.jobs[handle.id] = job
+        await started.wait()
+        try:
+            first = await asyncio.wait_for(self.host.runs.cancel(handle.id), 5)
+            self.assertTrue(cleaning.is_set())
+            self.assertEqual(first["state"], "running")
+            self.assertIsNotNone(first["cancel_requested_at"])
+            self.assertFalse(first["stop_confirmed"])
+            second = await asyncio.wait_for(self.host.runs.cancel(handle.id), 5)
+            self.assertEqual(second["cancel_requested_at"], first["cancel_requested_at"])
+            self.assertEqual(job.cancelling(), 1)
+            self.assertFalse(job.done())
+            release.set()
+            await asyncio.wait_for(job, 2)
+            stopped = await self.host.runs.get(handle.id)
+            self.assertEqual(stopped["state"], "cancelled")
+            self.assertTrue(stopped["stop_confirmed"])
+        finally:
+            release.set()
+            await asyncio.gather(job, return_exceptions=True)
+            self.host.jobs.pop(handle.id, None)
+
     async def until(self, run_id, target, *, allow_review=False):
         async with asyncio.timeout(10):
             while True:
@@ -397,6 +434,10 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(status["stopped_at"])
         self.assertTrue(status["stop_confirmed"])
         self.assertFalse(status["in_flight"])
+        page = await self.host.runs.list(self.session["id"], project_id="p")
+        listed = next(item for item in page["items"] if item["id"] == handle.id)
+        self.assertEqual(listed["cancellation"], status["cancellation"])
+        self.assertTrue(listed["stop_confirmed"])
         self.assertIsNotNone(captured[0].returncode)
         receipt = await self.host.store.call(lambda db: one(db, "SELECT * FROM actions WHERE run_id=? AND name='exec_command'", (handle.id,)))
         self.assertEqual(receipt["state"], "completed")

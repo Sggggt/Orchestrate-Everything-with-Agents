@@ -49,12 +49,70 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
         self.temporary.cleanup()
 
-    async def append_messages(self, messages, *, prefix="history"):
+    async def append_messages(self, messages, *, prefix="history", run_id="r"):
         def save(db):
             for index, message in enumerate(messages):
-                db.execute("INSERT INTO conversation(id,instance_id,run_id,role,body_json,created_at) VALUES(?,'i','r',?,?,1)",
-                           (prefix + "-" + str(index), message["role"], encode(message)))
+                db.execute("INSERT INTO conversation(id,instance_id,run_id,role,body_json,created_at) VALUES(?,'i',?,?,?,1)",
+                           (prefix + "-" + str(index), run_id, message["role"], encode(message)))
         await self.store.call(save, transaction=True)
+
+    async def test_followup_input_follows_previous_work_and_precedes_current_tool_continuation(self):
+        await self.store.call(lambda db: db.execute(
+            "INSERT INTO runs(id,instance_id,root_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at) "
+            "VALUES('prior','i','prior','b','completed','\"Earlier work\"','prior','hash','main',0,0)"), transaction=True)
+        prior = [{"role": "user", "content": "Find source evidence. " * 600},
+                 {"role": "assistant", "content": "No source was available in the earlier work. " * 400}]
+        await self.append_messages(prior, prefix="prior", run_id="prior")
+        await self.contexts.input(self.run, self.instance)
+        goal = json.loads(self.run["input_json"])
+        async def unexpected(messages, limit):
+            raise AssertionError("These complete groups can be retained or referenced")
+        initial, _ = await self.contexts.project(self.run, self.instance, self.definition, "Review", [], summarize=unexpected)
+        self.assertEqual(initial[-1], {"role": "user", "content": goal})
+
+        region = [{"role": "assistant", "tool_calls": [{"id": "read", "function": {"name": "read_source", "arguments": "{}"}}]},
+                  {"role": "tool", "tool_call_id": "read", "content": "New confirmed evidence"}]
+        await self.append_messages(region, prefix="current")
+        original = await self.store.call(lambda db: rows(db, "SELECT * FROM conversation ORDER BY position"))
+        for mode in ("full", "references", "fallback"):
+            with self.subTest(mode=mode):
+                if mode == "fallback":
+                    view, _ = await self.contexts.fallback(self.run, self.instance, self.definition, "Review", [], None, None,
+                        RuntimeFault("CONTEXT_SUMMARY_FAILED", "Synthetic summary failure"))
+                else:
+                    definition = self.definition if mode == "full" else self.definition.model_copy(update={
+                        "context": ContextPolicy(input_tokens=4096, memory_tokens=512, pressure=0.5)})
+                    view, projection = await self.contexts.project(self.run, self.instance, definition, "Review", [], summarize=unexpected)
+                    if mode == "references":
+                        self.assertGreater(projection["selection"]["reference_groups"], 0)
+                goals = [index for index, message in enumerate(view) if message.get("content") == goal]
+                self.assertEqual(goals, [len(view) - 3])
+                self.assertEqual(view[-2:], region)
+                message_groups(view)
+        self.assertEqual(original, await self.store.call(lambda db: rows(db, "SELECT * FROM conversation ORDER BY position")))
+
+    async def test_queued_older_notice_precedes_new_input_but_new_notice_follows_it(self):
+        await self.contexts.input(self.run, self.instance)
+        def seed(db):
+            db.execute("INSERT INTO boards VALUES('board','p','s','session',NULL,'Evidence',0)")
+            for name, timestamp in (("old", 0), ("new", 2)):
+                db.execute("INSERT INTO messages(id,project_id,session_id,board_id,source_json,body,idempotency_key,input_hash,created_at) "
+                           "VALUES(?,'p','s','board','{}',?,?,?,?)", (name, name + " notice", name, name, timestamp))
+                db.execute("INSERT INTO conversation(id,instance_id,run_id,role,message_id,created_at) VALUES(?,'i','r','user',?,3)",
+                           ("notice-" + name, name))
+        await self.store.call(seed, transaction=True)
+        async def unexpected(messages, limit):
+            raise AssertionError("Small input needs no summary")
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback):
+                if fallback:
+                    view, _ = await self.contexts.fallback(self.run, self.instance, self.definition, "Review", [], None, None,
+                        RuntimeFault("CONTEXT_SUMMARY_FAILED", "Synthetic summary failure"))
+                else:
+                    view, _ = await self.contexts.project(self.run, self.instance, self.definition, "Review", [], summarize=unexpected)
+                self.assertIn("old notice", view[1]["content"])
+                self.assertEqual(view[2]["content"], json.loads(self.run["input_json"]))
+                self.assertIn("new notice", view[3]["content"])
 
     def high_input_definition(self):
         return self.definition.model_copy(update={"context": ContextPolicy(

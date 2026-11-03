@@ -323,16 +323,19 @@ class ToolGateway:
         require(receipt is not None, "NOT_FOUND", "Action does not exist")
         return receipt
 
-    async def cancel(self, run_id):
+    async def cancel(self, run_id, *, wait=True):
         calls = await self.store.call(lambda db: list(db.execute("SELECT * FROM actions WHERE (run_id=? OR intent_id=?) AND state IN ('intent','dispatched','needs_review')", (run_id,run_id))))
-        await self._cancel_calls(calls, reason="cancel_requested")
+        await self._cancel_calls(calls, reason="cancel_requested", wait=wait)
 
-    async def _cancel_calls(self, calls, *, reason):
+    async def _cancel_calls(self, calls, *, reason, wait=True):
         pending, fresh = [], []
         for receipt in calls:
             identity = receipt["id"]
             task = self.inflight.get(identity)
-            if task is None or task.done() or identity in self.cancel_requested:
+            if task is None or task.done():
+                continue
+            if identity in self.cancel_requested:
+                fresh.append((receipt, identity in self.started))
                 continue
             self.cancel_requested.add(identity)
             fresh.append((receipt, identity in self.started))
@@ -349,7 +352,7 @@ class ToolGateway:
                     if db.changes():
                         event(db, "action.failed", run_id=receipt["run_id"], intent_id=receipt.get("intent_id"), data={"action_id": receipt["id"], "error": fault})
             await self.store.call(stopped_before_dispatch, transaction=True)
-        if pending:
+        if pending and wait:
             await asyncio.wait(pending, timeout=3)
         for receipt, was_started in fresh:
             identity = receipt["id"]

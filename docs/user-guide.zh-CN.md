@@ -2,7 +2,7 @@
 
 [English](user-guide.md) · 简体中文 · [文档目录](README.md)
 
-本指南适用于 Orchestrate Everything with Agents（OEA）3.0.0，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
+本指南适用于 Orchestrate Everything with Agents（OEA）3.1.0，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
 
 ## 目录
 
@@ -83,7 +83,7 @@ python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-Windows 可运行 `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl`，再用 `Start-Workspace.ps1 -AllowCommands` 启动。安装环境、源码构建、外部虚拟环境和系统依赖见[安装指南](getting-started.md)。
+Windows 可运行 `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl`，再用 `Start-Workspace.ps1` 启动；启动器默认开放已配置的命令能力。安装环境、源码构建、外部虚拟环境和系统依赖见[安装指南](getting-started.md)。
 
 浏览器打开宿主打印的地址，初次默认 `http://127.0.0.1:8890`。前台宿主可用 Ctrl+C 退出；关闭浏览器不会停止宿主。相同状态目录只由一个 Host 持有，已有宿主使用 PlatformClient 连接。
 
@@ -173,7 +173,7 @@ oea schema agent
 oea serve --allow-commands
 ```
 
-Windows 启动器支持 `-AllowCommands`。已有宿主正在运行时，重新连接仍沿用原命令权限；需要改变启动权限时先停止该宿主。外部程序还需在选定环境中安装，并能通过配置的可执行文件路径找到。
+Windows 启动器默认开放命令权限，PowerShell 可用 `-AllowCommands:$false` 关闭。`host.status.allow_commands` 报告当前宿主授权。已有宿主正在运行时，重新连接仍沿用原命令权限；需要改变启动权限时先处理活动工作，再停止该宿主。外部程序还需在选定环境中安装，并能通过配置的可执行文件路径找到。
 
 ### 输入与交付文件
 

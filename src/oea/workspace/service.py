@@ -61,6 +61,12 @@ class LocalTool:
         paths, settings = await self.resolve_run(request["run_id"])
         args = request["arguments"]
         try:
+            if self.name in {"exec_command", "write_stdin"}:
+                require(self.commands_enabled, "PERMISSION_DENIED",
+                        "Host command permission is disabled. Ask the controller to confirm user authorization before restarting the idle host with --allow-commands; Agent tool configuration alone cannot enable it.",
+                        details={"required_host_option": "--allow-commands", "restart_required": True},
+                        continuation="request_user_authorization")
+                require(self.sessions is not None, "CAPABILITY_UNAVAILABLE", "Host command session service is unavailable")
             if self.name == "view_image" and "artifact_id" in args:
                 require(self.image_artifact is not None, "PERMISSION_DENIED", "No assigned image source")
                 path, artifact = await self.image_artifact(request["run_id"], args["artifact_id"])
@@ -70,7 +76,6 @@ class LocalTool:
             environment = ExecutionEnvironment(paths, settings)
             environment.available()
             if self.name in {"exec_command", "write_stdin"}:
-                require(self.commands_enabled and self.sessions is not None, "PERMISSION_DENIED", "Host has not enabled command sessions")
                 if self.name == "exec_command":
                     result = await self.sessions.start(request, environment)
                     require(result["state"] != "unknown", "OUTCOME_UNCERTAIN", "Inspect the original command session before continuing",

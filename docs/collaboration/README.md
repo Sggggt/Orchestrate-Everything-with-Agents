@@ -12,3 +12,7 @@
 角色复用相同能力类型。manager 可选；创建和派发取决于当前与快照的通信授权、项目/会话与根归属。收件、阅读和业务完成是不同事实。来源资料与消息不授予工具执行权。
 
 公开操作为 `boards.create/get/list/set_reader`、`messages.send/get/list/mark_read/unread` 及注册的 coordination 能力。精确参数按单个操作发现，不在本文复制完整 Schema。
+
+控制端群聊将当前会话的群聊和私聊统一按消息位置分页展示，不提供板块筛选；每条消息标明范围、实际收件人和未送达的提及。发送默认使用会话群聊板块，回复沿用原消息的板块，不因汇总展示扩大私聊读权。
+
+`messages.list` 选择 `board_id` 或 `session_id` 其中一个范围，会话汇总页返回原板块信息及收件人名称。`messages.mark_read/unread` 使用 `board_id=None` 与 `session_id` 处理整个会话，保留按板块保存的阅读位置；批量已读不推进其它会话或其它阅读者，也不改变 Agent 的投递已读事实。执行 Agent 的 `read_messages` 仍按原板块及显式私聊读权读取。

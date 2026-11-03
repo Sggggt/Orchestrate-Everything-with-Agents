@@ -8,9 +8,35 @@ import socket
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, Mock
 
-from oea.workspace.native import spawn
+from oea.workspace.native import NativeProcess, spawn
 from oea.contracts.errors import RuntimeFault
+
+
+class NativeProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_terminal_receipt_closes_component_stdin_before_reaping(self):
+        component = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", "import sys; sys.stdin.buffer.read()",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'{"event":"exited","exit_code":0,"process_stopped":true}\n')
+        reader.feed_eof()
+        writer = Mock(wait_closed=AsyncMock())
+        server = Mock(wait_closed=AsyncMock())
+        process = NativeProcess(component, reader, writer, server)
+        process.task = asyncio.create_task(process.finish())
+        try:
+            self.assertEqual(await asyncio.wait_for(process.wait(), 3), 0)
+            self.assertTrue(component.stdin.is_closing())
+            self.assertTrue(process.terminal["process_stopped"])
+            self.assertEqual(component.returncode, 0)
+        finally:
+            if component.returncode is None:
+                component.kill()
+            await component.wait()
+            if not process.task.done():
+                process.task.cancel()
+            await asyncio.gather(process.task, return_exceptions=True)
 
 
 @unittest.skipUnless(os.environ.get("OEA_TEST_NATIVE_COMPONENT"), "Native component is not configured")

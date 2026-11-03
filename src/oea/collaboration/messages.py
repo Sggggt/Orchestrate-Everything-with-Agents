@@ -120,7 +120,7 @@ class Messages:
 
     def receipt(self, db, row):
         identity = row["id"]
-        return self._view(row) | {"deliveries": rows(db, "SELECT * FROM deliveries WHERE message_id=? ORDER BY rowid", (identity,)),
+        return self._view(row) | {"deliveries": rows(db, "SELECT d.*,i.name AS instance_name FROM deliveries d JOIN instances i ON i.id=d.instance_id WHERE d.message_id=? ORDER BY d.rowid", (identity,)),
             "context_refs": [item["source_id"] for item in rows(db, "SELECT source_id FROM message_context_refs WHERE message_id=?", (identity,))],
             "artifact_ids": [item["artifact_id"] for item in rows(db, "SELECT artifact_id FROM message_artifacts WHERE message_id=?", (identity,))]}
 
@@ -157,24 +157,37 @@ class Messages:
             return self.receipt(db, row)
         return await self.host.store.call(read)
 
-    def page(self, db, board_id, *, project_id, after=0, limit=25, topic_id=None, order="asc", before=None, instance=None):
+    @staticmethod
+    def scope(db, board_id, project_id, session_id=None, instance=None):
+        require((board_id is None) != (session_id is None), "INVALID_REQUEST", "Choose one board or session message scope")
+        if board_id is not None:
+            return Boards.check(db, board_id, project_id=project_id, instance=instance)
+        require(instance is None, "PERMISSION_DENIED", "Session-wide message supervision is a controller capability")
+        require(need(db, "sessions", session_id)["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
+        return None
+
+    def page(self, db, board_id, *, project_id, after=0, limit=25, topic_id=None, order="asc", before=None, instance=None, session_id=None):
         require(type(after) is int and 0 <= after < 2**63 and (before is None or type(before) is int and 0 <= before < 2**63) and 1 <= limit <= 100 and order in {"asc", "desc"}, "INVALID_REQUEST", "Read a bounded message page")
-        Boards.check(db, board_id, project_id=project_id, instance=instance)
-        query, params = "SELECT * FROM messages WHERE board_id=? AND position>?", [board_id, after]
+        self.scope(db, board_id, project_id, session_id, instance)
+        query = "SELECT m.*,b.scope AS board_scope,b.name AS board_name,b.owner_instance_id AS inbox_owner_id,i.name AS inbox_owner_name FROM messages m JOIN boards b ON b.id=m.board_id LEFT JOIN instances i ON i.id=b.owner_instance_id WHERE "
+        query += "m.board_id=?" if board_id is not None else "m.session_id=?"
+        query += " AND m.position>?"
+        params = [board_id if board_id is not None else session_id, after]
         if before is not None:
-            query += " AND position<?"
+            query += " AND m.position<?"
             params.append(before)
         if topic_id:
-            query += " AND (topic_id=? OR id=?)"
+            query += " AND (m.topic_id=? OR m.id=?)"
             params.extend((topic_id, topic_id))
-        values = rows(db, query + " ORDER BY position " + ("DESC" if order == "desc" else "ASC") + " LIMIT ?", (*params, limit + 1))
-        return {"items": [self.receipt(db, row) for row in values[:limit]],
+        values = rows(db, query + " ORDER BY m.position " + ("DESC" if order == "desc" else "ASC") + " LIMIT ?", (*params, limit + 1))
+        return {"items": [self.receipt(db, row) | ({"board": {"id": row["board_id"], "name": row["board_name"], "scope": row["board_scope"],
+                    "owner_instance_id": row["inbox_owner_id"], "owner_name": row["inbox_owner_name"]}} if session_id is not None else {}) for row in values[:limit]],
                 "cursor": values[limit - 1]["position"] if len(values) > limit else None,
                 "next_position": values[min(limit, len(values)) - 1]["position"] if values else after}
 
-    async def list(self, board_id: str, *, project_id: str, after: int = 0, limit: int = 25, topic_id: str | None = None,
-                   order: Literal["asc", "desc"] = "asc", before: int | None = None):
-        return await self.host.store.call(lambda db: self.page(db, board_id, project_id=project_id, after=after, limit=limit, topic_id=topic_id, order=order, before=before))
+    async def list(self, board_id: str | None = None, *, project_id: str, after: int = 0, limit: int = 25, topic_id: str | None = None,
+                   order: Literal["asc", "desc"] = "asc", before: int | None = None, session_id: str | None = None):
+        return await self.host.store.call(lambda db: self.page(db, board_id, project_id=project_id, after=after, limit=limit, topic_id=topic_id, order=order, before=before, session_id=session_id), transaction="read")
 
     @staticmethod
     def save_position(db, board_id, consumer_id, position):
@@ -183,21 +196,42 @@ class Messages:
         db.execute("INSERT INTO board_read_positions VALUES(?,?,?,?) ON CONFLICT(consumer_id,board_id) DO UPDATE SET position=MAX(position,excluded.position),updated_at=excluded.updated_at", (consumer_id, board_id, position, now_ms()))
         return one(db, "SELECT position FROM board_read_positions WHERE consumer_id=? AND board_id=?", (consumer_id, board_id))["position"]
 
-    async def mark_read(self, board_id: str, consumer_id: str, position: int, *, project_id: str):
+    async def mark_read(self, board_id: str | None, consumer_id: str, position: int, *, project_id: str, session_id: str | None = None):
         consumer_id = reading.reader(consumer_id)
         def write(db):
-            board = Boards.check(db, board_id, project_id=project_id)
-            saved = self.save_position(db, board_id, consumer_id, position)
-            event(db, "message.read", project_id=project_id, session_id=board["session_id"], data={"board_id": board_id, "consumer_id": consumer_id, "position": saved})
-            return {"board_id": board_id, "position": saved, "summary": reading.summary(db, board["session_id"], project_id, consumer_id) if board["session_id"] else None}
+            board = self.scope(db, board_id, project_id, session_id)
+            if board is not None:
+                saved = self.save_position(db, board_id, consumer_id, position)
+                owner = board["session_id"]
+                result = {"board_id": board_id, "position": saved}
+            else:
+                require(type(position) is int and 0 <= position < 2**63 and (position == 0 or one(db,
+                    "SELECT 1 FROM messages WHERE session_id=? AND position=?", (session_id, position))), "INVALID_REQUEST", "Read position belongs to another session")
+                db.execute("INSERT INTO board_read_positions(consumer_id,board_id,position,updated_at) "
+                    "SELECT ?,board_id,MAX(position),? FROM messages WHERE session_id=? AND position<=? GROUP BY board_id "
+                    "ON CONFLICT(consumer_id,board_id) DO UPDATE SET position=MAX(position,excluded.position),updated_at=excluded.updated_at",
+                    (consumer_id, now_ms(), session_id, position))
+                owner, saved = session_id, position
+                result = {"session_id": session_id, "position": saved, "positions": self.session_positions(db, session_id, consumer_id)}
+            event(db, "message.read", project_id=project_id, session_id=owner, data={"board_id": board_id, "consumer_id": consumer_id, "position": saved})
+            return result | {"summary": reading.summary(db, owner, project_id, consumer_id) if owner else None}
         result = await self.host.store.call(write, transaction=True)
         self.host.notify()
         return result
 
-    async def unread(self, board_id: str, consumer_id: str, *, project_id: str):
+    @staticmethod
+    def session_positions(db, session_id, consumer_id):
+        return {item["board_id"]: item["position"] for item in rows(db,
+            "SELECT p.board_id,p.position FROM board_read_positions p JOIN boards b ON b.id=p.board_id WHERE p.consumer_id=? AND b.session_id=?", (consumer_id, session_id))}
+
+    async def unread(self, board_id: str | None, consumer_id: str, *, project_id: str, session_id: str | None = None):
         consumer_id = reading.reader(consumer_id)
         def read(db):
-            Boards.check(db, board_id, project_id=project_id)
+            self.scope(db, board_id, project_id, session_id)
+            if session_id is not None:
+                positions = self.session_positions(db, session_id, consumer_id)
+                count = one(db, "SELECT COUNT(*) AS count FROM messages m LEFT JOIN board_read_positions p ON p.board_id=m.board_id AND p.consumer_id=? WHERE m.session_id=? AND m.position>COALESCE(p.position,0)", (consumer_id, session_id))["count"]
+                return {"session_id": session_id, "position": max(positions.values(), default=0), "positions": positions, "count": count}
             cursor = one(db, "SELECT position FROM board_read_positions WHERE consumer_id=? AND board_id=?", (consumer_id, board_id))
             position = cursor["position"] if cursor else 0
             return {"position": position, "count": one(db, "SELECT COUNT(*) AS count FROM messages WHERE board_id=? AND position>?", (board_id, position))["count"]}

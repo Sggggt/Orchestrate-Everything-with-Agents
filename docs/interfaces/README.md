@@ -31,3 +31,5 @@ CLI、已有宿主客户端、控制 MCP 和类型化操作注册。
 依赖模块：artifacts、contracts、migration、models、storage、web、workspace。
 
 跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+
+`host.status.allow_commands` 报告当前宿主的命令授权；Agent 绑定不改变该值。Windows 便捷启动脚本默认启用此授权，`oea serve` 仍由显式 `--allow-commands` 控制；复用宿主不修改授权。命令拒绝保留 `PERMISSION_DENIED`，并用 `continuation=request_user_authorization` 和 `details.required_host_option` 提示控制端核对授权及安排空闲后的重启。

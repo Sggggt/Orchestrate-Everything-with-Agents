@@ -3,7 +3,7 @@ param(
     [string]$Python,
     [ValidateRange(1, 65535)][int]$Port = 8890,
     [switch]$NoBrowser,
-    [switch]$AllowCommands
+    [switch]$AllowCommands = $true
 )
 
 Set-StrictMode -Version Latest
@@ -96,7 +96,7 @@ if (Test-Path -LiteralPath $oeaClientPath) {
     }
     if ($oeaSavedUrl -and (Test-WorkspaceService $oeaSavedUrl)) {
         if ($PSBoundParameters.ContainsKey('Port') -and $oeaSavedUri.Port -ne $Port) { throw "This data directory is already served at $oeaSavedUrl. Stop that host before changing its port." }
-        if ($AllowCommands) { Write-Host 'Reusing the host with its existing command grant.' }
+        Write-Host 'Reusing the host with its existing command grant; startup options do not change it. Check host.status or agents.check before command work.'
         Show-Workspace $oeaSavedUrl
         exit 0
     }

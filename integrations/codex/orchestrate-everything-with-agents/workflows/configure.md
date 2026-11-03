@@ -12,3 +12,5 @@
 业务工具参数默认 `tools.loading=deferred`，模型用 tool_guide 按需选择后读取原生完整 Schema；少量固定工具可显式 eager。Skill 默认只提供目录，按当前任务读取正文及参考；required 仅保留每次都必需的指令，不因优化静默撤销既有约束。
 
 读取修订冲突后的最新定义再合并当前修改。缺少秘密时保留配置并提示通过本地设置填写，不在对话中索取密钥。
+
+执行前处理 `agents.check.tools.unavailable` 与 `workspace_check.issues`。`*:host_grant` 交控制端核对已有用户授权，缺少时申请后再安排空闲宿主以 `--allow-commands` 重启；不能反复保存 Agent 配置来开放宿主权限。共享目录的读取与写入分别配置：项目原件和 references 默认只读，需写入时使用明确获准的 `writable_project_paths` 或 `writable_directories`，再核对 `workspace_check.paths`；不因任务正文写了路径就扩大范围。

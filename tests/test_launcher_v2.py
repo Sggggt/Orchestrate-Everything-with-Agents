@@ -71,9 +71,11 @@ class LauncherTests(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             return probe.getsockname()[1]
 
-    def launch(self, data_dir=None, *, port=None, python=None, command=False, environment=None):
+    def launch(self, data_dir=None, *, port=None, python=None, command=False, environment=None, allow_commands=True):
         python = str(python or sys.executable)
         options = ["-Python", python, "-NoBrowser"]
+        if not allow_commands:
+            options.append("-AllowCommands:$false")
         if data_dir is not None:
             options.extend(["-DataDir", str(data_dir)])
         if port is not None:
@@ -100,7 +102,7 @@ class LauncherTests(unittest.TestCase):
         self.host_pids.update(int(value) for value in re.findall(r"Host PID:\s+(\d+)", result.stdout))
         return result
 
-    def assert_host(self, state, port):
+    def assert_host(self, state, port, *, allow_commands=True):
         metadata = json.loads((state / "client.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["url"], "http://127.0.0.1:" + str(port))
         request = urllib.request.Request(metadata["url"] + "/api/protocol", headers={
@@ -109,6 +111,23 @@ class LauncherTests(unittest.TestCase):
             protocol = json.load(response)
         self.assertEqual(protocol["protocol_version"], "3.0")
         self.assertEqual(protocol["engine"], "langgraph")
+        request = urllib.request.Request(metadata["url"] + "/api/rpc", data=json.dumps({
+            "protocol_version": "3.0", "request_id": "launcher-status", "operation": "host.status", "params": {}}).encode(),
+            headers={"Content-Type": "application/json", "Authorization": request.headers["Authorization"]})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
+            status = json.load(response)["result"]
+        self.assertIs(status["allow_commands"], allow_commands)
+
+    def test_explicit_command_opt_out_is_preserved_when_reusing_the_host(self):
+        state, port = self.root / "commands-disabled", self.free_port()
+        started = self.launch(state, port=port, allow_commands=False)
+        self.assertEqual(started.returncode, 0, self.startup_diagnostics(started))
+        self.assert_host(state, port, allow_commands=False)
+        reused = self.launch(state)
+        self.assertEqual(reused.returncode, 0, reused.stdout + reused.stderr)
+        self.assertIn("startup options do not change it", reused.stdout)
+        self.assertNotIn("Host PID:", reused.stdout)
+        self.assert_host(state, port, allow_commands=False)
 
     def startup_diagnostics(self, result):
         return result.stdout + result.stderr + "\n".join(

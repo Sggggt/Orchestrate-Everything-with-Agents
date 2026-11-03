@@ -50,6 +50,22 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(written["path"]), self.paths.work_dir / "输入 数据.txt")
         self.assertEqual((self.project / "source.txt").read_text(encoding="utf-8"), "original evidence")
 
+    async def test_disabled_commands_request_host_authorization_before_backend_preparation(self):
+        async def resolve(run_id):
+            return self.paths, self.settings.model_copy(update={"sandbox": "native"})
+
+        provider = LocalTool("exec_command", resolve_run=resolve, publish=None, sessions=self.sessions)
+        marker = self.paths.work_dir / "must-not-exist.txt"
+        result = await provider.invoke({"run_id": "run-one", "action_id": "denied-command", "arguments": {
+            "argv": [sys.executable, "-B", "-c", "from pathlib import Path; Path('must-not-exist.txt').write_text('unexpected')"]}})
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["error"]["code"], "PERMISSION_DENIED")
+        self.assertEqual(result["error"]["continuation"], "request_user_authorization")
+        self.assertEqual(result["error"]["details"]["required_host_option"], "--allow-commands")
+        self.assertTrue(result["error"]["details"]["restart_required"])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.sessions.live, {})
+
     async def test_read_only_original_and_revision_conflicts_are_preserved(self):
         denied = await self.invoke("apply_patch", {"operation": "add", "path": str(self.project / "source.txt"), "content": "changed"})
         self.assertEqual(denied["error"]["code"], "PERMISSION_DENIED")

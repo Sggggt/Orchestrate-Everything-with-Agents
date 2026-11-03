@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 3.0.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 3.1.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -83,7 +83,7 @@ python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-Windows also provides `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl` and `Start-Workspace.ps1 -AllowCommands`. See [installation](getting-started.md) for isolated environments, source builds and backend prerequisites.
+Windows also provides `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl` and `Start-Workspace.ps1`, which enables configured commands by default. See [installation](getting-started.md) for isolated environments, source builds and backend prerequisites.
 
 Open the printed browser URL; the initial default is `http://127.0.0.1:8890`. Ctrl+C stops a foreground host; closing the browser does not. One Host owns each state directory. Existing-host clients use PlatformClient.
 
@@ -173,7 +173,7 @@ Commands, patches and file/image capture default to one native OS policy; unsupp
 oea serve --allow-commands
 ```
 
-The Windows launcher accepts `-AllowCommands`. If a host is already running, reconnecting retains its original command grant; stop that host before changing startup permissions. External programs must be installed in their selected environment and available by the configured executable path.
+The Windows launcher enables commands by default; PowerShell accepts `-AllowCommands:$false` to opt out. `host.status.allow_commands` reports the current host grant. If a host is already running, reconnecting retains its original command grant; handle active work before stopping that host to change startup permissions. External programs must be installed in their selected environment and available by the configured executable path.
 
 ### Inputs and deliverables
 

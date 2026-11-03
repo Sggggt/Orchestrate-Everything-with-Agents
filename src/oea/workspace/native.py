@@ -14,7 +14,7 @@ from oea.contracts.errors import RuntimeFault, require
 
 
 PROTOCOL = 1
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 PACKAGE_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
@@ -93,6 +93,7 @@ class NativeProcess:
                     "SANDBOX_PROTOCOL_ERROR", "Native terminal receipt does not confirm a stopped workload")
             self.terminal = event
             self.returncode = event["exit_code"]
+            self.stdin.close()
             await self.process.wait()
             return self.returncode
         finally:
@@ -105,6 +106,7 @@ class NativeProcess:
         return await asyncio.shield(self.task)
 
     async def stop(self):
+        self.stdin.close()
         if not self.task.done():
             self.writer.write(b"terminate\n")
             await self.writer.drain()

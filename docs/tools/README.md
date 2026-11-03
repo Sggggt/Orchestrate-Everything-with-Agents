@@ -32,7 +32,7 @@
   - `commit_owned(self, db, action_id, run_id, result)`
   - `async confirm(self, action_id, project_id, idempotency_key, evidence, outcome, *, result=None, intent_id=None)`
   - `async inspect(self, action_id)`
-  - `async cancel(self, run_id)`
+  - `async cancel(self, run_id, *, wait=True)`
   - `async aclose(self)`
 
 ## 依赖与边界
@@ -40,6 +40,8 @@
 依赖模块：contracts、storage。
 
 跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+
+取消等待到期后，运行入口使用 `wait=False` 通过同一网关立即核对尚未结束的动作回执；重复核对不再次取消原调用。未决动作先记为 `needs_review`，迟到的原始结果仍可结算，不能将取消请求当成实际停止证明。
 
 ## 模型按需发现
 

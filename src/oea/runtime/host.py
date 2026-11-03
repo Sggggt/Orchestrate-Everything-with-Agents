@@ -161,7 +161,8 @@ class Host:
         workflows = {row["state"]: row["count"] for row in workflow_counts}
         active_workflows = workflows.get("running", 0) + len(set(self.workflows.computation_owners.values()) & self.workflows.reviewing)
         return {"version": __version__, "protocol_version": "3.0", "opened": self.opened, "closing": self.closing, "native_component": await inspect_component(),
-                "data_dir": str(self.root), "active_executions": len(self.active) + active_workflows,
+                "data_dir": str(self.root), "allow_commands": self.tools.providers["exec_command"].commands_enabled,
+                "active_executions": len(self.active) + active_workflows,
                 "active_agent_executions": len(self.active), "active_workflow_executions": active_workflows,
                 "active_artifact_uploads": len(self.artifacts.receiving),
                 "runs": {row["state"]: row["count"] for row in counts}, "workflows": workflows, "engine": "langgraph"}
@@ -372,8 +373,12 @@ class Host:
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager is no longer enabled")
             current = context.current_definition()
         if name == PROGRAM_TOOL:
-            require(self.tools.providers[name].enabled and context.definition.execution.program
-                    and context.definition.execution.program == current.execution.program, "PERMISSION_DENIED", "Process program needs its current Agent binding and host command grant")
+            require(context.definition.execution.program and context.definition.execution.program == current.execution.program,
+                    "PERMISSION_DENIED", "Process program needs its current Agent binding")
+            require(self.tools.providers[name].enabled, "PERMISSION_DENIED",
+                    "Host process permission is disabled. Ask the controller to confirm user authorization before restarting the idle host with --allow-commands.",
+                    details={"required_host_option": "--allow-commands", "restart_required": True},
+                    continuation="request_user_authorization")
             return
         context.check_tool_policy(name)
         if name in COORDINATION_TOOLS:
