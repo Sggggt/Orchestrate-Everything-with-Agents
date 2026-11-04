@@ -7,6 +7,8 @@ OEA uses the `oea` entry point and Python 3.12+. Native local execution is avail
 
 Obtain the wheel matching your operating system. In the commands below, replace `PLATFORM_WHEEL.whl` with its full filename. The Windows tag is `win_amd64`; local Linux builds use `linux_x86_64` and the build distribution's C runtime.
 
+Windows users should complete the [Visual C++ runtime prerequisite](#windows-runtime) before starting native tools.
+
 ```sh
 python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea --version
@@ -14,6 +16,22 @@ oea serve --allow-commands
 ```
 
 A virtual environment keeps the installation separate from other Python applications. The optional [Windows installer](#windows-shortcuts) manages one for you. For native backend prerequisites and policy limitations, see [native execution](native/README.md). Unsupported platforms or missing capabilities do not silently run commands without isolation.
+
+<a id="windows-runtime"></a>
+### Windows x64 runtime prerequisite
+
+MSVC-built Windows wheels require the **Microsoft Visual C++ v14 Redistributable (x64)**, including `VCRUNTIME140.dll`. Install or repair the [current official x64 package](https://aka.ms/vc14/vc_redist.x64.exe), then follow any restart request from its installer. Microsoft requires a runtime version at least as recent as the MSVC toolset used to build the application; see its [supported runtime guidance](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). The redistributable provides runtime libraries; Visual Studio and C++ build tools are not required for a prebuilt OEA wheel.
+
+You can inspect the registered x64 runtime from PowerShell:
+
+```powershell
+Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' |
+    Select-Object Installed, Version
+```
+
+`Installed = 1` indicates a registered runtime. After starting OEA, run `oea request host.status` and check `native_component.state` and the backend capability report to verify that the component actually loads. A `VCRUNTIME140.dll` error or native-component startup failure calls for checking this prerequisite. The required Windows 11/PSEC capabilities still apply.
+
+`Install-OEA.ps1` installs OEA's Python environment and wheel; it does not install this system runtime. The OEA wheel does not bundle the Visual C++ runtime DLLs.
 
 <a id="start"></a>
 ## Start the workspace

@@ -4,6 +4,10 @@
 
 源码：[src/oea/orchestration/](../../src/oea/orchestration/)
 
+Agent 内部架构使用 `ArchitectureGraph`／`ArchitectureBuilder`，通过 `architectures.*` 管理草稿、不可变版本与显式绑定。业务工作流继续使用 `WorkflowGraph`。两者的状态、节点语义和运行归属分别建模；详见[可编程 Agent 架构](../agent-architectures.md)。
+
+声明式 Agent 图直接编译为原生 LangGraph 状态图，支持分支、有界循环、纯计算并行汇合、`Send`、子图和中断。模型及工具动作身份包含图作用域与节点激活位置，已保存回执后的重入不会重复效果。`ArchitectureClient` 与控制 MCP、Web 调用同一服务；切换生效与 Run 接受共享事务边界。
+
 ## 执行与恢复契约
 
 - 声明式图编译成 LangGraph；默认 Agent 图与注册的 Python 图复用同一能力节点和持久 checkpointer。图状态只保存身份、小型状态和结果引用，运行期能力通过 context 注入。
@@ -82,7 +86,7 @@
   - `async accept_input(self, node, state, step, value)`
   - `async settle(self, node, state)`
 - `orchestration/registry.py`：`AgentGraphs`
-  - `register(self, name, factory, *, version)`
+  - `register(self, name, factory, *, version, required_tools=(), required_skills=(), source=None)`
   - `available(self, execution)`
   - `resolve(self, execution)`
   - `async list(self)`

@@ -24,6 +24,32 @@ def value(result):
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_architecture_large_draft_reference_and_shared_revision(self):
+        from oea.orchestration.architecture_templates import react
+        await self.host.projects.create("Example", project_id="p")
+        graph = react().model_dump(mode="json")
+        graph["metadata"] = {"source_notes": "Generic source annotation. " * 1000}
+        async with self.connected():
+            created = value(await self.call("architectures.create", {"definition": {"id": "draft", "project_id": "p", "name": "Draft"}, "draft": graph}))
+            self.assertIn("result_ref", created)
+            selected = value(await self.call("results.read", {"result_ref": created["result_ref"], "project_id": "p", "json_pointer": "/revision"}))
+            self.assertEqual(selected["value"], 1)
+            validated = value(await self.call("architectures.validate", {"architecture_id": "draft", "project_id": "p", "expected_revision": 1}))
+            self.assertTrue(validated["valid"])
+            published = value(await self.call("architectures.publish", {"architecture_id": "draft", "project_id": "p", "expected_revision": 1}))
+            self.assertEqual(published["version"], 1)
+            immutable = value(await self.call("architectures.get", {"architecture_id": "draft", "project_id": "p", "version": 1}))
+            exported = value(await self.call("architectures.export", {"architecture_id": "draft", "project_id": "p"}))
+            saved = await self.host.architectures.get("draft", "p")
+            await self.host.architectures.save("draft", "p", 1, {**saved["draft"], "max_steps": 300})
+            stale = await self.call("results.read", {"result_ref": created["result_ref"], "project_id": "p", "json_pointer": "/revision"})
+            self.assertTrue(stale.isError)
+            self.assertIn("SOURCE_VERSION_CHANGED", "".join(item.text for item in stale.content if item.type == "text"))
+            retained = value(await self.call("results.read", {"result_ref": immutable["result_ref"], "project_id": "p", "json_pointer": "/revision"}))
+            self.assertEqual(retained["value"], 1)
+            stale_export = await self.call("results.read", {"result_ref": exported["result_ref"], "project_id": "p", "json_pointer": "/source"})
+            self.assertTrue(stale_export.isError)
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="oea-mcp-")
         self.root = Path(self.temporary.name)

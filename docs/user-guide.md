@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 3.1.0, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 3.2.1, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -78,6 +78,8 @@ The browser, SDK client and control MCP connect to the same host. A standalone S
 
 Use Python 3.12+ and a prebuilt wheel matching Windows x64 or Linux x64. Replace the placeholder with the release filename; normal installation needs no Rust compiler:
 
+MSVC-built Windows wheels also require the [Microsoft Visual C++ v14 Redistributable (x64)](getting-started.md#windows-runtime). Follow the linked installation and inspection steps before using native tools.
+
 ```sh
 python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea serve --allow-commands
@@ -97,7 +99,7 @@ Start with a small text task so you can verify the model configuration before ad
 1. Open the project menu beside **当前项目** and choose **新建项目** (New project). Give the project a descriptive name.
 2. Use the menu beside **当前会话** to create a session with **新建会话** (New session).
 3. Open **Agent**, add an Agent, and provide a name and stable ID such as `reviewer`. Creating the draft does not save a working configuration yet.
-4. In **职责与模型** (Role and model), enter the provider's API base URL, exact model name and your instructions. Enter the credential in **主模型密钥** (Main model key) when required by the provider.
+4. In **模型与职责** (Role and model), enter the provider's API base URL, exact model name and your instructions. Enter the credential in **主模型密钥** (Main model key) when required by the provider.
 5. Save the configuration with the checkmark control labelled **保存配置**. Use **检查已保存配置** to inspect missing fields, credential availability, tool bindings, program lookup and path readiness. This check does not call a model.
 6. Return to **工作台 → 总览** (Workbench → Overview), then choose **进入对话** on the Agent card. With no existing instance, OEA opens a draft conversation; the first message creates the stable instance.
 7. Send a small goal, such as asking for a concise explanation of a familiar programming concept. State the expected language and deliverable. `Enter` sends; `Shift + Enter` inserts a newline.
@@ -135,12 +137,11 @@ Open an Agent's gear control to edit its settings. Save changes before starting 
 
 | Configuration group | What to decide |
 | --- | --- |
-| **职责与模型** — Role and model | Responsibility, instructions, provider, model name, credential, output length and model-specific options |
-| **工具与 Skills** — Tools and Skills | Which local, function and MCP tools the Agent can use; which Skills it can read |
-| **上下文与记忆** — Context and memory | Active input size, recent history, tool-result size and stage-memory allowance |
-| **工作目录与环境** — Workspace and environment | Input directory, instance work directory, read-only references and explicitly writable project paths |
-| **执行与交付** — Execution and delivery | Execution graph or process program, cumulative budget and required deliverables |
-| **通信与 manager** — Communication and manager | Allowed partner Agents, work-request permission and a separately configured manager |
+| **概览与架构** — Overview and architecture | Current version, key stages, draft validation, candidate publication and explicit version switching |
+| **模型与职责** — Model and responsibility | Name, instructions, provider, model, credential and common generation settings |
+| **常用能力** — Common capabilities | Local/MCP tools, Skills, environment and working input size |
+
+The desktop settings page preserves advanced fields it does not display. Edit full configuration through source/SDK or explicit configuration export/import. Candidate publication and applying a version are separate actions; unfinished or unresolved work blocks switching, while drafts remain editable. See [Agent architectures](agent-architectures.md).
 
 The built-in model transport uses OpenAI-compatible Chat Completions. Enter the provider's API base prefix; OEA appends `/chat/completions`. Choose options supported by that provider. The model's context-window setting and reserved output must fit its actual limits. Increase input capacity only when the model supports it. Model output, recent history, tools and images all consume context.
 
@@ -157,7 +158,7 @@ oea schema agent
 
 ### Local file and command tools
 
-Local capabilities include reading and searching files, writing and editing files, running commands, reading images and publishing artifacts. Bind only the tools needed by the task in **工具与 Skills**.
+Local capabilities include reading and searching files, writing and editing files, running commands, reading images and publishing artifacts. Bind only the tools needed by the task in **常用能力**.
 
 In **工作目录与环境**, distinguish:
 
@@ -188,7 +189,7 @@ For a first file task, enable reading, writing and artifact publishing, attach a
 1. Open **MCP 工具** and register a service using its documented local program or HTTP connection settings. You can also selectively import supported entries from a local Codex TOML configuration.
 2. Store service credentials through secret references. Imported configuration is saved before you separately initiate connection and discovery.
 3. Discover the service's current tool catalog. A saved service, a successful discovery and a successful tool call are separate results.
-4. Bind the selected service and upstream tool names to the Agent in **工具与 Skills**, then save its configuration.
+4. Bind the selected service and upstream tool names to the Agent in **常用能力**, then save its configuration.
 5. Run one small, intended task and inspect the original tool receipt. An explicit tool trial can itself perform the tool's documented action.
 
 The platform control MCP in [section 13](#mcp) operates OEA itself. Business MCP supplies capabilities to work performed through OEA. Keep those connections separate. See [workbench](workbench.md) and [MCP](mcp.md) for details.
@@ -201,7 +202,7 @@ A Skill supplies instructions; its tools still need their own grants.
 1. Prepare an external directory containing `SKILL.md` and any referenced files.
 2. Open **Skills**, enter its directory in **注册 Skill 目录**, and register it.
 3. Inspect its description, Markdown and reference files.
-4. Bind the Skill to an Agent in **工具与 Skills**. Mark it required when its instructions must be loaded before execution, then save the Agent.
+4. Bind the Skill to an Agent in **常用能力**. Mark it required when its instructions must be loaded before execution, then save the Agent.
 5. Validate it with one relevant task and check the actual result and execution evidence.
 
 Registration retains a content revision. After changing source files, refresh the registered Skill to adopt that revision. Disabling or removing a registration withdraws its availability and preserves its original directory. An accepted configuration can pin a Skill revision; check the binding when adopting an update.

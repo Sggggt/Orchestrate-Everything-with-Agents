@@ -25,6 +25,23 @@ class ModelFixture:
 
 
 class HTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_architecture_sdk_and_browser_share_versions_and_precise_updates(self):
+        from oea import AgentArchitecture, ArchitectureClient, ArchitectureBinding, ArchitectureOptions
+        await self.seed()
+        sdk = ArchitectureClient(self.client)
+        graph = (await sdk.templates("react"))["graph"]
+        graph["metadata"] = {"advanced": {"retained": True}}
+        await sdk.create(AgentArchitecture(id="architecture", project_id="p", name="Architecture"), graph)
+        saved = await self.client.call("architectures.adjust", {"architecture_id": "architecture", "project_id": "p", "expected_revision": 1, "options": {"max_steps": 300}})
+        self.assertEqual(saved["draft"]["metadata"], graph["metadata"])
+        self.assertTrue((await sdk.validate("architecture", "p"))["valid"])
+        published = await sdk.publish("architecture", "p", 2)
+        await sdk.bind("review", "p", ArchitectureBinding(architecture_id="architecture", version=published["version"]), 1)
+        status = await sdk.status("review", "p")
+        self.assertEqual(status["binding"]["version"], 1)
+        self.assertIsNone(status["blocker"])
+        self.assertNotIn("draft", await sdk.preview("architecture", "p", version=1))
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="oea-http-")
         self.root = Path(self.temporary.name)

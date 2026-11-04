@@ -104,6 +104,9 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
     with offline_source(source) as check, closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as original:
         original.row_factory = sqlite3.Row
         metadata = dict(original.execute("SELECT key,value FROM metadata"))
+        from oea.migration.architectures import INITIAL_V3_SCHEMA, transition
+        if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == INITIAL_V3_SCHEMA:
+            return transition(original, source, destination, apply, check)
         require(metadata.get("protocol_version") == "2.0" and metadata.get("schema_sha256") in {PRE_READING_SCHEMA, PRE_DELIVERY_SCHEMA, LATEST_V2_SCHEMA},
                 "SCHEMA_MISMATCH", "This converter accepts only recognized protocol-two snapshots")
         require(original.execute("PRAGMA quick_check").fetchone()[0] == "ok" and not original.execute("PRAGMA foreign_key_check").fetchall(), "STATE_INTEGRITY", "Source database integrity needs review")

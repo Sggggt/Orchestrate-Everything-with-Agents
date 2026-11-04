@@ -13,6 +13,7 @@ leader 负责目标、计划、委派、核验和汇总；OEA Host 负责权限�
 | --- | --- |
 | 创建项目、六要素配置、模型秘密、Skill 和工具授权 | [配置](workflows/configure.md) |
 | 编写独立 Agent、自定义工具、代码图或进程 Agent | [开发](workflows/develop.md) |
+| 设计单个 Agent 的执行架构、可编辑模板、候选版本与生效 | [Agent 架构](workflows/agent-architecture.md) |
 | 保存业务图、map、条件、循环、子图、中断与恢复 | [编排](workflows/orchestration.md) |
 | 群聊、manager 协作、跨 Agent证据与模式切换 | [协作](workflows/collaboration.md) |
 | 运行、读取结果、指导、取消和原回执核对 | [控制](workflows/control.md) |

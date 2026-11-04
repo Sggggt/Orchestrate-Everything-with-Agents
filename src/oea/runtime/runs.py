@@ -46,12 +46,14 @@ class Runs:
         require(path.is_file(), "COMMAND_OUTPUT_UNAVAILABLE", "No retained stream is available")
         return path, record
 
-    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False):
+    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False, architecture=None):
         """Join acceptance to an existing message or workflow transaction."""
         identity = new_id("run")
         intent = {"spec": spec.model_dump(mode="json", exclude_defaults=True, exclude={"display"}), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}
         if model_probe:
             intent["model_probe"] = True
+        if architecture:
+            intent["architecture"] = architecture.model_dump(mode="json")
         fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
         instance = need(db, "instances", spec.instance_id)
         previous = one(db, "SELECT * FROM runs WHERE instance_id=? AND idempotency_key=?", (spec.instance_id, spec.idempotency_key))
@@ -71,7 +73,16 @@ class Runs:
             require(session["mode"] == "collaborative" and definition.manager is not None, "MANAGER_UNAVAILABLE", "Manager is not enabled")
             snapshot = manager_snapshot(snapshot)
         snapshot = snapshot.model_copy(update={"workspace": snapshot.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])})
+        if architecture:
+            snapshot = snapshot.model_copy(update={"execution": snapshot.execution.model_copy(update={
+                "architecture": architecture, "graph": "default", "graph_version": "1", "program": ()})})
         if not model_probe:
+            self.host.architectures.check_binding(db, snapshot)
+            if snapshot.execution.architecture:
+                _, architecture = self.host.architectures._version(db, snapshot.execution.architecture, instance["project_id"])
+                graph_limit = json.loads(architecture["definition_json"]).get("max_steps", 512)
+                snapshot = snapshot.model_copy(update={"execution": snapshot.execution.model_copy(update={
+                    "max_steps": min(snapshot.execution.max_steps or graph_limit, graph_limit)})})
             snapshot = self.host.skills.pin(db, snapshot, instance["project_id"])
         if model_probe:
             snapshot = snapshot.model_copy(update={

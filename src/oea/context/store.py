@@ -230,9 +230,9 @@ class ContextStore:
                     (now_ms(), request["source_message_id"], instance["id"], run["id"]))
         await self.store.call(apply, transaction=True)
 
-    async def tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None):
+    async def tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None, identity=None):
         text = encode(result)
-        identity = run["id"] + ":tool:" + call["id"]
+        identity = identity or run["id"] + ":tool:" + call["id"]
         tokens = estimated_tokens(text)
         if action_key and tokens <= policy.tool_inline_tokens:
             def append(db):

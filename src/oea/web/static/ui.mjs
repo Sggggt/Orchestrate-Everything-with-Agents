@@ -1,3 +1,4 @@
+import { animate,reducedMotion } from "./motion.mjs";
 export const $=(selector,root=document)=>root.querySelector(selector);
 export const escape=(value="")=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const paths = {
@@ -39,8 +40,22 @@ const paths = {
   reply: "M9 5l-6 6 6 6 M3 11h11a7 7 0 0 1 7 7",
   download: "M12 3v12 m-5-5 5 5 5-5 M4 16v5h16v-5",
   folder: "M3 7V4h6l3 3h9v13H3z",
+  code: "m8 6-6 6 6 6 M16 6l6 6-6 6 M14 3l-4 18",
+  copy: "M8 8h12v13H8z M16 8V3H3v13h5",
+  info: "M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18 M12 11v6 M12 7v1",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12 M12 9a3 3 0 1 0 0 6a3 3 0 0 0 0-6",
+  lock: "M5 10h14v11H5z M8 10V6a4 4 0 0 1 8 0v4 M12 14v3",
+  unlink: "M9 15l6-6 M4 4l16 16 M8 5l2-2a4 4 0 0 1 6 6l-1 1 M9 14l-1 1a4 4 0 0 0 6 6l2-2",
+  archive: "M3 3h18v5H3z M5 8v13h14V8 M9 12h6",
+  sliders: "M4 3v18 M12 3v18 M20 3v18 M1 8h6 M9 16h6 M17 7h6",
 };
 export const icon=name=>`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.agents}"/></svg>`;
+export function iconButton(name,label,{className="",type="button",...attributes}={}){
+  const attrs=Object.entries(attributes).filter(([,value])=>value!==false&&value!=null).map(([key,value])=>`${key}="${escape(value===true?"":value)}"`).join(" ");
+  return `<button type="${escape(type)}" class="icon-btn ${escape(className)}" title="${escape(label)}" aria-label="${escape(label)}" ${attrs}>${icon(name)}</button>`;
+}
+export const signal=(state,label)=>`<span class="status-signal ${escape(state)}" role="img" title="${escape(label)}" aria-label="${escape(label)}"><i aria-hidden="true"></i></span>`;
+export const hint=label=>`<span class="hint-icon" title="${escape(label)}" role="img" aria-label="${escape(label)}">${icon("info")}</span>`;
 export const stateLabel={accepted:"已接受",running:"执行中",waiting:"等待输入或依赖",completed:"交付完成",failed:"执行失败",cancelled:"已取消",needs_review:"结果待核对",skipped:"前置工作未完成"};
 export const badge=(state,node=false)=>`<span class="v2-state ${escape(state)}"><i class="dot ${escape(state)}"></i>${escape(node&&state==="completed"?"已完成":stateLabel[state]||state)}</span>`;
 export const date=value=>new Date(value).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
@@ -56,11 +71,25 @@ export function element(html) {const template=document.createElement("template")
 export function modal(title,content,{size="default"}={}) {
   const previous=document.activeElement, backdrop=element(`<div class="v2-dialog-backdrop"><section class="v2-drawer dialog-${escape(size)}" role="dialog" aria-modal="true" aria-label="${escape(title)}"><header><h2>${escape(title)}</h2><button class="icon-btn" aria-label="关闭">${icon("close")}</button></header><div class="dialog-body"></div></section></div>`);
   $(".dialog-body",backdrop).append(content);$("#modal-root").append(backdrop);
-  let closed=false;const close=()=>{if(closed)return;closed=true;close.onclose?.();backdrop.remove();if(previous?.isConnected)previous.focus({preventScroll:true});document.dispatchEvent(new Event("oea-modal-close"));};$("header button",backdrop).onclick=close;
-  backdrop.addEventListener("keydown",event=>{if(event.key==="Escape"){event.stopPropagation();close();}if(event.key==="Tab"){const items=[...backdrop.querySelectorAll("button,input,textarea,select,a[href],summary")].filter(item=>!item.disabled&&item.getClientRects().length);if(event.shiftKey&&document.activeElement===items[0]){event.preventDefault();items.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===items.at(-1)){event.preventDefault();items[0]?.focus();}}});
-  backdrop.querySelector("input,textarea,select,button")?.focus();return close;
+  const drawer=$(".v2-drawer",backdrop);
+  animate(backdrop,[{opacity:0},{opacity:1}],{duration:180});
+  animate(drawer,[{transform:"translateY(14px) scale(.98)"},{transform:"translateY(0) scale(1)"}],{duration:260});
+  let closed=false,closing;
+  const close=()=>{
+    if(closed)return closing;closed=true;close.onclose?.();
+    const finish=()=>{backdrop.remove();const top=$("#modal-root").lastElementChild;if(previous?.isConnected&&(!top||top.contains(previous)))previous.focus({preventScroll:true});document.dispatchEvent(new Event("oea-modal-close"));};
+    if(reducedMotion()||!backdrop.animate){finish();return;}
+    const opacity=getComputedStyle(backdrop).opacity,transform=getComputedStyle(drawer).transform;
+    for(const animation of backdrop.getAnimations({subtree:true}))animation.cancel();
+    backdrop.inert=true;backdrop.classList.add("is-closing");
+    animate(drawer,[{transform},{transform:"translateY(8px) scale(.985)"}],{duration:150,easing:"cubic-bezier(.4,0,1,1)"});
+    closing=animate(backdrop,[{opacity},{opacity:0}],{duration:150,easing:"ease-in"}).finished.catch(()=>{}).then(finish);
+    return closing;
+  };$("header button",backdrop).onclick=close;
+  backdrop.addEventListener("keydown",event=>{if(event.key==="Escape"){event.stopPropagation();close();}if(event.key==="Tab"){const items=[...backdrop.querySelectorAll('button,input,textarea,select,a[href],summary,[tabindex]:not([tabindex="-1"])')].filter(item=>!item.disabled&&item.getClientRects().length);if(event.shiftKey&&document.activeElement===items[0]){event.preventDefault();items.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===items.at(-1)){event.preventDefault();items[0]?.focus();}}});
+  (content.querySelector('input:not([type="hidden"]),textarea,select,[tabindex="0"]')||$("header button",backdrop))?.focus();return close;
 }
-export function empty(title,text,action="") {return `<div class="v2-empty"><img class="brand-mark" src="/assets/mark.svg" alt=""><h2>${escape(title)}</h2><p>${escape(text)}</p>${action}</div>`;}
+export function empty(title,text,action="") {return `<div class="v2-empty"><img class="brand-mark" src="/assets/mark.svg" alt=""><h2>${escape(title)}</h2>${text?`<p>${escape(text)}</p>`:""}${action}</div>`;}
 export function confirmRemoval(title,message,action) {
   const content=element(`<div><p>${escape(message)}</p><button type="button" class="icon-btn danger-text" data-confirm-remove title="确认删除" aria-label="确认删除">${icon("trash")}</button></div>`),close=modal(title,content);
   const button=$("[data-confirm-remove]",content);

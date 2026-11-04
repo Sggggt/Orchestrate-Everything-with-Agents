@@ -7,6 +7,7 @@ Start with the **[User Guide](user-guide.md)** or **[中文用户指南](user-gu
 | [User Guide](user-guide.md) · [中文用户指南](user-guide.zh-CN.md) | Concepts, browser walkthroughs, SDK/MCP entry points, results, maintenance and troubleshooting |
 | [Getting started](getting-started.md) | Recommended uv CLI installation, Python SDK environments, local storage and first project |
 | [Python SDK](sdk.md) | Remote clients, owned hosts and isolated Agent processes |
+| [Agent architectures](agent-architectures.md) | Editable ReAct, Plan-and-Execute and Reflexion graphs, drafts, binding and recovery |
 | [Workbench](workbench.md) | File/image tools, local programs, environment readiness and command receipts |
 | [Workflows](workflows.md) | Canvas, nodes, variables, versioning and run lifecycle |
 | [Collaboration](collaboration.md) | Direct and collaborative modes, main/manager models, root authority and handover |

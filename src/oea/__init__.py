@@ -9,12 +9,16 @@ from oea.contracts.errors import RuntimeFault
 from oea.sdk.agent import Agent, AgentInstance
 from oea.tools import FunctionTool, ToolKit, ToolProvider, ToolSpec, tool
 from oea.orchestration.types import WorkflowBuilder, WorkflowGraph
+from oea.contracts.architecture import AgentArchitecture, ArchitectureGraph, ArchitectureNode, ArchitectureEdge, ArchitectureBuilder, ArchitectureOptions, StateField
+from oea.contracts.configuration import ArchitectureBinding
+from oea.sdk.architectures import ArchitectureClient
 from oea.mcp.upstream import MCPServer
 from oea.skills.service import SkillSource
 
-__version__ = "3.1.0"
+__version__ = "3.2.1"
 
-__all__ = ["Agent", "AgentInstance", "AgentDefinition", "Model", "ModelPricing", "SummaryPolicy", "Instructions", "Tools", "ToolKit", "tool", "FunctionTool", "ResumeExecutionLimits",
+__all__ = ["AgentArchitecture", "ArchitectureGraph", "ArchitectureNode", "ArchitectureEdge", "ArchitectureBuilder", "ArchitectureOptions", "ArchitectureClient", "StateField", "ArchitectureBinding",
+           "Agent", "AgentInstance", "AgentDefinition", "Model", "ModelPricing", "SummaryPolicy", "Instructions", "Tools", "ToolKit", "tool", "FunctionTool", "ResumeExecutionLimits",
            "ToolProvider", "ToolSpec", "SkillBinding", "ContextPolicy", "Workspace", "ProjectWorkspace", "Execution", "Delivery", "Budget",
            "Communication", "Manager", "MCPBinding", "CapabilityUse", "UsePolicy", "PlatformClient", "RuntimeFault", "AgentDescriptor", "Artifact",
            "Completion", "MessageSpec", "RunHandle", "RunResult", "RunSpec", "RunDisplay", "Wait", "WorkflowBuilder", "WorkflowGraph", "MCPServer", "SkillSource", "PROTOCOL_VERSION", "__version__"]

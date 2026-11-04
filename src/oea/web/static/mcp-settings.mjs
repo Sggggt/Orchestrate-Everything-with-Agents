@@ -1,5 +1,6 @@
 // The original MCP directory layout, using the shared v2 service.
-import { $,escape,icon,rpc,notify,modal,element,date } from "./ui.mjs";
+import { $,escape,icon,iconButton,rpc,notify,modal,element,date } from "./ui.mjs";
+import { codeViewer } from "./code-viewer.mjs";
 import { markdown } from "./markdown.mjs";
 import { editorInteraction } from "./presentation.mjs";
 import { createMCPDirectory } from "./mcp-directory.mjs";
@@ -32,7 +33,7 @@ export async function manageMCP(app,root){
       $("#confirm-mcp-remove",content).onclick=async event=>{event.target.disabled=true;try{await rpc("mcp.remove",{project_id:project.id,server_id:saved.id,expected_revision:saved.revision});close();await after();notify("服务已移除，历史和源目录已保留。");}catch(error){notify(error.message,true);event.target.disabled=false;}};
     };
     const showImport=async()=>{
-      const form=element('<form><p class="form-hint">只读取你选择的本机 TOML 文件。导入只保存选定服务，凭据写入本地秘密存储；连接测试由你另行发起。</p><label class="field">Codex 配置文件<input id="codex-config-path" required placeholder="config.toml 的绝对路径"></label><p><button class="btn" type="button" id="preview-codex-config">读取服务列表</button></p><div id="codex-import-list"></div><p><button class="btn primary" id="import-selected-codex" disabled>导入选定服务</button></p></form>'),close=modal("导入 Codex MCP 配置",form);
+      const form=element(`<form><label class="field">Codex 配置文件<input id="codex-config-path" required placeholder="config.toml 的绝对路径"></label><div class="v2-actions">${iconButton("list","读取服务列表",{id:"preview-codex-config"})}</div><div id="codex-import-list"></div><footer class="dialog-footer">${iconButton("upload","导入选定服务",{id:"import-selected-codex",type:"submit",className:"primary",disabled:true})}</footer></form>`),close=modal("导入 Codex MCP 配置",form);
       let configPath="",cursor=null,items=[],selected=new Set();
       const drawCandidates=()=>{
         $("#codex-import-list",form).innerHTML=items.map(item=>`<label class="toggle-row"><span>${escape(item.name)}<small>${item.registered?"已注册":!item.importable?escape(item.error?.message||"需要手动配置"):item.transport==="stdio"?"本地进程":"HTTP 服务"}${item.has_credentials?" · 凭据不会回显":""}</small></span><input type="checkbox" data-codex-name="${escape(item.name)}" ${selected.has(item.name)?"checked":""} ${item.registered||!item.importable?"disabled":""}></label>`).join("")+(cursor!=null?'<button class="btn small" type="button" id="more-codex-candidates">加载更多服务</button>':"")+(items.length?"":'<p class="form-hint">文件中没有 MCP 服务。</p>');
@@ -47,10 +48,10 @@ export async function manageMCP(app,root){
     };
     const showCredential=async(saved,after)=>{
       const target=saved.transport==="stdio"?"environment":"header";
-      const form=element(`<form><p class="form-hint">保存后仅返回新的秘密引用，当前密钥值不回显。</p><label class="field">${target==="header"?"HTTP 头名称":"环境变量名"}<input id="mcp-secret-name" required value="${target==="header"?"Authorization":"API_KEY"}"></label><label class="field">新的认证值<input id="mcp-secret-value" type="password" autocomplete="new-password" required></label><p><button class="btn primary">保存认证</button></p></form>`),close=modal("设置 MCP 认证",form);
+      const form=element(`<form><label class="field">${target==="header"?"HTTP 头名称":"环境变量名"}<input id="mcp-secret-name" required value="${target==="header"?"Authorization":"API_KEY"}"></label><label class="field">新的认证值<input id="mcp-secret-value" type="password" autocomplete="new-password" required></label><footer class="dialog-footer">${iconButton("check","保存认证",{type:"submit",className:"primary"})}</footer></form>`),close=modal("设置 MCP 认证",form);
       form.onsubmit=async event=>{event.preventDefault();try{await rpc("mcp.set_credential",{server_id:saved.id,project_id:project.id,target,name:$("#mcp-secret-name",form).value,value:$("#mcp-secret-value",form).value,expected_revision:saved.revision});close();await after();notify("认证引用已更新，密钥值已保存在本地秘密存储。");}catch(error){notify(error.message,true);}};
     };
-    const showSDK=async()=>modal("连接 Codex 与开发 SDK",element(`<div><p>使用 oea mcp 连接现有宿主。控制入口为 platform_guide 和 platform_call；业务工具仍需明确授权。</p><pre class="v2-pre">${escape('oea mcp --data-dir <external-state-directory>')}</pre><div class="markdown">${markdown('```python\nfrom oea import PlatformClient\n\nasync with PlatformClient.from_data_dir(data_dir) as client:\n    result = await client.call("host.status")\n```')}</div></div>`));
+    const showSDK=async()=>{const content=element(`<div class="sdk-source"><div class="inline-command">${icon("terminal")}<code>oea mcp</code></div></div>`);content.append(codeViewer('import asyncio\nfrom oea import PlatformClient\n\nasync def main():\n    async with PlatformClient.from_data_dir() as client:\n        result = await client.call("host.status")\n        print(result)\n\nasyncio.run(main())\n',{filename:"client.py",language:"python",download:true}));modal("连接 Codex 与开发 SDK",content,{size:"wide"});};
     component=createMCPDirectory({state,escape,icon,badge:value=>`<span class="badge ${escape(value)}">${escape(({CONNECTED:"已连接",CONNECTING:"连接中",DISCONNECTED:"未连接",SUCCEEDED:"完成",FAILED:"失败",UNCERTAIN:"待核对",RUNNING:"执行中",QUEUED:"已接受"})[value]||value)}</span>`,markdown,rpc,toast:notify,render:draw,loadBootstrap:load,showCredential,showSDK,showImport,showRemove,showToolTrial:(server,tool)=>showMCPTrial(app,project.id,server,tool,async()=>{await load();draw();}),time:date});
     const refresh=async fact=>{if(!current())return false;if(fact.data.removed&&state.mcpId===fact.data.server_id){state.mcpEpoch++;state.mcpDraft=null;state.mcpDetail=null;state.mcpId=null;}await load();draw();return true;};
     entry={load,draw,refresh};projects.set(project.id,entry);

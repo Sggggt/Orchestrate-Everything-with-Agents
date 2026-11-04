@@ -4,10 +4,12 @@ The Python host owns authorization, sessions, budgets and receipts. A private Ru
 
 | Platform | Backend | Requirements |
 | --- | --- | --- |
-| Windows x64 | ProcessContainer/PSEC | Windows 11 with the required native APIs and policy capabilities |
+| Windows x64 | ProcessContainer/PSEC | Windows 11 with the required native APIs and policy capabilities; MSVC builds also require the Visual C++ v14 x64 runtime |
 | Linux x64 | Bubblewrap | Compatible C runtime, `bwrap`, namespaces and process descriptors |
 
 Windows rejects AppContainer/DACL augmentation and other fallback tiers. It creates no dedicated account and changes no global ACL or firewall policy. Linux does not fall back to another backend. Unsupported dependencies or policies fail explicitly.
+
+For MSVC-built Windows wheels, install the [Visual C++ runtime prerequisite](../getting-started.md#windows-runtime) before using native tools. The component imports `VCRUNTIME140.dll`; this DLL is supplied by Microsoft's redistributable, not by the OEA wheel. A successful Python package installation alone does not verify that the native component can load.
 
 ## Execution boundary
 

@@ -9,6 +9,8 @@
 
 Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能体开发和协作平台。你可以在我们的框架内开发和编排任何东西：自己的 Agent、工具、代码、模型与工作流，都能汇聚到本机的同一个工作空间。从一段对话开始，把重复工作连接成图，让各个 Agent 保持独立上下文，朝着共同目标协作。当然，如果你乐意的话，你可以让你的ChatGPT操控这一切。
 
+可通过 [Agent 架构](docs/agent-architectures.md) 从 ReAct、Plan-and-Execute、Reflexion 模板编辑执行结构，按草稿、候选与生效版本管理。源码、SDK、MCP 和桌面设置页复用同一执行与恢复契约。
+
 ## 可以用它做什么
 
 - **搭建个人 Agent 工作空间。** 按项目管理 Agent、会话、指令和技能。
@@ -25,6 +27,8 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 ## 本机启动
 
 OEA 需要 Python 3.12+。安装与 Windows x64 或 Linux x64 匹配的预编译 wheel，普通安装无需 Rust 编译器。把下方占位文件名替换为发布包中的完整文件名：
+
+MSVC 构建的 Windows wheel 还需要 [Microsoft Visual C++ v14 x64 运行库](docs/getting-started.md#windows-runtime)。请先安装或修复微软官方运行库；OEA 安装器不代为安装此系统依赖。
 
 ```sh
 python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
@@ -88,4 +92,4 @@ oea mcp
 
 环境和验证方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，敏感问题报告方式见 [SECURITY.md](SECURITY.md)。仓库保留通用自动化契约测试及源码 fixture，不包含已填充的工作空间或生成的测试结果。
 
-采用 [MIT 许可证](LICENSE)。OEA 3.1.0 使用 `oea` 包和命令，公开协议版本为 3.0。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。
+采用 [MIT 许可证](LICENSE)。OEA 3.2.1 使用 `oea` 包和命令，公开协议版本为 3.0。旧状态先离线转换到独立新目录，详见[迁移](docs/migration/README.md)。

@@ -5,7 +5,7 @@ import test from "node:test";
 // Exercise the real application and click handlers with deterministic RPC and
 // DOM boundaries. Layout and browser interaction are verified separately.
 class Node {
-  constructor(html="",dataset={}){this.innerHTML=html;this.dataset=dataset;this.value="";this.nodes=new Map();this.children=[];this.isConnected=true;this.parentElement={scrollTop:0};}
+  constructor(html="",dataset={}){this.innerHTML=html;this.dataset=dataset;this.value="";this.nodes=new Map();this.children=[];this.isConnected=true;this.parentElement={scrollTop:0,querySelector:selector=>this.querySelector(selector)};}
   querySelector(selector){
     if(!this.nodes.has(selector))this.nodes.set(selector,new Node());
     return this.nodes.get(selector);

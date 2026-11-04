@@ -1,5 +1,7 @@
 # Python SDK
 
+For editable ReAct, Plan-and-Execute and Reflexion graphs, versioned drafts and trials, use the typed [Agent architecture SDK](agent-architectures.md). `ArchitectureClient` accepts an open `Host` or `PlatformClient` and shares the same operations as HTTP and MCP.
+
 OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; protocol 3 rejects old runtime contracts.
 
 Saved files can remain unpublished. Use `client.call("artifacts.candidates", {"run_id": run_id, "project_id": project_id})` to inspect patch receipts, or explicitly select `source="outputs"` to observe a run's output directory. `artifacts.candidate` can compare a saved candidate with its current source using `check_source=True`. These operations retain provenance and report changes without invoking a model or declaring acceptance; see [file candidates](artifacts/README.md#未发布文件候选).

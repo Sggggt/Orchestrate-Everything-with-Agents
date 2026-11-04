@@ -117,10 +117,10 @@ export function formField({schema,root,get,set,name,path=[],changed=()=>{},basic
       try {const next=json?(input.value.trim()?JSON.parse(input.value):null):array?input.value.split("\n").map(item=>item.trim()).filter(Boolean):input.value|| (spec.nullable?null:""); input.setCustomValidity(""); update(next);}
       catch {input.setCustomValidity("请输入有效的 JSON");}
     });
-    if (array) {const hint=document.createElement("small"); hint.textContent="每行一项"; box.append(hint);}
+    if (array) {input.placeholder="每行一项"; input.title="每行一项";}
     if (name==="credential_ref") input.placeholder="env:MODEL_API_KEY 或已保存的 vault: 引用";
   }
   input.id=identity;
-  if (spec.description) {const hint=document.createElement("small"); hint.textContent=spec.description; box.append(hint);}
+  if (spec.description) {const hint=document.createElement("span"); hint.className="hint-icon"; hint.title=spec.description; hint.setAttribute("role","img"); hint.setAttribute("aria-label",spec.description); hint.innerHTML=icon("info"); label.append(hint);}
   box.append(input); return box;
 }

@@ -104,6 +104,16 @@ class BuiltinTool:
 
 
 class RunContext:
+    @property
+    def policy(self):
+        from oea.runtime.scopes import node_scope
+        scope = node_scope.get()
+        return scope["policy"] if scope and scope["run_id"] == self.run["id"] else self._policy
+
+    @policy.setter
+    def policy(self, value):
+        self._policy = value
+
     def __init__(self, host, run, instance, definition, paths, *, resumption=None, deadline=None):
         self.host, self.run, self.instance = host, run, instance
         self.definition: AgentDefinition = definition
@@ -129,6 +139,10 @@ class RunContext:
         require(set(self.policy.tools.required) <= set(self.tool_names()), "REQUIRED_TOOL_UNAVAILABLE", "A required tool is not currently bound or allowed")
         skill_ids = {skill.id for skill in self.definition.skills}
         require(set(self.policy.skills.required) <= skill_ids, "REQUIRED_SKILL_UNAVAILABLE", "A required Skill is not bound")
+        if self.definition.execution.architecture or self.definition.execution.graph != "default":
+            requirements = await self.host.agent_graphs.requirements(self.definition.execution, self.instance["project_id"])
+            require(set(requirements.get("required_tools", ())) <= set(self.tool_names()), "REQUIRED_TOOL_UNAVAILABLE", "The code graph requires unavailable tools")
+            require(set(requirements.get("required_skills", ())) <= skill_ids, "REQUIRED_SKILL_UNAVAILABLE", "The code graph requires unavailable Skills")
         if self.instance["role"] == "main":
             for skill in self.definition.skills:
                 if skill.required or skill.id in self.policy.skills.required:
@@ -388,15 +402,23 @@ class RunContext:
                          "attempt_id": result.get("attempt_facts", {}).get("attempt_id"), "usage": result["usage"]})
 
     async def call_model(self, state):
+        from oea.runtime.scopes import node_scope
+        scope = node_scope.get()
         self.model_step = state.get("step", 0)
-        key = self.run["id"] + ":model:" + str(state.get("step", 0))
+        key = scope["action_prefix"] + ":model" if scope else self.run["id"] + ":model:" + str(state.get("step", 0))
         recovery = state.get("context_recovery") or None
+        if recovery:
+            key = recovery.get("operation_key", key)
         async def build(output_tokens=None):
-            return await self.model_input(output_tokens, input_cap=recovery["input_cap"] if recovery else None)
+            messages, tools, projection = await self.model_input(output_tokens, input_cap=recovery["input_cap"] if recovery else None)
+            if scope:
+                projection["action_scope"] = scope["action_prefix"]
+                projection["node_policy"] = self.policy.model_dump(mode="json")
+            return messages, tools, projection
         identity, result = await self.host.models.complete(self, key, build, recovery=recovery)
         calls = result["message"].get("tool_calls", [])
         return {"step": state.get("step", 0) + 1, "response_id": identity,
-                "action_keys": [self.run["id"] + ":tool:" + call["id"] for call in calls],
+                "action_keys": [(scope["action_prefix"] if scope else self.run["id"]) + ":tool:" + call["id"] for call in calls],
                 "decision": "tools" if calls else "deliver", "context_retries": 0, "context_recovery": {}, "context_failure": {}}
 
     async def recover_context(self, state):
@@ -430,7 +452,7 @@ class RunContext:
         fingerprint = input_fingerprint(messages, tools, self.definition.model)
         if projection["input_tokens"] >= before or fingerprint == action["input_hash"]:
             raise original
-        recovery = {"action_id": action_id, "attempt_id": attempt_id, "input_cap": cap,
+        recovery = {"action_id": action_id, "attempt_id": attempt_id, "operation_key": action["operation_key"], "input_cap": cap,
                     "original_input_hash": action["input_hash"], "input_hash": fingerprint,
                     "input_tokens_before": before, "input_tokens_after": projection["input_tokens"],
                     "projection": projection}
@@ -441,6 +463,8 @@ class RunContext:
         return {"context_recovery": recovery, "context_retries": 1, "decision": "model"}
 
     async def model_input(self, output_tokens=None, *, input_cap=None):
+        from oea.runtime.scopes import node_scope
+        scope = node_scope.get()
         for skill in self.definition.skills:
             if skill.required or skill.id in self.policy.skills.required:
                 self.skill_binding(skill.id)
@@ -449,7 +473,7 @@ class RunContext:
         # Recovered completed model receipts bypass this builder, retaining
         # their original tool-call/result pairing before accepting new input.
         await self.host.contexts.inbox(self.run, self.instance)
-        names = self.tool_names()
+        names = [] if scope and not scope.get("tools", True) else self.tool_names()
         deferred = set(self.deferred_tools(names))
         if deferred or self.loaded_tools is not None or self.definition.tools.functions or self.definition.tools.mcp or self.resumption:
             await self.restore_tools()
@@ -488,13 +512,14 @@ class RunContext:
         waiting = {}
         images = []
         calls = result["message"].get("tool_calls", [])
-        keys = [self.run["id"] + ":tool:" + call["id"] for call in calls]
+        prefix = result.get("request", {}).get("projection", {}).get("action_scope", self.run["id"])
+        keys = [prefix + ":tool:" + call["id"] for call in calls]
         previous = await self.host.store.call(lambda db: rows(db,
             "SELECT id,body_json FROM conversation WHERE run_id=? AND id IN (" + ",".join("?" for _ in keys) + ") AND json_extract(body_json,'$.content') IS NOT NULL",
             (self.run["id"], *keys))) if keys else []
         recorded = {row["id"]: json.loads(row["body_json"]) for row in previous}
         for call in result["message"].get("tool_calls", []):
-            key = self.run["id"] + ":tool:" + call["id"]
+            key = prefix + ":tool:" + call["id"]
             if key in recorded:
                 prior = recorded[key]
                 prior_value = json.loads(prior["content"])
@@ -506,8 +531,7 @@ class RunContext:
                 require(isinstance(arguments, dict), "INVALID_REQUEST", "Tool arguments require an object", origin="local", stage="tool.validate",
                         details={"errors": [{"path": [], "type": "type", "message": "Tool arguments require an object"}]})
                 sent = result.get("request", {}).get("projection", {})
-                value = await self.host.tools.invoke(self.run["id"], call["function"]["name"], arguments, key,
-                    contract_hash=sent.get("tool_contracts", {}).get(call["function"]["name"]), model_step=sent.get("model_step"))
+                value = await self.invoke_model_tool(call["function"]["name"], arguments, key, sent)
                 if call["function"]["name"] in self.tool_state:
                     self.tool_state[call["function"]["name"]]["last_used_step"] = sent.get("model_step", self.model_step)
                 action_key = key
@@ -538,7 +562,7 @@ class RunContext:
                             "position": position, "error": error})
                     self.host.budgets.blocked(db, self.run["id"], error, signature)
             if key not in recorded or action_key is None:
-                await self.host.contexts.tool_result(self.run, self.instance, self.definition.context, call, value, action_key=action_key, on_insert=observation)
+                await self.host.contexts.tool_result(self.run, self.instance, self.definition.context, call, value, action_key=action_key, on_insert=observation, identity=key)
             if call["function"]["name"] == "view_image" and value.get("image") and value.get("artifact") and not value.get("isError"):
                 images.append({"type": "oea_image", "artifact_id": value["artifact"]["id"]})
             if value.get("wait"):
@@ -550,6 +574,20 @@ class RunContext:
             # multiple calls always keep valid model message pairing.
             await self.host.contexts.append(self.run, self.instance, {"role": "user", "content": images}, self.run["id"] + ":images:" + state["response_id"])
         return {"wait": waiting}
+
+    async def invoke_model_tool(self, name, arguments, key, projection):
+        from oea.runtime.scopes import narrow_policy, node_scope
+        token = None
+        if projection.get("node_policy") is not None:
+            require(name in projection.get("tool_contracts", {}), "PERMISSION_DENIED", "Tool was not exposed to this model node")
+            scope = node_scope.get() or {"run_id": self.run["id"]}
+            token = node_scope.set({**scope, "policy": narrow_policy(self.policy, UsePolicy.model_validate(projection["node_policy"]))})
+        try:
+            return await self.host.tools.invoke(self.run["id"], name, arguments, key,
+                contract_hash=projection.get("tool_contracts", {}).get(name), model_step=projection.get("model_step"))
+        finally:
+            if token is not None:
+                node_scope.reset(token)
 
     async def model_messages(self, messages):
         """Encode only assigned image artifacts at the outgoing request boundary."""

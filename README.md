@@ -12,7 +12,7 @@ Orchestrate Everything with Agents is a lightweight multi-agent development and 
 ## What you can build
 
 - **Personal Agent workspaces.** Organize Agents, conversations, instructions and skills by project.
-- **Your own execution logic.** Use a model Agent, a protocol-3 Python process Agent, or a registered Python graph. LangGraph drives Agent and business execution.
+- **Your own execution logic.** Edit [Agent architectures](docs/agent-architectures.md) from ReAct, Plan-and-Execute or Reflexion templates, or register a Python graph or protocol-3 process Agent. LangGraph drives Agent and business execution.
 - **Independent parallel instances.** Reuse configurations with separate contexts, stable work directories, ordered results and cancellation along actual ownership.
 - **Reusable workflows.** Compose Agent, map, condition, template, function, subgraph, wait and end nodes, including loops and parallel joins. Every workflow belongs to one project.
 - **Tools and work artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and keep session files with source attribution and downloadable references.
@@ -25,6 +25,8 @@ The frontend is served directly from local assets, with no build step. Saved Age
 ## Run locally
 
 Use Python 3.12+ and a prebuilt wheel matching Windows x64 or Linux x64. Normal installation needs no Rust compiler. Replace the placeholder below with the release wheel's full filename:
+
+MSVC-built Windows wheels also need the [Microsoft Visual C++ v14 x64 runtime](docs/getting-started.md#windows-runtime).
 
 ```sh
 python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
@@ -89,4 +91,4 @@ Runtime state belongs on a local disk outside Git repositories and synchronized 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and [SECURITY.md](SECURITY.md) for sensitive reports. The repository includes generic automated contract tests and source fixtures, with no populated workspace or generated test output.
 
-Licensed under [MIT](LICENSE). OEA 3.1.0 uses the `oea` package and CLI with protocol 3.0. Upgrade existing state through an explicit offline migration into a new directory.
+Licensed under [MIT](LICENSE). OEA 3.2.1 uses the `oea` package and CLI with protocol 3.0. Upgrade existing state through an explicit offline migration into a new directory.

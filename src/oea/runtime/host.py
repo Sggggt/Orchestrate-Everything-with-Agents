@@ -72,6 +72,8 @@ class Host:
         self.project_deletion_scopes = {}
         self.workflows = Workflows(self)
         self.agent_graphs = AgentGraphs(self)
+        from oea.orchestration.architectures import Architectures
+        self.architectures = Architectures(self)
         from oea.orchestration.graphs import compile_agent_graph
         self.agent_graphs.register("default", compile_agent_graph, version="1")
         self.registry = OperationRegistry()
@@ -102,6 +104,9 @@ class Host:
         self.registry.register("host.describe", self.describe, read_only=True)
         self.registry.register("host.guide", self.guide, read_only=True)
         self.registry.register("executions.graphs", self.agent_graphs.list, read_only=True)
+        for name in ("create", "get", "list", "save", "validate", "publish", "versions", "compare", "bind", "preview", "export", "templates", "node_types", "schema", "adjust", "run", "inspect", "node_result", "status"):
+            self.registry.register("architectures." + name, getattr(self.architectures, name),
+                read_only=name not in {"create", "save", "publish", "bind", "adjust", "run"})
         self.registry.register("contexts.revoke", self.contexts.revoke)
         self.registry.register("events.list", self.events_service.list, read_only=True)
         self.registry.register("results.read", self.results.read, read_only=True)
@@ -206,9 +211,9 @@ class Host:
     def register_tool(self, provider):
         self.tools.register(provider)
 
-    def register_graph(self, name, factory, *, version):
+    def register_graph(self, name, factory, *, version, required_tools=(), required_skills=(), source=None):
         """Bind trusted Python code; saved runs retain the exact version."""
-        self.agent_graphs.register(name, factory, version=version)
+        self.agent_graphs.register(name, factory, version=version, required_tools=required_tools, required_skills=required_skills, source=source)
 
     def notify(self):
         changed, self.changed = self.changed, asyncio.Event()
@@ -485,7 +490,7 @@ class Host:
         graph = config = None
         try:
             definition = AgentDefinition.model_validate_json(run["config_json"])
-            graph = self.agent_graphs.resolve(definition.execution)
+            graph = await self.agent_graphs.resolve_execution(definition.execution, instance["project_id"])
             paths = WorkspacePaths.prepare(definition.workspace, instance["id"], run_id, self.root, binding=json.loads(instance["workspace_json"]))
             await self.store.call(lambda db: db.execute("UPDATE instances SET workspace_json=? WHERE id=?", (encode(paths.as_dict()), instance["id"])), transaction=True)
             context = RunContext(self, run, instance, definition, paths, resumption=resumption, deadline=deadline)
@@ -498,7 +503,7 @@ class Host:
             snapshot = await graph.aget_state(config)
             repair_codes = {"EMPTY_OUTPUT", "OUTPUT_TRUNCATED", "MODEL_REFUSED", "DELIVERY_MISSING", "DELIVERY_INVALID", "REQUIRED_TOOL_UNUSED", "REQUIRED_SKILL_UNUSED"}
             failure = json.loads(resumption["failure_json"]) if resumption and resumption["failure_json"] else {}
-            if definition.execution.graph == "default" and failure.get("code") in repair_codes and "deliver" in snapshot.next:
+            if definition.execution.graph == "default" and definition.execution.architecture is None and failure.get("code") in repair_codes and "deliver" in snapshot.next:
                 config = await graph.aupdate_state(config, {"decision": "program" if definition.execution.program else "model"},
                     as_node="wait" if definition.execution.program else "observe")
                 snapshot = await graph.aget_state(config)

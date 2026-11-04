@@ -7,7 +7,7 @@ oea migrate --source /path/to/old-state
 oea migrate --source /path/to/old-state --target /path/to/new-state --apply
 ```
 
-`migrate` recognizes legacy schema 29 and supported protocol-2 states. For a protocol-2 source, the equivalent explicit entry is:
+`migrate` recognizes legacy schema 29, supported protocol-2 states, and the protocol-3 schema before programmable Agent architectures. The equivalent explicit entry for an `oea.sqlite` source is:
 
 ```console
 oea upgrade-state --data-dir /path/to/old-state
@@ -17,6 +17,8 @@ oea upgrade-state --data-dir /path/to/old-state --target /path/to/new-state --ap
 Inspection is read-only. Applying requires an absent target outside source, Git and synchronized folders. Stop the original host and allow SQLite to checkpoint first. Active host locks and unresolved WAL/journal state are rejected; a lock file's existence alone is not proof of an active host. The converter never opens a second host on the source.
 
 Protocol-2 schema revisions 1, 2 and 3 are recognized. The converter preserves IDs, configuration, secrets, usage, original messages/read facts, artifacts and state-owned material. File hashes, foreign keys, source stability, copied vault availability and historical usage totals are verified before the target is marked usable. A partial target remains available for diagnosis and cannot masquerade as a completed conversion.
+
+The recognized earlier protocol-3 schema receives empty architecture tables. Its records, credentials, historical accounting and source files are retained; unresolved actions and costs remain for review. Earlier graph files are archived under `imported/protocol-3-initial`, and their runs carry an unsupported historical execution version instead of being resumed with new code. Existing memory and later evidence remain available by reference. This transition does not validate old code factories or process checkpoints as resumable.
 
 The new tool, message and budget schemas are converted explicitly. Old total-input ceilings keep their original meaning. Historical cache, price or provider facts that were not recorded remain unknown. Legacy command permission becomes an explicit trusted configuration; old programs remain disabled until they implement the current SDK. Converted optional roles do not silently gain business capabilities.
 

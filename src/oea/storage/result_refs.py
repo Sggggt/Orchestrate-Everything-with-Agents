@@ -38,6 +38,7 @@ class ResultReferences:
         "workflows.get_run", "workflows.list_runs", "workflows.inspect", "workflows.node_result",
         "workflows.members", "workflows.result", "workflows.activity", "mcp.call_result", "mcp.calls",
         "history.summary", "history.list", "history.get", "history.conversation", "history.usage",
+        "architectures.inspect", "architectures.node_result", "architectures.compare", "architectures.validate", "architectures.status",
     })
     versioned_operations = frozenset({
         "projects.get", "projects.list", "agents.get", "agents.list", "agents.schema",
@@ -45,6 +46,8 @@ class ResultReferences:
         "skills.get", "skills.list", "skills.describe", "skills.schema", "skills.read", "skills.files",
         "workflows.get", "workflows.list", "workflows.schema", "workflows.node_types", "workflows.validate",
         "artifacts.read", "host.describe", "host.guide", "executions.graphs",
+        "architectures.get", "architectures.list", "architectures.versions", "architectures.preview", "architectures.export",
+        "architectures.templates", "architectures.node_types", "architectures.schema",
     })
 
     def __init__(self, host):
@@ -56,8 +59,10 @@ class ResultReferences:
     @staticmethod
     def source(operation, params, result):
         params, overlay, version = dict(params), {}, {}
-        if operation in {"agents.save", "mcp.save"}:
-            operation, params = ("agents.get", {"agent_id": result["definition"]["id"]}) if operation == "agents.save" else ("mcp.get", {"server_id": result["definition"]["id"]})
+        if operation in {"agents.save", "architectures.bind", "mcp.save"}:
+            operation, params = ("agents.get", {"agent_id": result["definition"]["id"]}) if operation != "mcp.save" else ("mcp.get", {"server_id": result["definition"]["id"]})
+        elif operation in {"architectures.create", "architectures.save", "architectures.adjust"}:
+            operation, params = "architectures.get", {"architecture_id": result["id"], "project_id": result["project_id"]}
         elif operation == "mcp.discover":
             operation, params = "mcp.tools", {"server_id": result["server_id"], "project_id": result["project_id"], "revision": result["revision"]}
         elif operation == "mcp.call":
@@ -70,7 +75,7 @@ class ResultReferences:
         elif operation == "messages.send":
             operation, params = "messages.get", {"message_id": result["id"], "project_id": result["project_id"]}
             overlay = {"reused": result["reused"]}
-        elif operation in {"runs.submit", "runs.resume", "runs.cancel"}:
+        elif operation in {"runs.submit", "runs.resume", "runs.cancel", "architectures.run"}:
             operation, params = "runs.get", {"run_id": result["id"]}
             if "reused" in result:
                 overlay["reused"] = result["reused"]
@@ -78,7 +83,7 @@ class ResultReferences:
             operation, params = "workflows.get_run", {"workflow_run_id": result["id"], "project_id": result["project_id"]}
             if "reused" in result:
                 overlay["reused"] = result["reused"]
-        if operation in {"agents.get", "workflows.get", "mcp.get"}:
+        if operation in {"agents.get", "workflows.get", "mcp.get", "architectures.get"}:
             version["revision"] = result["revision"]
         if operation == "runs.action" and result.get("attempt_id"):
             params["attempt_id"] = result["attempt_id"]
@@ -94,9 +99,10 @@ class ResultReferences:
                 params["cursor"] = max(positions) + 1
             if "cursor" in result:
                 overlay["cursor"] = result["cursor"]
-            if operation in {"agents.list", "workflows.list"}:
+            if operation in {"agents.list", "workflows.list", "architectures.list"}:
                 version["revisions"] = {item.get("id", (item.get("definition") or {}).get("id")): item["revision"] for item in items}
-        if operation in {"agents.schema", "mcp.schema", "workflows.schema", "workflows.node_types", "host.describe", "host.guide", "executions.graphs"}:
+        if operation in {"agents.schema", "mcp.schema", "workflows.schema", "workflows.node_types", "host.describe", "host.guide", "executions.graphs",
+                         "architectures.preview", "architectures.export", "architectures.templates", "architectures.node_types", "architectures.schema"}:
             version["content_hash"] = hashlib.sha256(encode(result).encode("utf-8")).hexdigest()
         return operation, params, version, overlay
 
@@ -117,6 +123,7 @@ class ResultReferences:
             "instance_id": "SELECT project_id FROM instances WHERE id=?", "session_id": "SELECT project_id FROM sessions WHERE id=?",
             "artifact_id": "SELECT project_id FROM artifacts WHERE id=?", "budget_id": "SELECT project_id FROM budgets WHERE id=?",
             "message_id": "SELECT project_id FROM messages WHERE id=?", "board_id": "SELECT project_id FROM boards WHERE id=?",
+            "architecture_id": "SELECT project_id FROM agent_architectures WHERE id=?",
         }
         for key, query in queries.items():
             if params.get(key):

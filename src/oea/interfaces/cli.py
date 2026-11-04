@@ -29,7 +29,7 @@ def parser():
     migrate.add_argument("--source", type=Path, required=True)
     migrate.add_argument("--target", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Write a separate new target; the default is a read-only dry run")
-    upgrade = commands.add_parser("upgrade-state", help="Convert recognized v2 state into a new directory while its host is stopped")
+    upgrade = commands.add_parser("upgrade-state", help="Convert recognized earlier state into a new directory while its host is stopped")
     upgrade.add_argument("--data-dir", type=Path)
     upgrade.add_argument("--target", type=Path)
     upgrade.add_argument("--apply", action="store_true", help="Write the new target after verifying the unchanged source")

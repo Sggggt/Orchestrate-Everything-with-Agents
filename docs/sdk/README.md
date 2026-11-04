@@ -6,6 +6,10 @@
 
 ## Python 接口
 
+- `ArchitectureGraph`、`ArchitectureBuilder`、`ArchitectureBinding`、`AgentArchitecture`、`ArchitectureOptions` 是公开类型。
+- `ArchitectureClient(host_or_client)` 提供类型化的 `templates`、`node_types`、`create/get/list/save`、`validate`、`publish/versions/compare`、`bind/status`、`preview/export/adjust`、`run/inspect/node_result`。它复用调用方的生命周期和共享服务。
+- 完整示例、节点状态映射和版本恢复见[Agent 架构](../agent-architectures.md)。
+
 - `sdk/agent.py`：`plain(value)`
 - `sdk/agent.py`：`Agent`
   - `from_saved(cls, agent_id, *, state_dir=None, host=None, client=None, project_id=None, session_id=None, allow_commands=False)`

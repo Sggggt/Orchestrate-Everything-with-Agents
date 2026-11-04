@@ -135,6 +135,7 @@ class Agents:
             if definition.project_id:
                 need(db, "projects", definition.project_id)
             previous = one(db, "SELECT * FROM agent_definitions WHERE id=?", (definition.id,))
+            self.host.architectures.check_save(db, definition, previous)
             if previous:
                 require(previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Agent cannot change its project")
                 require(expected_revision is None or expected_revision == previous["revision"], "REVISION_CONFLICT", "Agent configuration changed")
@@ -268,6 +269,12 @@ class Agents:
                 unavailable.append("mcp:" + binding.server_id)
         if not self.host.agent_graphs.available(definition.execution):
             unavailable.append("execution:not_registered")
+        if definition.execution.architecture:
+            owner, version = await self.host.store.call(lambda db: self.host.architectures._version(db, definition.execution.architecture, project_id))
+            if owner["representation"] == "python":
+                reference = json.loads(version["definition_json"])
+                if (reference["graph"], reference["graph_version"]) not in self.host.agent_graphs.factories:
+                    unavailable.append("execution:not_registered")
         if definition.execution.program and not self.host.tools.providers["_oea_program"].enabled:
             unavailable.append("execution:host_grant")
         workspace_check = {"state": "resolved", "preview": True, "issues": []}

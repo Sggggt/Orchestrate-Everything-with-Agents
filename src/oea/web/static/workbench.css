@@ -1,4 +1,44 @@
 /* OEA workbench extensions to the existing local design system. */
+/* Agent settings keep the workbench shell and expose only common controls. */
+.settings-layout .settings-list { background:#fff; }
+.settings-profile { display:flex; gap:16px; align-items:center; margin:8px 0 22px; }
+.settings-profile>div { min-width:0; flex:1; }
+.settings-profile h2 { font-size:23px; margin:0 0 7px; overflow-wrap:anywhere; }
+.settings-profile p { margin:0; }
+.settings-profile-avatar { width:56px; height:56px; flex-shrink:0; display:grid; place-items:center; color:var(--accent); background:var(--accent-soft); border-radius:12px; }
+.settings-profile-avatar .icon { width:28px; height:28px; }
+.settings-capabilities { display:flex; flex-wrap:wrap; gap:12px 24px; padding:0 0 24px; color:var(--muted); font-size:13px; }
+.settings-capabilities>span { display:flex; align-items:center; gap:8px; }
+.settings-capabilities .icon { width:17px; height:17px; }
+.architecture-section { border-top:1px solid var(--line); padding:24px 0 20px; }
+.architecture-heading,.architecture-candidate { display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.architecture-heading h3 { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 6px; font-size:18px; }
+.architecture-heading p { margin:0; }
+.architecture-version { color:var(--accent); background:var(--accent-soft); font-size:12px; font-weight:500; border-radius:20px; padding:4px 10px; }
+.architecture-preview { margin:26px 0; }
+.architecture-stages { display:flex; align-items:stretch; gap:9px; flex-wrap:wrap; }
+.architecture-stage { display:flex; align-items:center; justify-content:center; gap:9px; border:1px solid #bcc3d2; border-radius:9px; padding:17px 16px; font-size:14px; color:var(--ink); flex:1 1 100px; }
+.architecture-stage .icon { width:21px; height:21px; flex-shrink:0; }
+.architecture-stage.selected { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-dark); }
+.architecture-stage:hover { border-color:var(--accent); }
+.architecture-arrow { display:flex; align-items:center; color:var(--muted); font-size:21px; }
+.architecture-returns { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--accent-dark); padding:8px 0; margin:8px 0; line-height:1.7; }
+.architecture-description { background:var(--accent-soft); color:var(--ink); border-radius:8px; padding:13px 16px; margin:16px 0 8px; font-size:13px; line-height:1.7; min-height:48px; }
+.architecture-candidate { border-top:1px solid var(--line); padding-top:22px; }
+.architecture-candidate h4 { margin:0 0 5px; font-size:16px; }
+.architecture-draft-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.architecture-template { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:22px; font-size:13px; }
+.architecture-template select { width:auto; min-width:180px; max-width:100%; padding:9px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+.architecture-notice { white-space:pre-wrap; font-size:13px; color:var(--muted); line-height:1.7; margin-top:14px; overflow-wrap:anywhere; }
+.architecture-notice:empty { display:none; }
+.architecture-blocker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:12px; background:#fff9ec; border:1px solid #f1dfb7; border-radius:8px; color:#785b20; font-size:13px; margin-bottom:20px; }
+.architecture-source { max-height:50vh; overflow:auto; }
+.settings-advanced { border-top:1px solid var(--line); padding:20px 0; font-size:13px; }
+.settings-advanced>summary { cursor:pointer; font-weight:500; }
+.settings-fields:has(>.field) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px; margin-bottom:24px; }
+.settings-fields>.schema-object,.settings-fields>.field:has(textarea) { grid-column:1/-1; }
+.settings-fields .field { margin:0; }
+.architecture-section button:focus-visible,.settings-profile button:focus-visible,.settings-advanced summary:focus-visible { outline:3px solid #6750d870; outline-offset:3px; }
 [hidden] { display: none !important; }
 .v2-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:28px 32px 22px; }
 .v2-heading h1 { font-size:23px; margin:0 0 8px; font-weight:650; }

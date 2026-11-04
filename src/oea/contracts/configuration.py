@@ -205,9 +205,15 @@ class Delivery(Configuration):
         return value
 
 
+class ArchitectureBinding(Configuration):
+    architecture_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+
+
 class Execution(Configuration):
     graph: str = Field(default="default", pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     graph_version: str = Field(default="1", min_length=1, max_length=64)
+    architecture: ArchitectureBinding | None = None
     program: tuple[str, ...] = ()
     program_uses_model: bool = False
     program_timeout_seconds: float = Field(default=3600, gt=0, le=3600)
@@ -217,6 +223,8 @@ class Execution(Configuration):
 
     @model_validator(mode="after")
     def driver(self):
+        if self.architecture and (self.program or self.graph != "default"):
+            raise ValueError("Choose one published architecture, program or code graph")
         if self.program and self.graph != "default":
             raise ValueError("Choose one program or a registered code graph")
         return self
