@@ -33,7 +33,7 @@ python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-Open the printed browser URL; the first-launch default is **http://127.0.0.1:8890**. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for system prerequisites and source development.
+Run `oea open` in another terminal to open the authenticated workbench. The first-launch origin is **http://127.0.0.1:8890**; a plain page visit does not grant management access. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for system prerequisites and source development.
 
 Configure project directory/network defaults, then an Agent's model, credentials and capabilities. Start with one capable Agent and add independent instances when the work needs separate context or responsibility. Managers are optional; main and summary models can be configured independently.
 
@@ -80,6 +80,12 @@ oea mcp
 The stdio bridge connects to the running host and exposes `platform_guide` and `platform_call`. Use one stable conversation consumer ID. The supplied [Codex skill](integrations/codex/orchestrate-everything-with-agents/SKILL.md) routes discovery, configuration, execution and receipt reading. See [MCP and skills](docs/mcp.md).
 
 ## Documentation
+
+External application backends can call authorized Agents through
+[OAP 1.0](docs/applications/README.md). Manage application credentials and Agent
+grants in **应用接入**, then use `ApplicationClient` for isolated conversations,
+uploads, execution, event streams and results. Application business records stay
+outside the normal workbench.
 
 Read the **[User Guide](docs/user-guide.md)** for concepts, a first task, browser operations, tools, collaboration, workflows and troubleshooting. Also available in **[简体中文](docs/user-guide.zh-CN.md)**.
 

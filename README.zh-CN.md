@@ -35,7 +35,7 @@ python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-浏览器打开宿主打印的地址，首次默认是 **http://127.0.0.1:8890**。状态保存在本机源码和同步目录之外。Windows 也可用安装器的 `-Wheel` 参数准备托管环境和启动脚本；源码开发及系统依赖见[安装指南](docs/getting-started.md)。
+在另一个终端运行 `oea open` 打开已授权的工作台。首次默认地址是 **http://127.0.0.1:8890**，直接访问首页不会获得管理权限。状态保存在本机源码和同步目录之外。Windows 也可用安装器的 `-Wheel` 参数准备托管环境和启动脚本；源码开发及系统依赖见[安装指南](docs/getting-started.md)。
 
 创建项目，配置默认目录与网络策略，再保存 Agent 的模型、密钥和能力。先让一个 Agent 完成工作，需要独立上下文或职责时再增加实例。manager 是可选角色；主模型和摘要可独立配置。
 
@@ -81,6 +81,10 @@ oea mcp
 桥接进程连接已有宿主，提供 `platform_guide` 与 `platform_call`。从前端复制生成的配置，再安装仓库提供的 [Codex 技能](integrations/codex/orchestrate-everything-with-agents/SKILL.md)。安装、按需发现接口和权限说明见 [MCP 与技能指南](docs/mcp.md)。连接 ChatGPT 时，所用客户端环境需能够访问选定的 MCP 传输。
 
 ## 文档
+
+外部应用后端可通过 [OAP 1.0](docs/applications/README.md) 调用获准 Agent。
+在“应用接入”管理独立凭据与 Agent 授权，再使用 `ApplicationClient` 创建隔离会话、上传文件、
+提交工作并读取事件与结果。应用业务记录不进入普通工作台。
 
 从**[用户指南](docs/user-guide.zh-CN.md)**了解核心概念、首个任务、界面操作、工具、协作、工作流和排障。另有 **[English](docs/user-guide.md)** 版本。
 

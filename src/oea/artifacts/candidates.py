@@ -24,8 +24,9 @@ class CandidateFiles:
     async def environment(self, run_id, project_id):
         def read(db):
             run = self.scope(db, run_id, project_id)
-            return run, need(db, "instances", run["instance_id"])
-        run, instance = await self.host.store.call(read)
+            instance = need(db, "instances", run["instance_id"])
+            return run, instance, self.host.applications.scope(db, instance["session_id"])
+        run, instance, scope = await self.host.store.call(read)
         saved = AgentDefinition.model_validate_json(run["config_json"])
         current = self.host.definitions.get(instance["agent_id"])
         require(current is not None and not current.removed, "PERMISSION_DENIED", "The Agent's live file grants are unavailable")
@@ -33,9 +34,14 @@ class CandidateFiles:
             require(current.manager is not None, "PERMISSION_DENIED", "Manager file grants were removed")
             current = manager_snapshot(current)
         project = await self.host.projects.get(project_id)
-        settings = current.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
+        if scope.source == "application":
+            from oea.applications.execution import assemble
+            current = assemble(current, self.host.applications.current_grant(scope), ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
+            settings = current.workspace
+        else:
+            settings = current.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
         paths = WorkspacePaths.for_instance(saved.workspace, instance["id"], run_id, self.host.root,
-                                           binding=json.loads(instance["workspace_json"]))
+                                           binding=json.loads(instance["workspace_json"]), scope=scope)
         paths, settings = intersect_workspace(paths, saved.workspace, settings)
         return ExecutionEnvironment(paths, settings)
 

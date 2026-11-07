@@ -84,6 +84,16 @@ class PlatformClient:
             async for data in sse_data(response):
                 yield json.loads(data)
 
+    async def browser_url(self):
+        """Authorize one local browser login without placing the control token in a URL."""
+        require(self.opened and self.loop is asyncio.get_running_loop(), "CLIENT_CLOSED", "Use this open client on its original event loop")
+        response = await self.client.post("/api/browser-login", timeout=10)
+        require(response.status_code != 404, "HOST_UPGRADE_REQUIRED", "This Host needs an offline upgrade before protected browser login is available")
+        response.raise_for_status()
+        value = response.json()
+        require(value.get("protocol_version") == PROTOCOL_VERSION and "result" in value, "PROTOCOL_ERROR", "Host did not return a browser login ticket")
+        return self.url + "/#oea-login=" + quote(value["result"]["ticket"], safe="")
+
     async def upload_artifact(self, source, *, project_id, idempotency_key, session_id=None, name=None):
         """Stream an explicitly selected local file through its durable receipt."""
         from oea.artifacts.service import file_io

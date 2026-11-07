@@ -53,6 +53,9 @@ def delete_project(db, project_id: str, confirm_name: str, key_hash: str, input_
     # checks until this one aggregate has been removed; foreign keys remain enabled.
     db.execute("PRAGMA defer_foreign_keys=ON")
     statements = (
+        "DELETE FROM application_requests WHERE target IN (SELECT id FROM application_bindings WHERE project_id=:project_id) OR target IN (SELECT c.id FROM application_conversations c JOIN sessions s ON s.id=c.session_id WHERE s.project_id=:project_id)",
+        f"DELETE FROM application_conversations WHERE session_id IN ({SESSIONS})",
+        "DELETE FROM application_bindings WHERE project_id=:project_id",
         "DELETE FROM result_refs WHERE project_id=:project_id",
         "DELETE FROM result_snapshots WHERE project_id=:project_id",
         f"DELETE FROM run_tool_state WHERE run_id IN ({RUNS})",

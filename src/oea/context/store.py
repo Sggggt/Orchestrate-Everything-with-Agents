@@ -98,6 +98,9 @@ class ContextStore:
     @staticmethod
     def check_access(db, instance, source):
         require(source is not None and source["project_id"] == instance["project_id"], "PERMISSION_DENIED", "Source is outside this project")
+        if source["instance_id"] != instance["id"]:
+            owners = rows(db, "SELECT s.source FROM sessions s JOIN instances i ON i.session_id=s.id WHERE i.id IN (?,?)", (instance["id"], source["instance_id"]))
+            require(all(row["source"] == "platform" for row in owners), "PERMISSION_DENIED", "Application context cannot be shared across instances")
         require(source["instance_id"] == instance["id"] or one(db, "SELECT 1 FROM context_grants g LEFT JOIN messages m ON m.id=g.message_id LEFT JOIN boards b ON b.id=m.board_id WHERE g.source_id=? AND g.instance_id=? AND (g.message_id IS NULL OR (b.session_id IS NULL OR b.session_id=?) AND (b.scope!='inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=b.id AND r.instance_id=g.instance_id)))", (source["id"], instance["id"], instance["session_id"])),
                 "PERMISSION_DENIED", "Source has not been shared with this instance")
 

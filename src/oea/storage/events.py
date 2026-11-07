@@ -24,7 +24,9 @@ class Events:
                 run = need(db, "runs", run_id)
                 instance = need(db, "instances", run["instance_id"])
                 require(instance["project_id"] == project_id and session_id in {None, instance["session_id"]}, "PERMISSION_DENIED", "Run belongs to another event scope")
-            query, params = "SELECT * FROM events WHERE project_id=? AND position>?", [project_id, after]
+            from oea.applications.access import platform_parameters
+            platform_parameters(db, {"session_id": session_id, "run_id": run_id})
+            query, params = "SELECT * FROM events WHERE project_id=? AND source='platform' AND position>?", [project_id, after]
             for column, value in (("session_id", session_id), ("run_id", run_id)):
                 if value:
                     query += " AND " + column + "=?"

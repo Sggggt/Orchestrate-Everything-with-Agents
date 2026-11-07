@@ -14,6 +14,7 @@ CLI、已有宿主客户端、控制 MCP 和类型化操作注册。
   - `from_data_dir(cls, data_dir=None, **options)`
   - `async call(self, operation, params=None, *, compact=False, consumer_id=None)`
   - `async events(self, run_id, *, after=0)`
+  - `async browser_url(self)`：签发一次性本机浏览器登录链接，不把长期控制凭据放入 URL。
   - `async upload_artifact(self, source, *, project_id, idempotency_key, session_id=None, name=None)`
   - `async aclose(self)`
 - `interfaces/mcp.py`：`create_server(data_dir=None, *, client_factory=None)`
@@ -27,6 +28,8 @@ CLI、已有宿主客户端、控制 MCP 和类型化操作注册。
 ## 依赖与边界
 
 `oea serve`、`oea mcp`、`oea request` 默认使用 `~/.oea/data`；`oea paths` 只读显示实际布局。服务启动先核验保存的本机端点并复用已有宿主，离线重启沿用保存端口；连接超时或认证失败不触发另一个宿主。MCP 与管理客户端只读取连接材料，不因目录缺失创建数据库。
+
+`oea open` 使用已有宿主和本机控制凭据打开授权工作台；`--print-url` 返回短时、单次使用的登录链接。普通首页访问不创建管理会话。
 
 依赖模块：artifacts、contracts、migration、models、storage、web、workspace。
 

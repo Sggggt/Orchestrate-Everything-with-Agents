@@ -19,6 +19,7 @@ leader 负责目标、计划、委派、核验和汇总；OEA Host 负责权限�
 | 运行、读取结果、指导、取消和原回执核对 | [控制](workflows/control.md) |
 | 配置和发现上游业务 MCP | [业务 MCP](workflows/mcp.md) |
 | 安装、连接、升级和状态目录 | [维护](workflows/maintenance.md) |
+| 登记外部应用、授权 Agent、开发 OAP 客户端 | [应用接入](workflows/applications.md) |
 
 ## 公共约定
 

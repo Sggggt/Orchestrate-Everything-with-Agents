@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from secrets import token_urlsafe
 import shutil
 import sqlite3
 
@@ -12,6 +13,7 @@ from oea.budgets.measurement import normalize
 from oea.contracts.configuration import AgentDefinition, Budget, PROTOCOL_VERSION
 from oea.contracts.errors import RuntimeFault, require
 from oea.migration.offline import _vault
+from oea.security.secrets import atomic_write
 from oea.migration.source import file_sha256, inventory_files, offline_source, verify_files
 from oea.storage.persistence import encode, now_ms
 from oea.workspace.paths import external_path, require_local_state, resolve_data_dir
@@ -19,6 +21,7 @@ from oea.workspace.paths import external_path, require_local_state, resolve_data
 PRE_READING_SCHEMA = "f1ae954f76e97a33ed398e63efcfd4a9a689e27be0988264efc54be1d23bc59e"
 PRE_DELIVERY_SCHEMA = "63eaabe949e6e57f3fb5d024a6a78bbee84c89570b6bdd2a7dfebb9c804bb011"
 LATEST_V2_SCHEMA = "801fb5a11b1e183934b768b948afccb5b810fd3da206561d4edfefb2e4b46b64"
+PRE_OAP_SCHEMA = "ed8f44ca54060afa066f3d12681ba62dcfa5958ffb7c3c163b71b2dbf7d67b2e"
 TOOL_NAMES = {"read_file": ("exec_command", "write_stdin"), "search_files": ("exec_command", "write_stdin"),
               "write_file": ("apply_patch",), "edit_file": ("apply_patch",), "run_command": ("exec_command", "write_stdin"), "read_image": ("view_image",)}
 OLD_BUDGET = {"max_model_calls": 128, "max_input_tokens": 2000000, "max_output_tokens": 262144,
@@ -87,7 +90,7 @@ def insert(db, table, value):
 
 
 def upgrade_state(data_dir=None, *, target=None, apply=False):
-    """Dry-run a recognized v2 snapshot; apply requires a new target directory.
+    """Dry-run a recognized older snapshot; apply requires a new target directory.
 
     Source databases, vaults, checkpoints and files remain unchanged. Old graph
     positions are archived, never dispatched by the new host.
@@ -104,6 +107,9 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
     with offline_source(source) as check, closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as original:
         original.row_factory = sqlite3.Row
         metadata = dict(original.execute("SELECT key,value FROM metadata"))
+        if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == PRE_OAP_SCHEMA:
+            from oea.migration.applications import transition as application_transition
+            return application_transition(original, source, destination, apply, check)
         from oea.migration.architectures import INITIAL_V3_SCHEMA, transition
         if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == INITIAL_V3_SCHEMA:
             return transition(original, source, destination, apply, check)
@@ -119,6 +125,7 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
         report = {"format_version": PROTOCOL_VERSION, "source_protocol": "2.0", "source_sha256": source_hash,
                   "source_schema_sha256": metadata["schema_sha256"], "applied": False, "changed": False, "ready_for_apply": True,
                   "secrets": vault_report, "table_counts": {}, "review_runs": [], "review_workflows": [], "disabled_program_agents": [],
+                  "control_credential_policy": "rotate in upgraded target",
                   "tool_bindings_converted": 0, "source_files": [{key: item[key] for key in ("relative_path", "sha256", "bytes")} for item in files]}
         if apply:
             destination.mkdir(parents=True, exist_ok=False)
@@ -265,6 +272,8 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
             if apply:
                 for item in files:
                     relative = Path(item["relative_path"])
+                    if relative == Path("client-token"):
+                        continue
                     if len(relative.parts) == 1 and (relative.name.startswith(("oea.sqlite", "graphs.sqlite")) or relative.name == "migration-report.json"):
                         copied = destination / "imported/protocol-2" / relative
                     else:
@@ -272,6 +281,8 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
                     copied.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source / relative, copied)
                     require(file_sha256(copied) == item["sha256"], "MIGRATION_SOURCE_CHANGED", "Copied material must match the original snapshot")
+                if (source / "client-token").exists() or (source / "client.json").exists():
+                    atomic_write(destination / "client-token", token_urlsafe(32).encode("utf-8"))
                 copied_vault, copied_report = _vault(destination)
                 require(copied_report["available"] and copied_vault == vault, "MIGRATION_SECRET_INVALID", "Copied vault could not be verified")
                 report["secrets"]["copied_verified"] = True
@@ -279,7 +290,7 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
             verify_files(source, files)
             require(file_sha256(database) == source_hash, "MIGRATION_SOURCE_CHANGED", "Source database changed during conversion")
             if apply:
-                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "1"), ("migration_complete", "true")])
+                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "2"), ("migration_complete", "true")])
                 report.update(applied=True, changed=True)
             output.commit()
         if apply:

@@ -4,6 +4,16 @@ OEA is a personal, local, single-host Agent platform. The main Agent understands
 
 The public `oea` package provides the SDK and CLI. HTTP, control MCP and SDK share one application service and operation registry. Each [code module](modules.md) has a matching interface directory under `docs/`.
 
+[OAP](applications/README.md) adds independent application identities and explicit
+Agent bindings to that same Host. Application sessions retain their saved
+ownership through instance, Run, budget, context, action, artifact, event and
+checkpoint records. One assembler intersects source capabilities with the
+application grant at acceptance and recovery; current authorization also applies
+to actual capability calls. Application work uses the same LangGraph engine and
+native sandbox, with dedicated directories and no platform communication tools.
+The management boundary filters application business objects before pagination
+and rejects object-level reads; application configuration remains manageable.
+
 LangGraph owns node positions, conditions, parallel joins, interrupts, subgraphs and graph checkpoints. OEA owns bounded context projections, original evidence, action receipts, messages and accepted configuration snapshots. Graph state contains IDs and evidence references rather than full transcripts or secrets.
 
 Independent instances run directly in parallel. One instance has one mutable context writer. Cost budgets cover root and child work. SQLite stores application facts, while the native SQLite checkpointer stores graph progress. Recovery reads original action receipts before continuing; a disconnected caller does not prove an external action stopped.

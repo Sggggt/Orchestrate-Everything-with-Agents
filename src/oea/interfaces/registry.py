@@ -13,7 +13,8 @@ operation_context = ContextVar("oea_operation_context", default=None)
 
 
 class OperationRegistry:
-    def __init__(self):
+    def __init__(self, *, authorize=None):
+        self.authorize = authorize
         self.handlers = {}
         self.signatures = {}
         self.parameters = {}
@@ -43,6 +44,8 @@ class OperationRegistry:
                                origin="local", stage="operation.validate",
                                details={"fields": [item["path"] for item in fields], "errors": fields}) from None
         params = {field: getattr(parsed, field) for field in type(parsed).model_fields}
+        if self.authorize is not None:
+            await self.authorize(name, params)
         if agent_name is not None:
             require(isinstance(agent_name, str) and 0 < len(agent_name.strip()) <= 80 and all(character.isprintable() for character in agent_name),
                     "INVALID_REQUEST", "Use a bounded external Agent display name")

@@ -37,6 +37,7 @@ class ArchitectureMigrationTests(unittest.TestCase):
                     await host.runs.result(run.id, timeout=10)
                     return run.id, instance["id"]
             run_id, instance_id = asyncio.run(create())
+            (root / "client-token").write_text("earlier-browser-credential", encoding="utf-8")
             with closing(sqlite3.connect(root / "oea.sqlite")) as db, db:
                 for table in ("architecture_steps", "architecture_versions", "agent_architectures"):
                     db.execute("DROP TABLE " + table)
@@ -50,6 +51,7 @@ class ArchitectureMigrationTests(unittest.TestCase):
             self.assertFalse(target.exists())
             report = upgrade_state(root, target=target, apply=True)
             self.assertEqual(report["review_runs"], [run_id])
+            self.assertNotEqual((target / "client-token").read_bytes(), original[Path("client-token")])
             self.assertEqual(original, {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()})
             self.assertEqual((target / "imported/protocol-3-initial/graphs.sqlite").read_bytes(), original[Path("graphs.sqlite")])
             self.assertFalse((target / "graphs.sqlite").exists())

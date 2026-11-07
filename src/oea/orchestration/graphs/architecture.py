@@ -158,6 +158,7 @@ def compile_architecture(graph, checkpointer, *, functions=None, scope="root", c
                 elif node.type == "set":
                     output = resolve(node.config.get("values", {}), scoped)
                 elif node.type == "function":
+                    context.authorize_extension()
                     provider = functions[node.config["name"]]
                     output = await provider.invoke({"arguments": resolve(node.config.get("arguments", {}), scoped)})
                 elif node.type == "remember":

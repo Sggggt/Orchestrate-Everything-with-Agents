@@ -21,6 +21,7 @@ class Messages:
 
     @staticmethod
     def source(db, run_id, session):
+        require(session["source"] == "platform", "PERMISSION_DENIED", "Application execution has no platform communication capability")
         run = need(db, "runs", run_id)
         instance = need(db, "instances", run["instance_id"])
         require(instance["session_id"] == session["id"] and run["state"] == "running" and run["cancel_requested_at"] is None,

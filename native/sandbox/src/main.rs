@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -34,8 +34,9 @@ struct Request {
 }
 
 fn emit(stream: &mut TcpStream, value: Value) -> io::Result<()> {
-    serde_json::to_writer(&mut *stream, &value)?;
-    stream.write_all(b"\n")
+    let mut frame = serde_json::to_vec(&value)?;
+    frame.push(b'\n');
+    stream.write_all(&frame)
 }
 
 fn request(input: Request) -> Result<ContainerRequest, String> {
@@ -193,6 +194,9 @@ fn main() {
             let _ = emit(&mut control, json!({"event":"error", "message":error,
                 "launch_accepted":facts.launch_accepted, "process_stopped":facts.process_stopped, "exit_code":facts.exit_code}));
         }
+        // Close the send side after the complete control frame. Windows must
+        // not tear down a process with serializer fragments still in flight.
+        let _ = control.shutdown(Shutdown::Both);
         result
     })();
     if let Err(error) = result { eprintln!("oea-sandbox: {error}"); std::process::exit(1); }

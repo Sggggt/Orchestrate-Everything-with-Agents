@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | contracts | `src/oea/contracts/` | [接口](contracts/README.md) |
 | sdk | `src/oea/sdk/` | [接口](sdk/README.md) |
+| applications | `src/oea/applications/` | [接口](applications/README.md) |
 | catalog | `src/oea/catalog/` | [接口](catalog/README.md) |
 | runtime | `src/oea/runtime/` | [接口](runtime/README.md) |
 | orchestration | `src/oea/orchestration/` | [接口](orchestration/README.md) |

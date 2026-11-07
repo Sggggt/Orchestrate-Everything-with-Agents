@@ -39,14 +39,14 @@ export async function renderArchitecture(app,root,draft){
       candidate?call("preview",{architecture_id:candidate}):Promise.resolve(null)
     ]);
     if(!root.isConnected||root.architectureLoad!==load)return;
-    draft.workStatus=status.blocker?({running:"执行中",accepted:"已接受工作",waiting:"等待输入或依赖",needs_review:"结果待核对"}[status.blocker.state]||"有待核对工作"):"可接受新工作";
-    const workStatus=root.closest("form")?.querySelector("[data-work-status]");if(workStatus)workStatus.innerHTML=signal(status.blocker?.state||"idle",draft.workStatus);
+    draft.workStatus=status.blocker?.source==="application"?"应用工作未结束或待核对":status.blocker?({running:"执行中",accepted:"已接受工作",waiting:"等待输入或依赖",needs_review:"结果待核对"}[status.blocker.state]||"有待核对工作"):"可接受新工作";
+    const workStatus=root.closest("form")?.querySelector("[data-work-status]");if(workStatus)workStatus.innerHTML=signal(status.blocker?.source==="application"?"waiting":status.blocker?.state||"idle",draft.workStatus);
     const title=active?`${active.name} · v${active.version}`:status.program?"进程 Agent":status.graph==="default"?"默认 ReAct":`${status.graph} · ${status.graph_version}`;
     const preview=active||(!status.program&&status.graph==="default"?defaultPreview:{stages:[],omitted:true});
     root.innerHTML=`<section class="architecture-section">
       <header class="architecture-heading"><h3>执行架构 <span class="architecture-version">${signal("online","当前生效架构")}${escape(title)}</span></h3>${iconButton("code","编辑源码",{"data-source":true})}</header>
       <div class="architecture-preview">${stagePreview(preview)}</div>
-      ${status.blocker?`<div class="architecture-blocker">${signal("waiting","切换受阻")}<span>先完成或核对原工作</span>${iconButton("clock","查看阻塞工作",{"data-blocker":true})}</div>`:""}
+      ${status.blocker?`<div class="architecture-blocker">${signal("waiting","切换受阻")}<span>${status.blocker.source==="application"?"请从所属应用完成或核对原工作":"先完成或核对原工作"}</span>${status.blocker.run_id?iconButton("clock","查看阻塞工作",{"data-blocker":true}):""}</div>`:""}
       <div class="architecture-candidate"><div><h4>候选草稿</h4><span class="v2-muted">${editing?`${escape(editing.name)} · r${editing.revision}`:"未创建"}</span></div><div class="v2-actions">${editing?iconButton("shield","校验",{"data-validate":true})+iconButton("upload","发布候选",{"data-publish":true}):""}${iconButton("branch","切换版本",{"data-versions":true})}</div></div>
       ${editing?`<div class="architecture-draft-actions">${iconButton("code","编辑草稿源码",{"data-draft-source":true})}${editing.editable?iconButton("sliders","调整选项",{"data-adjust":true}):hint("代码图仅支持在源码中修改")}</div>`:""}
       <div class="architecture-template"><label for="architecture-template">模板</label><select id="architecture-template">${Object.entries(names).map(([name,title])=>`<option value="${name}">${title}</option>`).join("")}</select>${iconButton("plus","创建草稿",{"data-create":true})}</div>
@@ -62,7 +62,7 @@ export async function renderArchitecture(app,root,draft){
     $("[data-source]",root).onclick=()=>source(status.binding?.architecture_id,status.binding?.version).catch(report);
     if(editing)$("[data-draft-source]",root).onclick=()=>source(editing.id).catch(report);
     if(editing){const button=element(iconButton("eye","预览草稿"));$(".architecture-draft-actions",root).prepend(button);button.onclick=()=>{const content=element(`<div>${stagePreview(editing)}</div>`);modal("候选草稿预览",content,{size:"wide"});wireStages(content,editing);};}
-    if(status.blocker)$("[data-blocker]",root).onclick=()=>app.showRun(status.blocker.run_id);
+    if(status.blocker?.run_id)$("[data-blocker]",root).onclick=()=>app.showRun(status.blocker.run_id);
     $("[data-create]",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{
       const name=$("select",root).value,template=await app.rpc("architectures.templates",{name}),id="architecture-"+crypto.randomUUID();
       await app.rpc("architectures.create",{definition:{id,project_id,name:names[name]},draft:template.graph});candidates.set(key,id);await refresh();notify("草稿已创建");

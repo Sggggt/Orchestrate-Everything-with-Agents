@@ -4,6 +4,7 @@ from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
+from secrets import token_urlsafe
 import shutil
 import sqlite3
 
@@ -11,6 +12,7 @@ from oea.contracts.errors import require
 from oea.migration.offline import _vault
 from oea.migration.source import file_sha256, inventory_files, verify_files
 from oea.storage.persistence import encode
+from oea.security.secrets import atomic_write
 
 INITIAL_V3_SCHEMA = "5622b6c8f0d62809640c0f9c6e2131b4845d7976dc0a3fe5a322dd64807827de"
 
@@ -26,7 +28,8 @@ def transition(original, source, destination, apply, check):
             "STATE_INTEGRITY", "Source database integrity needs review")
     report = {"format_version": "3.0", "source_protocol": "3.0", "source_schema_sha256": INITIAL_V3_SCHEMA,
               "applied": False, "changed": False, "ready_for_apply": True, "secrets": secrets, "table_counts": {},
-              "review_runs": [], "review_workflows": [], "checkpoint_policy": "archive; no automatic replay"}
+              "review_runs": [], "review_workflows": [], "checkpoint_policy": "archive; no automatic replay",
+              "control_credential_policy": "rotate in upgraded target"}
     def paths(value):
         if isinstance(value, dict):
             return {key: paths(child) for key, child in value.items()}
@@ -83,14 +86,18 @@ def transition(original, source, destination, apply, check):
         if apply:
             for item in files:
                 relative = Path(item["relative_path"])
+                if relative == Path("client-token"):
+                    continue
                 archived = len(relative.parts) == 1 and (relative.name.startswith(("oea.sqlite", "graphs.sqlite")) or relative.name == "migration-report.json")
                 copied = destination / "imported/protocol-3-initial" / relative if archived else destination / relative
                 copied.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source / relative, copied)
                 require(file_sha256(copied) == item["sha256"], "MIGRATION_SOURCE_CHANGED", "Copied bytes must match the snapshot")
+            if (source / "client-token").exists() or (source / "client.json").exists():
+                atomic_write(destination / "client-token", token_urlsafe(32).encode("utf-8"))
             copied_vault, copied_secrets = _vault(destination)
             require(copied_secrets["available"] and copied_vault == vault, "MIGRATION_SECRET_INVALID", "Copied vault could not be verified")
-            output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", "3.0"), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "1"), ("migration_complete", "true")])
+            output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", "3.0"), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "2"), ("migration_complete", "true")])
             report.update(applied=True, changed=True)
         check()
         verify_files(source, files)

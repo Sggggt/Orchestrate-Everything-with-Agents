@@ -132,8 +132,8 @@ class UpstreamTool:
     async def invoke(self, request):
         # Dispatch checks current grants again after any connection awaits.
         if request["run_id"] is not None:
-            owner = await self.registry.host.store.call(lambda db: one(db, "SELECT instance_id FROM runs WHERE id=?", (request["run_id"],)))
-            consumer = encode(["instance", owner["instance_id"]])
+            owner = await self.registry.host.store.call(lambda db: one(db, "SELECT r.instance_id,s.source FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE r.id=?", (request["run_id"],)))
+            consumer = encode(["application" if owner["source"] == "application" else "instance", owner["instance_id"]])
         else:
             owner = await self.registry.host.store.call(lambda db: one(db, "SELECT project_id,consumer_id FROM tool_intents WHERE id=?", (request["intent_id"],)))
             consumer = self.registry.controller_scope(owner["project_id"], owner["consumer_id"])
@@ -393,7 +393,7 @@ class UpstreamMCP:
         saved = await self.get(server_id)
         require(saved["definition"]["project_id"] in {None, project_id}, "PERMISSION_DENIED", "MCP service belongs to another project")
         await self.host.projects.get(project_id)
-        values = await self.host.store.call(lambda db: rows(db, "WITH discovered AS (SELECT json_extract(t.value,'$.spec.name') AS alias,json_extract(t.value,'$.upstream_name') AS tool_name FROM mcp_catalogs c,json_each(c.tools_json) t WHERE c.server_id=?) SELECT a.rowid AS position,a.id,a.run_id,a.intent_id,a.name,a.state,a.created_at,a.updated_at,a.error_json,i.agent_id,i.name AS instance_name,t.consumer_id,d.tool_name FROM actions a JOIN discovered d ON d.alias=a.name LEFT JOIN runs r ON r.id=a.run_id LEFT JOIN instances i ON i.id=r.instance_id LEFT JOIN tool_intents t ON t.id=a.intent_id WHERE COALESCE(i.project_id,t.project_id)=? AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?", (server_id, project_id, cursor, cursor, limit + 1)))
+        values = await self.host.store.call(lambda db: rows(db, "WITH discovered AS (SELECT json_extract(t.value,'$.spec.name') AS alias,json_extract(t.value,'$.upstream_name') AS tool_name FROM mcp_catalogs c,json_each(c.tools_json) t WHERE c.server_id=?) SELECT a.rowid AS position,a.id,a.run_id,a.intent_id,a.name,a.state,a.created_at,a.updated_at,a.error_json,i.agent_id,i.name AS instance_name,t.consumer_id,d.tool_name FROM actions a JOIN discovered d ON d.alias=a.name LEFT JOIN runs r ON r.id=a.run_id LEFT JOIN instances i ON i.id=r.instance_id LEFT JOIN sessions s ON s.id=i.session_id LEFT JOIN tool_intents t ON t.id=a.intent_id WHERE COALESCE(s.source,'platform')='platform' AND COALESCE(i.project_id,t.project_id)=? AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?", (server_id, project_id, cursor, cursor, limit + 1)))
         return {"items": [{key: value[key] for key in ("position", "id", "run_id", "intent_id", "name", "tool_name", "state", "created_at", "updated_at", "agent_id", "instance_name", "consumer_id")} | {"error": json.loads(value["error_json"]) if value["error_json"] else None} for value in values[:limit]], "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
     async def disconnect(self, server_id: str, project_id: str):
@@ -636,7 +636,8 @@ class UpstreamMCP:
         if consumer is None:
             context = operation_context.get() or {}
             consumer = self.controller_scope(definition.project_id, context.get("consumer_id") or "local")
-        key = server_id, revision, "shared" if definition.session_scope == "shared" else consumer
+        application = json.loads(consumer)[0] == "application"
+        key = server_id, revision, "shared" if definition.session_scope == "shared" and not application else consumer
         connection = self.connections.get(key)
         if connection is None or connection.task.done() or connection.stop.is_set():
             connection = self.connections[key] = Connection(self, definition, revision)
@@ -727,7 +728,7 @@ class UpstreamMCP:
             catalog = await self.host.store.call(lambda db: one(db, "SELECT tools_json FROM mcp_catalogs WHERE server_id=? AND revision=?", (binding.server_id, revision)))
             if catalog is None:
                 # Discovery uses the same instance-owned upstream session as calls.
-                await self._discover(binding.server_id, context.instance["project_id"], encode(["instance", context.instance["id"]]))
+                await self._discover(binding.server_id, context.instance["project_id"], encode(["application" if context.scope.source == "application" else "instance", context.instance["id"]]))
                 catalog = await self.host.store.call(lambda db: one(db, "SELECT tools_json FROM mcp_catalogs WHERE server_id=? AND revision=?", (binding.server_id, revision)))
             selected = [value for value in json.loads(catalog["tools_json"]) if (binding.tools is None or value["upstream_name"] in binding.tools)
                         and (definition.allowed_tools is None or value["upstream_name"] in definition.allowed_tools)]

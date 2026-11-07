@@ -72,14 +72,27 @@ class Runs:
         if instance["role"] == "manager":
             require(session["mode"] == "collaborative" and definition.manager is not None, "MANAGER_UNAVAILABLE", "Manager is not enabled")
             snapshot = manager_snapshot(snapshot)
-        snapshot = snapshot.model_copy(update={"workspace": snapshot.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])})
+        scope = self.host.applications.scope(db, instance["session_id"])
+        if scope.source == "application":
+            from oea.applications.execution import assemble
+            require(instance["role"] == "main" and not any((spec.parent_run_id, spec.budget_id, workflow_run_id, source_message_id, model_probe, architecture)),
+                    "PERMISSION_DENIED", "Application work cannot use platform coordination or shared budgets")
+            require(need(db, "application_conversations", scope.conversation_id)["closed_at"] is None,
+                    "CONVERSATION_CLOSED", "Conversation is closed to new work")
+            snapshot = assemble(snapshot, self.host.applications.grant(db, scope), ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
+        else:
+            snapshot = snapshot.model_copy(update={"workspace": snapshot.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])})
         if architecture:
             snapshot = snapshot.model_copy(update={"execution": snapshot.execution.model_copy(update={
                 "architecture": architecture, "graph": "default", "graph_version": "1", "program": ()})})
         if not model_probe:
             self.host.architectures.check_binding(db, snapshot)
             if snapshot.execution.architecture:
-                _, architecture = self.host.architectures._version(db, snapshot.execution.architecture, instance["project_id"])
+                owner, architecture = self.host.architectures._version(db, snapshot.execution.architecture, instance["project_id"])
+                if scope.source == "application":
+                    from oea.applications.execution import architecture_requires_trust
+                    require(not architecture_requires_trust(owner, json.loads(architecture["definition_json"])) or self.host.applications.grant(db, scope).trusted_extensions,
+                            "PERMISSION_DENIED", "Code extensions in an architecture require explicit application authorization")
                 graph_limit = json.loads(architecture["definition_json"]).get("max_steps", 512)
                 snapshot = snapshot.model_copy(update={"execution": snapshot.execution.model_copy(update={
                     "max_steps": min(snapshot.execution.max_steps or graph_limit, graph_limit)})})
@@ -382,8 +395,18 @@ class Runs:
         effective = {"max_steps": prior_limits.get("max_steps", agent_steps(snapshot.execution, json.loads(need(db, "budgets", run["budget_id"])["policy_json"]))), **requested_limits}
         limits_receipt = {"requested": requested_limits, "effective": effective,
                           "checkpoint": (json.loads(run["error_json"]).get("evidence_ref") or {}).get("checkpoint") if run["error_json"] else None}
+        scope = self.host.applications.scope(db, instance["session_id"])
+        if scope.source == "application":
+            from oea.applications.execution import assemble
+            require(source_message_id is None, "PERMISSION_DENIED", "Application work cannot resume from platform messages")
+            grant = self.host.applications.grant(db, scope)
+            project = need(db, "projects", instance["project_id"])
+            defaults = ProjectWorkspace.model_validate_json(project["workspace_json"])
+            snapshot = assemble(snapshot, grant, defaults, project["folder"])
         if refresh_model or refresh_capabilities:
             current = AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
+            if scope.source == "application":
+                current = assemble(current, grant, defaults, project["folder"])
             require(instance["role"] != "manager" or current.manager is not None, "MANAGER_UNAVAILABLE", "Manager model was removed")
             changes = {}
             if refresh_model:
@@ -391,8 +414,10 @@ class Runs:
             if refresh_capabilities:
                 db.execute("DELETE FROM run_mcp_bindings WHERE run_id=?", (run_id,))
                 capability = manager_snapshot(current) if instance["role"] == "manager" else current
-                project = need(db, "projects", instance["project_id"])
-                workspace = capability.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
+                workspace = capability.workspace
+                if scope.source == "platform":
+                    project = need(db, "projects", instance["project_id"])
+                    workspace = capability.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
                 changes.update(instructions=capability.instructions, tools=capability.tools, skills=capability.skills,
                                context=capability.context, workspace=workspace,
                                communication=capability.communication)

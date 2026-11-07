@@ -5,7 +5,7 @@ CREATE TABLE agent_architectures(id TEXT PRIMARY KEY,project_id TEXT NOT NULL RE
 CREATE INDEX agent_architectures_project ON agent_architectures(project_id);
 CREATE TABLE architecture_versions(architecture_id TEXT NOT NULL REFERENCES agent_architectures(id),version INTEGER NOT NULL,draft_revision INTEGER NOT NULL,definition_json TEXT NOT NULL,dependencies_json TEXT NOT NULL,preview_json TEXT NOT NULL,sha256 TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(architecture_id,version),UNIQUE(architecture_id,draft_revision));
 CREATE TABLE architecture_steps(run_id TEXT NOT NULL REFERENCES runs(id),scope TEXT NOT NULL,node_id TEXT NOT NULL,activation TEXT NOT NULL,state TEXT NOT NULL,output_json TEXT,error_json TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(run_id,scope,node_id,activation));
-CREATE TABLE sessions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),name TEXT NOT NULL,mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','collaborative')),epoch INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,archived INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE sessions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),name TEXT NOT NULL,mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','collaborative')),epoch INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,archived INTEGER NOT NULL DEFAULT 0,source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application')));
 CREATE TABLE instances(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),session_id TEXT NOT NULL REFERENCES sessions(id),agent_id TEXT NOT NULL REFERENCES agent_definitions(id),name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('main','manager')),config_json TEXT NOT NULL,workspace_json TEXT NOT NULL,active_run_id TEXT,created_at INTEGER NOT NULL);
 CREATE INDEX instances_session ON instances(session_id,agent_id,created_at);
 CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role);
@@ -72,7 +72,7 @@ CREATE TABLE workflow_step_failures(step_id TEXT NOT NULL REFERENCES workflow_st
 CREATE TABLE workflow_nodes(workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),node_id TEXT NOT NULL,state TEXT NOT NULL,head_step_id TEXT REFERENCES workflow_steps(id),error_json TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(workflow_run_id,node_id));
 CREATE TABLE workflow_map_members(step_id TEXT NOT NULL REFERENCES workflow_steps(id),ordinal INTEGER NOT NULL,instance_id TEXT REFERENCES instances(id),run_id TEXT REFERENCES runs(id),error_json TEXT,PRIMARY KEY(step_id,ordinal));
 CREATE TABLE workflow_resumptions(id TEXT PRIMARY KEY,workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),idempotency_key TEXT NOT NULL,interrupt_id TEXT,input_json TEXT NOT NULL,input_hash TEXT NOT NULL,created_at INTEGER NOT NULL,checkpoint_id TEXT,repair_steps_json TEXT NOT NULL DEFAULT '[]',applied_at INTEGER,execution_limits_json TEXT NOT NULL DEFAULT '{}',failure_json TEXT,UNIQUE(workflow_run_id,idempotency_key));
-CREATE TABLE events(position INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,project_id TEXT,session_id TEXT,instance_id TEXT,run_id TEXT,data_json TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE events(position INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,project_id TEXT,session_id TEXT,instance_id TEXT,run_id TEXT,data_json TEXT NOT NULL,created_at INTEGER NOT NULL,source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application')));
 CREATE INDEX events_session ON events(session_id,position);
 CREATE INDEX events_project ON events(project_id,position);
 CREATE INDEX events_run ON events(run_id,kind,position);
@@ -95,3 +95,14 @@ CREATE INDEX imported_transcript_instance ON imported_transcript(instance_id,sou
 CREATE TABLE imported_links(migration_id TEXT NOT NULL REFERENCES imported_migrations(id),table_name TEXT NOT NULL,source_id TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,PRIMARY KEY(migration_id,table_name,source_id,target_type));
 CREATE TABLE imported_files(migration_id TEXT NOT NULL REFERENCES imported_migrations(id),relative_path TEXT NOT NULL,sha256 TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(migration_id,relative_path));
 CREATE TABLE run_tool_state(run_id TEXT NOT NULL REFERENCES runs(id),name TEXT NOT NULL,contract_id TEXT REFERENCES tool_contracts(id),loaded INTEGER NOT NULL,pinned INTEGER NOT NULL DEFAULT 0,loaded_step INTEGER NOT NULL,last_used_step INTEGER,revision INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(run_id,name));
+
+-- Application ownership (OAP 1.0).
+CREATE INDEX events_source_project ON events(source,project_id,position);
+CREATE TABLE applications(id TEXT PRIMARY KEY,name TEXT NOT NULL,token_hash TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,removed INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 1,credential_revision INTEGER NOT NULL DEFAULT 1,revoked_at INTEGER,created_at INTEGER NOT NULL);
+CREATE TABLE application_bindings(id TEXT PRIMARY KEY,app_id TEXT NOT NULL REFERENCES applications(id),project_id TEXT NOT NULL REFERENCES projects(id),agent_id TEXT NOT NULL REFERENCES agent_definitions(id),grant_json TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,revision INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,UNIQUE(id,app_id));
+CREATE INDEX application_bindings_application ON application_bindings(app_id,enabled);
+CREATE INDEX application_bindings_project ON application_bindings(project_id,agent_id);
+CREATE TABLE application_conversations(id TEXT PRIMARY KEY,app_id TEXT NOT NULL REFERENCES applications(id),binding_id TEXT NOT NULL,session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id),instance_id TEXT UNIQUE REFERENCES instances(id),name TEXT NOT NULL,closed_at INTEGER,created_at INTEGER NOT NULL,FOREIGN KEY(binding_id,app_id) REFERENCES application_bindings(id,app_id));
+CREATE INDEX application_conversations_application ON application_conversations(app_id,created_at);
+CREATE TABLE application_requests(app_id TEXT NOT NULL REFERENCES applications(id),operation TEXT NOT NULL,target TEXT NOT NULL,idempotency_key TEXT NOT NULL,input_hash TEXT NOT NULL,result_json TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(app_id,operation,target,idempotency_key));
+CREATE INDEX sessions_source ON sessions(project_id,source);

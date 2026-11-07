@@ -76,8 +76,13 @@ function Show-Workspace([string]$Url) {
     Write-Host "Workspace: $Url"
     Write-Host "Data:      $oeaDataRoot"
     if (-not $NoBrowser) {
-        try { Start-Process -FilePath $Url }
-        catch { Write-Warning "Open $Url in your browser." }
+        $oeaBrowserToken = (Get-Content -LiteralPath $oeaTokenPath -Raw -Encoding UTF8).Trim()
+        try {
+            $oeaLogin = Invoke-RestMethod -Uri "$Url/api/browser-login" -Method Post -Headers @{ Authorization = "Bearer $oeaBrowserToken" } -TimeoutSec 10 -MaximumRedirection 0
+        } catch { throw "Protected browser login is unavailable. Confirm that this Host has been upgraded before reopening it." }
+        $oeaBrowserUrl = "$Url/#oea-login=$([Uri]::EscapeDataString($oeaLogin.result.ticket))"
+        try { Start-Process -FilePath $oeaBrowserUrl }
+        catch { Write-Warning "Run 'oea open --print-url' to obtain a fresh single-use login link." }
     }
 }
 # Only authenticate against loopback metadata owned by this data directory.

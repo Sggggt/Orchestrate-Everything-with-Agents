@@ -28,13 +28,15 @@ def assert_switchable(db, agent_id):
 
 
 def switch_blocker(db, agent_id):
-    pending = one(db, "SELECT r.id,r.state FROM runs r JOIN instances i ON i.id=r.instance_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
+    pending = one(db, "SELECT r.id,r.state,s.source FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
     if pending:
-        return {"run_id": pending["id"], "state": pending["state"]}
-    action = one(db, "SELECT a.id,a.run_id,a.state FROM actions a JOIN runs r ON r.id=a.run_id JOIN instances i ON i.id=r.instance_id WHERE i.agent_id=? AND a.state IN ('intent','dispatched','needs_review') LIMIT 1", (agent_id,))
+        return {"source": "application", "pending": True} if pending["source"] == "application" else {"run_id": pending["id"], "state": pending["state"]}
+    action = one(db, "SELECT a.id,a.run_id,a.state,s.source FROM actions a JOIN runs r ON r.id=a.run_id JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND a.state IN ('intent','dispatched','needs_review') LIMIT 1", (agent_id,))
     if action:
-        return {"action_id": action["id"], "run_id": action["run_id"], "state": action["state"]}
-    usage = one(db, "SELECT u.id,u.run_id,u.state FROM usage u JOIN runs r ON r.id=u.run_id JOIN instances i ON i.id=r.instance_id WHERE i.agent_id=? AND u.state!='settled' LIMIT 1", (agent_id,))
+        return {"source": "application", "pending": True} if action["source"] == "application" else {"action_id": action["id"], "run_id": action["run_id"], "state": action["state"]}
+    usage = one(db, "SELECT u.id,u.run_id,u.state,s.source FROM usage u JOIN runs r ON r.id=u.run_id JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND u.state!='settled' LIMIT 1", (agent_id,))
+    if usage and usage["source"] == "application":
+        return {"source": "application", "pending": True}
     return {"usage_id": usage["id"], "run_id": usage["run_id"], "state": usage["state"]} if usage else None
 
 

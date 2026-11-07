@@ -6,6 +6,18 @@ from pathlib import Path
 from oea.contracts.errors import require
 
 
+def directory_intersection(granted, available):
+    """Intersect normalized roots; pinned roots must not follow replacement links."""
+    result = []
+    for path in granted:
+        for source in available:
+            if path.is_relative_to(source):
+                result.append(path)
+            elif source.is_relative_to(path):
+                result.append(source)
+    return tuple(dict.fromkeys(result))
+
+
 def require_local_state(path: Path):
     if os.name == "nt":
         import ctypes

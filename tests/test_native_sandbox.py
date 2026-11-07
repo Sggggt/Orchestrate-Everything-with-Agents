@@ -15,6 +15,21 @@ from oea.contracts.errors import RuntimeFault
 
 
 class NativeProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exited_component_with_partial_control_frame_does_not_claim_stop_or_hang(self):
+        component = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", "pass",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'{')
+        writer, server = Mock(wait_closed=AsyncMock()), Mock(wait_closed=AsyncMock())
+        process = NativeProcess(component, reader, writer, server)
+        process.task = asyncio.create_task(process.finish())
+        with self.assertRaises(RuntimeFault) as fault:
+            await asyncio.wait_for(process.wait(), 3)
+        self.assertEqual(fault.exception.code, "SANDBOX_CONTROL_LOST")
+        self.assertIsNone(process.terminal)
+        self.assertIsNone(process.returncode)
+        self.assertEqual(component.returncode, 0)
+
     async def test_terminal_receipt_closes_component_stdin_before_reaping(self):
         component = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", "import sys; sys.stdin.buffer.read()",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)

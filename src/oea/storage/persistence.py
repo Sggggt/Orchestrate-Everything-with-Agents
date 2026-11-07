@@ -47,16 +47,18 @@ def event(db, kind, *, project_id=None, session_id=None, instance_id=None, run_i
     if operation:
         payload["operation"] = operation
     if project_id is None and run_id:
-        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at) SELECT ?,i.project_id,i.session_id,i.id,r.id,?,? FROM runs r JOIN instances i ON i.id=r.instance_id WHERE r.id=?",
+        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at,source) SELECT ?,i.project_id,i.session_id,i.id,r.id,?,?,s.source FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE r.id=?",
             (kind, encode(payload), now_ms(), run_id))
     elif project_id is None and intent_id:
         db.execute("INSERT INTO events(kind,project_id,data_json,created_at) SELECT ?,project_id,?,? FROM tool_intents WHERE id=?", (kind, encode(payload), now_ms(), intent_id))
     elif project_id is None and session_id:
-        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at) SELECT ?,project_id,id,?,?,?,? FROM sessions WHERE id=?",
+        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at,source) SELECT ?,project_id,id,?,?,?,?,source FROM sessions WHERE id=?",
             (kind, instance_id, run_id, encode(payload), now_ms(), session_id))
     else:
-        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at) VALUES(?,?,?,?,?,?,?)",
-                   (kind, project_id, session_id, instance_id, run_id, encode(payload), now_ms()))
+        db.execute("INSERT INTO events(kind,project_id,session_id,instance_id,run_id,data_json,created_at,source) VALUES(?,?,?,?,?,?,?,"
+                   "COALESCE((SELECT source FROM sessions WHERE id=COALESCE(?,(SELECT session_id FROM instances WHERE id=?),"
+                   "(SELECT i.session_id FROM runs r JOIN instances i ON i.id=r.instance_id WHERE r.id=?))),'platform'))",
+                   (kind, project_id, session_id, instance_id, run_id, encode(payload), now_ms(), session_id, instance_id, run_id))
     return db.last_insert_rowid()
 
 
@@ -102,7 +104,7 @@ class Store:
             self.db.execute(script)
             self.db.execute("INSERT INTO metadata VALUES('protocol_version',?)", (PROTOCOL_VERSION,))
             self.db.execute("INSERT INTO metadata VALUES('schema_sha256',?)", (checksum,))
-            self.db.execute("INSERT INTO metadata VALUES('schema_revision','1')")
+            self.db.execute("INSERT INTO metadata VALUES('schema_revision','2')")
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")

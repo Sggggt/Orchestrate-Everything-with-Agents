@@ -158,6 +158,40 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
             await self.host.mcp.discover("business", "another-project")
         self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
 
+    async def test_application_instances_never_share_a_shared_upstream_session(self):
+        from oea import ApplicationBinding, ApplicationGrant
+        from oea.contracts.applications import ApplicationRun, ConversationCreate
+        class CurrentTurnModel(ToolModel):
+            async def complete(inner, model, messages, **options):
+                position = max(index for index, message in enumerate(messages) if message["role"] == "user")
+                return await super().complete(model, [messages[0], *messages[position:]], **options)
+        self.host.model_api = CurrentTurnModel()
+        definition = await self.configure()
+        async def result_count(run):
+            self.assertEqual((await self.host.runs.result(run.id, timeout=15)).text, "Observed")
+            receipt = await self.host.store.call(lambda db: one(db, "SELECT result_json FROM actions WHERE run_id=? AND name LIKE 'mcp_%'", (run.id,)))
+            return content(json.loads(receipt["result_json"]))["count"]
+        self.assertEqual(await result_count(await self.submit("ordinary-one")), 1)
+        self.assertEqual(await result_count(await self.submit("ordinary-two")), 2)
+        owners = []
+        for name in ("First", "Second"):
+            app_id = (await self.host.applications.create(name))["application"]["id"]
+            binding = await self.host.applications.bind(ApplicationBinding(app_id=app_id, project_id="p", agent_id="worker",
+                grant=ApplicationGrant(tools=definition.tools)))
+            conversation = await self.host.oap.create_conversation(app_id, ConversationCreate(binding_id=binding["id"]), "conversation")
+            run = await self.host.oap.submit(app_id, conversation["id"], ApplicationRun(input="Use the tool"), "first")
+            self.assertEqual(await result_count(run), 1)
+            owners.append((app_id, binding["id"], conversation["id"]))
+        app_id, binding_id, conversation_id = owners[0]
+        repeated = await self.host.oap.submit(app_id, conversation_id, ApplicationRun(input="Use the tool again"), "second")
+        self.assertEqual(await result_count(repeated), 2)
+        another = await self.host.oap.create_conversation(app_id, ConversationCreate(binding_id=binding_id), "another")
+        independent = await self.host.oap.submit(app_id, another["id"], ApplicationRun(input="Use the tool"), "first")
+        self.assertEqual(await result_count(independent), 1)
+        history = await self.host.mcp.calls("business", "p", limit=100)
+        self.assertEqual(len(history["items"]), 2)
+        self.assertIsNone(history["cursor"])
+
     async def test_revoke_after_schema_was_seen_prevents_external_invocation(self):
         definition = await self.configure()
         async def revoke(name):

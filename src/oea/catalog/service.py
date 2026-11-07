@@ -71,6 +71,9 @@ class Projects:
             return need(db, "projects", project_id)
         value = await self.host.store.call(write, transaction=True)
         if workspace is not None:
+            for context in self.host.active.values():
+                if context.scope.source == "application" and context.instance["project_id"] == project_id:
+                    context.application_project = (workspace, value["folder"], value["revision"])
             await self.host.revalidate_commands(project_id=project_id)
         self.host.notify()
         return self.view(value)
@@ -185,8 +188,9 @@ class Agents:
                 require(expected_revision in {saved["revision"], saved["revision"] - 1}, "REVISION_CONFLICT", "Agent configuration changed")
                 return saved["revision"], True
             require(expected_revision == saved["revision"], "REVISION_CONFLICT", "Agent configuration changed")
-            pending = one(db, "SELECT r.id,r.state FROM runs r JOIN instances i ON i.id=r.instance_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
-            require(not pending, "AGENT_IN_USE", "Finish or cancel the Agent's pending work and inspect unresolved actions before deletion", details=pending or {})
+            pending = one(db, "SELECT r.id,r.state,s.source FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
+            detail = ({"source": "application", "pending": True} if pending["source"] == "application" else {"id": pending["id"], "state": pending["state"]}) if pending else {}
+            require(not pending, "AGENT_IN_USE", "Finish or cancel the Agent's pending work and inspect unresolved actions before deletion", details=detail)
             revision = saved["revision"] + 1
             definition = definition.model_copy(update={"enabled": False, "removed": True})
             db.execute("UPDATE agent_definitions SET config_json=?,revision=?,updated_at=? WHERE id=?", (definition.model_dump_json(), revision, now_ms(), agent_id))
@@ -325,18 +329,19 @@ class Sessions:
     def __init__(self, host):
         self.host = host
 
-    def _create(self, db, project_id, name="Session", *, session_id=None):
+    def _create(self, db, project_id, name="Session", *, session_id=None, source="platform"):
         name = name.strip()
         require(0 < len(name) <= 80, "INVALID_REQUEST", "Session name must contain 1 to 80 characters")
         identity = session_id or new_id("session")
         need(db, "projects", project_id)
         previous = one(db, "SELECT * FROM sessions WHERE id=?", (identity,))
         if previous:
-            require(previous["project_id"] == project_id and previous["name"] == name,
+            require(previous["project_id"] == project_id and previous["name"] == name and previous["source"] == source,
                     "IDEMPOTENCY_CONFLICT", "Session identity has different configuration")
             return previous
-        db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES(?,?,?,?)", (identity, project_id, name, now_ms()))
-        self.host.boards._create(db, project_id, "General", "session", identity)
+        db.execute("INSERT INTO sessions(id,project_id,name,created_at,source) VALUES(?,?,?,?,?)", (identity, project_id, name, now_ms(), source))
+        if source == "platform":
+            self.host.boards._create(db, project_id, "General", "session", identity)
         event(db, "session.created", project_id=project_id, session_id=identity)
         return need(db, "sessions", identity)
 
@@ -397,7 +402,7 @@ class Sessions:
         require(type(cursor) is int and 0 <= cursor < 2**63 and type(limit) is int and 1 <= limit <= 100, "INVALID_REQUEST", "Read a bounded session page")
         def read(db):
             need(db, "projects", project_id)
-            query = "SELECT rowid AS position,* FROM sessions WHERE project_id=? AND rowid>?"
+            query = "SELECT rowid AS position,* FROM sessions WHERE project_id=? AND source='platform' AND rowid>?"
             params = [project_id, cursor]
             if archived is not None:
                 query += " AND archived=?"
@@ -426,12 +431,14 @@ class Instances:
 
     def _create(self, db, session_id, agent_id, *, name=None, role="main"):
         require(role in {"main", "manager"}, "INVALID_REQUEST", "Choose main or manager")
-        identity = new_id("instance")
+        scope = self.host.applications.scope(db, session_id)
+        from oea.applications.service import application_id
+        identity = application_id("inst") if scope.source == "application" else new_id("instance")
         name = identity if name is None else name.strip()
         require(0 < len(name) <= 256, "INVALID_REQUEST", "Instance name must contain 1 to 256 characters")
         session = need(db, "sessions", session_id)
         require(not session["archived"], "SESSION_ARCHIVED", "Restore the session before creating an instance")
-        need(db, "projects", session["project_id"])
+        project = need(db, "projects", session["project_id"])
         current = need(db, "agent_definitions", agent_id)
         definition = AgentDefinition.model_validate_json(current["config_json"])
         require(definition.project_id in {None, session["project_id"]}, "PROJECT_MISMATCH", "Agent belongs to another project")
@@ -442,12 +449,21 @@ class Instances:
         previous = one(db, "SELECT * FROM instances WHERE session_id=? AND agent_id=? AND name=? AND role=?", (session_id, agent_id, name, role))
         if previous:
             return previous
+        if scope.source == "application":
+            from oea.applications.execution import assemble
+            binding = need(db, "application_bindings", scope.binding_id)
+            require(role == "main" and binding["agent_id"] == agent_id, "PERMISSION_DENIED", "Application instances use their single authorized Agent")
+            conversation = need(db, "application_conversations", scope.conversation_id)
+            require(conversation["instance_id"] is None and conversation["closed_at"] is None,
+                    "PERMISSION_DENIED", "Application conversation cannot create another instance")
+            definition = assemble(definition, self.host.applications.grant(db, scope), ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
         config = definition.model_dump(mode="json")
-        if not config["workspace"]["project"]:
-            config["workspace"]["project"] = need(db, "projects", session["project_id"])["folder"]
+        if scope.source == "platform" and not config["workspace"]["project"]:
+            config["workspace"]["project"] = project["folder"]
         db.execute("INSERT INTO instances VALUES(?,?,?,?,?,?,?,?,NULL,?)",
                    (identity, session["project_id"], session_id, agent_id, name, role, encode(config), "{}", now_ms()))
-        self.host.boards._create(db, session["project_id"], "Inbox", "inbox", session_id, identity)
+        if scope.source == "platform":
+            self.host.boards._create(db, session["project_id"], "Inbox", "inbox", session_id, identity)
         event(db, "instance.created", project_id=session["project_id"], session_id=session_id, instance_id=identity,
               data={"agent_id": agent_id, "role": role})
         return need(db, "instances", identity)

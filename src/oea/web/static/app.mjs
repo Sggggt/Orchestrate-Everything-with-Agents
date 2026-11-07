@@ -4,12 +4,17 @@ import { shell,overview,workspacePages } from "./workbench-shell.mjs";
 import { bindWorkbench,renderAgentCatalog,renderArtifactsPage,renderConversation,disposeConversation,openInstance,openAgent } from "./workbench-pages.mjs";
 import { manageMCP } from "./mcp-settings.mjs";
 import { manageSkills } from "./skill-settings.mjs";
+import { manageApplications } from "./application-settings.mjs";
+
 import { renderChat,refreshChat,disposeChat } from "./chat.mjs";
 import { renderRuns,showRun } from "./runs.mjs";
 import { renderWorkflows } from "./workflows.mjs";
 import { transitionView } from "./motion.mjs";
 
-export const app={state:{page:({workspace:"overview",settings:"agent-settings",agents:"agents",mcp:"mcp",skills:"skills",workflows:"workflows"}[location.hash.slice(1)]||"overview"),projects:[],agents:[],instances:[],sessions:[],project:null,session:null,schema:null,status:null,epoch:0,openTabs:[],selectedInstance:null,runs:[],artifacts:[],summary:{},unread:null,mcp:[],skills:[]},rpc};
+let browserTicket=new URLSearchParams(location.hash.slice(1)).get("oea-login");
+if(browserTicket)history.replaceState(null,"",location.pathname+location.search+"#workspace");
+
+export const app={state:{page:({workspace:"overview",settings:"agent-settings",agents:"agents",mcp:"mcp",skills:"skills",workflows:"workflows",applications:"applications"}[location.hash.slice(1)]||"overview"),projects:[],agents:[],instances:[],sessions:[],project:null,session:null,schema:null,status:null,epoch:0,openTabs:[],selectedInstance:null,runs:[],artifacts:[],summary:{},unread:null,mcp:[],skills:[]},rpc};
 app.runListeners=new Set();
 let stream=null,refreshing=false,refreshAgain=false,sessionsChanged=false;
 function frame(preserve=false) {
@@ -78,6 +83,7 @@ app.render=async()=>{
   else if(s.page==="agents")renderAgentCatalog(app,root);
   else if(s.page==="mcp")await manageMCP(app,root);
   else if(s.page==="skills")await manageSkills(app,root);
+  else if(s.page==="applications")await manageApplications(app,root);
   else if(s.page==="workflows")await renderWorkflows(app,root);
   else if(s.page==="artifacts")renderArtifactsPage(app,root);
   else if(s.page==="conversation")await renderConversation(app,root);
@@ -130,6 +136,7 @@ async function scheduleRefresh(fact){
 }
 function createProject(){const form=element(`<form><div class="field"><label for="project-name">项目名称</label><input id="project-name" required maxlength="80"></div><div class="field"><label for="project-folder">项目原件目录（可选）</label><input id="project-folder" title="原件默认只读"></div><p>${iconButton("plus","创建项目",{type:"submit",className:"primary"})}</p></form>`);const close=modal("新建项目",form);form.onsubmit=async event=>{event.preventDefault();try{const project=await rpc("projects.create",{name:$("#project-name",form).value,folder:$("#project-folder",form).value||null});app.state.projects.push(project);close();await loadProject(project.id);}catch(error){notify(error.message,true);}};}
 function createSession(){if(!app.state.project)return;const form=element(`<form><div class="field"><label for="session-name">会话名称</label><input id="session-name" required maxlength="80" placeholder="例如：本轮开发协作"></div><p>${iconButton("plus","创建会话",{type:"submit",className:"primary"})}</p></form>`);const close=modal("新建会话",form);form.onsubmit=async event=>{event.preventDefault();try{const session=await rpc("sessions.create",{project_id:app.state.project.id,name:$("#session-name",form).value});localStorage.setItem("oea-session:"+app.state.project.id,session.id);close();await loadProject(app.state.project.id);}catch(error){notify(error.message,true);}};}
-async function boot(){try{const [schema,status,projects]=await Promise.all([rpc("agents.schema"),rpc("host.status"),rpc("projects.list",{limit:100})]);Object.assign(app.state,{schema,status,projects:projects.items,projectCursor:projects.cursor});await loadProject(projects.items.find(value=>value.id===localStorage.getItem("oea-project"))?.id||projects.items[0]?.id);}catch(error){$("#app").innerHTML=empty("暂时无法连接工作区",error.message);}}
+async function boot(){try{if(browserTicket){const ticket=browserTicket;browserTicket=null;const response=await fetch("/api/browser-login/redeem",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket})}),value=await response.json();if(!response.ok||value.error){const error=new Error(value.error?.safe_message||"Browser login failed");error.code=value.error?.code||"PERMISSION_DENIED";throw error;}}const [schema,status,projects]=await Promise.all([rpc("agents.schema"),rpc("host.status"),rpc("projects.list",{limit:100})]);Object.assign(app.state,{schema,status,projects:projects.items,projectCursor:projects.cursor});await loadProject(projects.items.find(value=>value.id===localStorage.getItem("oea-project"))?.id||projects.items[0]?.id);}catch(error){$("#app").innerHTML=error.code==="PERMISSION_DENIED"?empty("请从本机启动器打开工作区","运行 oea open，或使用 Start-Workspace 启动器获取新的登录链接。") : empty("暂时无法连接工作区",error.message);}}
 window.addEventListener("pagehide",()=>{stream?.close();disposeConversation();disposeChat();});
+window.addEventListener("hashchange",()=>{if(new URLSearchParams(location.hash.slice(1)).has("oea-login"))location.reload();});
 window.addEventListener("keydown",event=>{if(event.key==="Escape"&&app.state.mobileNavigationOpen)$(".nav-scrim")?.click();if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();if(!$(".v2-dialog-backdrop"))$('[data-action="search"]')?.click();}});boot();

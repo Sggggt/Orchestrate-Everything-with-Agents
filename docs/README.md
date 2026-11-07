@@ -16,6 +16,7 @@ Start with the **[User Guide](user-guide.md)** or **[中文用户指南](user-gu
 | [Result requirements and execution evidence](execution-quality.md) | Delivery checks, retained partial results, stage timings and classified model errors |
 | [Operations and guidance](operations.md) | Active diagnostics, passive receiving, Agent reports and checked guidance |
 | [API](api.md) | HTTP, RPC, events and transport contracts |
+| [Applications and OAP](applications/README.md) | Application identities, Agent grants, isolated conversations and the application client |
 | [Architecture](architecture.md) | Runtime, persistence, execution and trust boundaries |
 | [Brand](brand.md) | Name, logo and visual identity |
 

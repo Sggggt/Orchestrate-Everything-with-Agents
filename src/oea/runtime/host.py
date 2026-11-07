@@ -9,6 +9,9 @@ from pathlib import Path
 
 from oea.tools.gateway import ToolGateway
 from oea.artifacts.service import Artifacts
+from oea.applications.service import Applications
+from oea.applications.business import ApplicationBusiness
+from oea.applications.access import PlatformAccess
 from oea.budgets.service import Budgets
 from oea.catalog.service import Agents, Instances, Projects, Sessions, need
 from oea.contracts.configuration import AgentDefinition, PROTOCOL_VERSION
@@ -61,6 +64,8 @@ class Host:
                                  authorize_intent=self.authorize_intent, on_intent_settle=self.on_intent_settle)
         self.projects, self.agents, self.sessions, self.instances = Projects(self), Agents(self), Sessions(self), Instances(self)
         self.runs, self.artifacts = Runs(self), Artifacts(self)
+        self.applications = Applications(self)
+        self.oap = ApplicationBusiness(self)
         self.messages, self.boards = Messages(self), Boards(self)
         self.coordination, self.dependencies = Coordination(self), RunDependencies(self)
         self.events_service = Events(self)
@@ -76,7 +81,8 @@ class Host:
         self.architectures = Architectures(self)
         from oea.orchestration.graphs import compile_agent_graph
         self.agent_graphs.register("default", compile_agent_graph, version="1")
-        self.registry = OperationRegistry()
+        self.access = PlatformAccess(self)
+        self.registry = OperationRegistry(authorize=self.access.guard)
         self.file_writes = FileWrites()
         self.command_sessions = CommandSessions(self.root / "commands", on_settle=self._command_settled)
         self.saver_scope = self.saver = self.graph = None
@@ -100,6 +106,8 @@ class Host:
                 self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "command", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread", "candidates", "candidate"})
         for name in ("send", "get", "list", "mark_read", "unread"):
             self.registry.register("messages." + name, getattr(self.messages, name), read_only=name in {"get", "list", "unread"})
+        for name in ("create", "get", "list", "rotate_credential", "set_enabled", "remove", "bind", "bindings"):
+            self.registry.register("applications." + name, getattr(self.applications, name), read_only=name in {"get", "list", "bindings"})
         self.registry.register("host.status", self.status, read_only=True)
         self.registry.register("host.describe", self.describe, read_only=True)
         self.registry.register("host.guide", self.guide, read_only=True)
@@ -131,6 +139,7 @@ class Host:
                 self.model_api = ModelAPI(self.transport, secret=self.secret, redact=self.redact)
             definitions = await self.store.call(lambda db: rows(db, "SELECT config_json FROM agent_definitions"))
             self.definitions = {definition.id: definition for definition in (AgentDefinition.model_validate_json(row["config_json"]) for row in definitions) if not definition.removed}
+            await self.applications.open()
             await self.mcp.open()
             await self.skills.open()
             self.saver_scope = AsyncSqliteSaver.from_conn_string(str(self.root / "graphs.sqlite"))
@@ -350,6 +359,9 @@ class Host:
         self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
+        if context.scope.source == "application":
+            require(self.applications.current_grant(context.scope).model, "PERMISSION_DENIED", "Application model authorization was revoked")
+            current = context.current_definition()
         model = current.model
         summary_model = current.summary_model
         if context.instance["role"] == "manager":
@@ -373,6 +385,8 @@ class Host:
         self.assert_project_available(context.instance["project_id"])
         current = self.definitions.get(context.instance["agent_id"])
         require(current is not None and current.enabled, "AGENT_DISABLED", "Agent is disabled")
+        if context.scope.source == "application":
+            current = context.current_definition()
         if context.instance["role"] == "manager":
             session = await self.sessions.get(context.instance["session_id"])
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager is no longer enabled")
@@ -411,26 +425,37 @@ class Host:
         paths = context.paths
         project = await self.projects.get(context.instance["project_id"])
         from oea.contracts.configuration import ProjectWorkspace
-        current_workspace = current.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
+        if context.scope.source == "application":
+            if context.application_project[2] != project["revision"]:
+                context.application_project = (ProjectWorkspace.model_validate(project["workspace"]), project["folder"], project["revision"])
+            current_workspace = context.current_definition().workspace
+        else:
+            current_workspace = current.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]), project["folder"])
         from oea.workspace.environment import intersect_workspace
         paths, settings = intersect_workspace(paths, context.definition.workspace, current_workspace)
         if context.deadline is not None:
             settings = settings.model_copy(update={"command_timeout_seconds": min(settings.command_timeout_seconds, max(.001, (context.deadline - now_ms()) / 1000))})
         return paths, settings
 
-    async def revalidate_commands(self, *, agent_id=None, project_id=None):
+    async def revalidate_commands(self, *, agent_id=None, project_id=None, app_id=None, binding_id=None):
         """Configuration changes revoke affected live command environments."""
         for owner in tuple(self.command_sessions.live.values()):
             run_id = owner["record"]["run_id"]
             context = self.active.get(run_id)
-            if context is None or (agent_id and context.instance["agent_id"] != agent_id) or (project_id and context.instance["project_id"] != project_id):
+            if context is None or (agent_id and context.instance["agent_id"] != agent_id) or (project_id and context.instance["project_id"] != project_id) or (app_id and context.scope.app_id != app_id) or (binding_id and context.scope.binding_id != binding_id):
                 continue
             saved = self.definitions[context.instance["agent_id"]]
             if not saved.enabled or (context.instance["role"] == "manager" and saved.manager is None):
                 await self.command_sessions.stop(owner, "permission_changed")
                 continue
-            current = context.current_definition()
-            paths, settings = await self.resolve_workspace(run_id)
+            try:
+                current = context.current_definition()
+                paths, settings = await self.resolve_workspace(run_id)
+            except RuntimeFault as error:
+                if error.code not in {"PERMISSION_DENIED", "REQUIRED_SKILL_UNAVAILABLE"}:
+                    raise
+                await self.command_sessions.stop(owner, "permission_changed")
+                continue
             from oea.workspace.environment import ExecutionEnvironment
             changed = owner["record"]["environment"]["revision"] != ExecutionEnvironment(paths, settings).describe()["revision"]
             if changed or not current.enabled or "exec_command" not in current.tools.local:
@@ -481,19 +506,24 @@ class Host:
             policy = json.loads(budget["policy_json"])
             deadline = started + policy["max_elapsed_seconds"] * 1000
             event(db, "run.started", project_id=instance["project_id"], session_id=instance["session_id"], instance_id=instance["id"], run_id=run_id)
-            return run, instance, resumption, deadline, policy
+            scope = self.applications.scope(db, instance["session_id"])
+            project = need(db, "projects", instance["project_id"]) if scope.source == "application" else None
+            return run, instance, resumption, deadline, policy, scope, project
 
         claimed = await self.store.call(claim, transaction=True)
         if claimed is None:
             return
-        run, instance, resumption, deadline, budget_policy = claimed
+        run, instance, resumption, deadline, budget_policy, scope, project = claimed
         graph = config = None
         try:
             definition = AgentDefinition.model_validate_json(run["config_json"])
-            graph = await self.agent_graphs.resolve_execution(definition.execution, instance["project_id"])
-            paths = WorkspacePaths.prepare(definition.workspace, instance["id"], run_id, self.root, binding=json.loads(instance["workspace_json"]))
+            if scope.source == "application":
+                self.applications.current_grant(scope)
+            graph = await self.agent_graphs.resolve_execution(definition.execution, instance["project_id"],
+                allow_trusted=scope.source == "platform" or self.applications.current_grant(scope).trusted_extensions)
+            paths = WorkspacePaths.prepare(definition.workspace, instance["id"], run_id, self.root, binding=json.loads(instance["workspace_json"]), scope=scope)
             await self.store.call(lambda db: db.execute("UPDATE instances SET workspace_json=? WHERE id=?", (encode(paths.as_dict()), instance["id"])), transaction=True)
-            context = RunContext(self, run, instance, definition, paths, resumption=resumption, deadline=deadline)
+            context = RunContext(self, run, instance, definition, paths, resumption=resumption, deadline=deadline, scope=scope, project=project)
             self.active[run_id] = context
             await self.mcp.bind(context)
             self.notify()

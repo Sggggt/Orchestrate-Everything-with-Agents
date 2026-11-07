@@ -1,5 +1,10 @@
 # Python SDK
 
+Use `ApplicationClient` for an external application's authorized Agent calls.
+It keeps application credentials separate from `PlatformClient` management
+access and reuses the existing Host. See [Applications and OAP](applications/README.md)
+for conversation, upload, stream, resume and download examples.
+
 For editable ReAct, Plan-and-Execute and Reflexion graphs, versioned drafts and trials, use the typed [Agent architecture SDK](agent-architectures.md). `ArchitectureClient` accepts an open `Host` or `PlatformClient` and shares the same operations as HTTP and MCP.
 
 OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; protocol 3 rejects old runtime contracts.

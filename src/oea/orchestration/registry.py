@@ -46,7 +46,8 @@ class AgentGraphs:
             self.compiled[key] = graph
         return self.compiled[key]
 
-    async def resolve_execution(self, execution, project_id):
+    async def resolve_execution(self, execution, project_id, *, allow_trusted=True):
+        require(allow_trusted or not execution.program and execution.graph == "default", "PERMISSION_DENIED", "Custom execution requires explicit trusted extension authorization")
         if execution.architecture is None:
             return self.resolve(execution)
         import json
@@ -54,6 +55,10 @@ class AgentGraphs:
         from oea.orchestration.graphs.architecture import compile_architecture
         binding = execution.architecture
         owner, saved = await self.host.store.call(lambda db: self.host.architectures._version(db, binding, project_id))
+        if not allow_trusted:
+            from oea.applications.execution import architecture_requires_trust
+            require(not architecture_requires_trust(owner, json.loads(saved["definition_json"])),
+                    "PERMISSION_DENIED", "Code extensions in an architecture require explicit application authorization")
         key = ("architecture", binding.architecture_id, binding.version, saved["sha256"])
         if key not in self.compiled:
             dependencies = json.loads(saved["dependencies_json"])

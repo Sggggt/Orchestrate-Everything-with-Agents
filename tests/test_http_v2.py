@@ -165,9 +165,17 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await raw.get("/api/protocol", headers={"Authorization": "Bearer " + self.app.state.token, "X-OEA-Protocol-Version": "1.0"})).status_code, 409)
             index = await raw.get("/")
             self.assertEqual(index.status_code, 200)
-            self.assertIn("HttpOnly", index.headers["set-cookie"])
+            self.assertNotIn("set-cookie", index.headers)
             self.assertIn("frame-ancestors 'none'", index.headers["content-security-policy"])
+            self.assertEqual((await raw.get("/api/protocol")).status_code, 401)
+            from urllib.parse import parse_qs, urlsplit
+            login = await self.client.browser_url()
+            self.assertNotIn(self.app.state.token, login)
+            ticket = parse_qs(urlsplit(login).fragment)["oea-login"][0]
+            authenticated = await raw.post("/api/browser-login/redeem", json={"ticket": ticket})
+            self.assertIn("HttpOnly", authenticated.headers["set-cookie"])
             self.assertEqual((await raw.get("/api/protocol")).status_code, 200)
+            self.assertEqual((await raw.post("/api/browser-login/redeem", json={"ticket": ticket})).status_code, 403)
 
     async def test_sse_reconnect_reads_saved_cursor_without_reexecuting_work(self):
         session, instance = await self.seed()

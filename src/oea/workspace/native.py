@@ -14,7 +14,7 @@ from oea.contracts.errors import RuntimeFault, require
 
 
 PROTOCOL = 1
-VERSION = "3.2.1"
+VERSION = "3.3.1"
 PACKAGE_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
@@ -68,13 +68,29 @@ class NativeProcess:
         self.terminal = None
         self.started = None
         self.task = None
+        self.component_exited = asyncio.create_task(process.wait())
 
     async def event(self):
+        reading = asyncio.create_task(self.reader.readline())
         try:
-            line = await self.reader.readline()
+            done, _ = await asyncio.wait({reading, self.component_exited}, return_when=asyncio.FIRST_COMPLETED)
+            if reading not in done:
+                try:
+                    # Drain a final frame already queued by the exited local
+                    # component; never wait indefinitely for a lost delimiter.
+                    line = await asyncio.wait_for(asyncio.shield(reading), 1)
+                except TimeoutError:
+                    raise RuntimeFault("SANDBOX_CONTROL_LOST", "Native component exited without a complete control receipt",
+                                       details={"component_exit_code": self.process.returncode}) from None
+            else:
+                line = reading.result()
         except ConnectionError as error:
             raise RuntimeFault("SANDBOX_CONTROL_LOST", "Native component disconnected; workload outcome is unknown",
                                details={"cause": str(error)}) from error
+        finally:
+            if not reading.done():
+                reading.cancel()
+            await asyncio.gather(reading, return_exceptions=True)
         require(line, "SANDBOX_CONTROL_LOST", "Native component disconnected; workload outcome is unknown")
         try:
             event = json.loads(line)
@@ -108,8 +124,11 @@ class NativeProcess:
     async def stop(self):
         self.stdin.close()
         if not self.task.done():
-            self.writer.write(b"terminate\n")
-            await self.writer.drain()
+            # A terminal frame can close the control channel while pipe capture
+            # is still finishing. Its original receipt decides the outcome.
+            with suppress(ConnectionError):
+                self.writer.write(b"terminate\n")
+                await self.writer.drain()
         await self.wait()
 
     def close(self):

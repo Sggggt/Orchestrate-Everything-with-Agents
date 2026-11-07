@@ -83,7 +83,7 @@ async def on_project_deleted(host, project_id):
         if not owned and key[2].startswith("["):
             consumer = json.loads(key[2])
             owned = (consumer[0] == "controller" and consumer[1] == project_id
-                     or consumer[0] == "instance" and consumer[1] in scope["instances"])
+                     or consumer[0] in {"instance", "application"} and consumer[1] in scope["instances"])
         if owned:
             host.mcp.connections.pop(key, None)
             connections.append(connection)
@@ -95,6 +95,8 @@ async def on_project_deleted(host, project_id):
         host.workflows.reviewing.discard(identity)
     if connections:
         await asyncio.gather(*(connection.aclose() for connection in connections))
+    host.applications.authorizations = {identity: binding for identity, binding in host.applications.authorizations.items()
+                                       if binding["project_id"] != project_id}
     cleanup = await host.store.call(lambda db: one(db, "SELECT position,data_json FROM events WHERE project_id=? AND kind='project.deleted' AND json_type(data_json,'$.cleanup_threads')='array' ORDER BY position DESC LIMIT 1", (project_id,)))
     if cleanup:
         data = json.loads(cleanup["data_json"])

@@ -13,6 +13,8 @@ class Boards:
 
     @staticmethod
     def can_read(db, board, instance):
+        if need(db, "sessions", instance["session_id"])["source"] != "platform":
+            return False
         if board["project_id"] != instance["project_id"] or board["session_id"] not in {None, instance["session_id"]}:
             return False
         return board["scope"] != "inbox" or bool(one(db, "SELECT 1 FROM board_readers WHERE board_id=? AND instance_id=?", (board["id"], instance["id"])))
@@ -22,6 +24,7 @@ class Boards:
         board = need(db, "boards", board_id)
         require(board["project_id"] == project_id, "PERMISSION_DENIED", "Board belongs to another project")
         if instance:
+            require(need(db, "sessions", instance["session_id"])["source"] == "platform", "PERMISSION_DENIED", "Application instances cannot access platform boards")
             require(board["session_id"] in {None, instance["session_id"]}, "PERMISSION_DENIED", "Board belongs to another session")
             if write and board["scope"] == "inbox":
                 owner = need(db, "instances", board["owner_instance_id"])
@@ -38,6 +41,7 @@ class Boards:
             require(session_id is None and owner_instance_id is None, "INVALID_REQUEST", "Project boards have no session or private owner")
         else:
             require(session_id is not None and need(db, "sessions", session_id)["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
+            require(need(db, "sessions", session_id)["source"] == "platform", "PERMISSION_DENIED", "Application sessions cannot create platform boards")
         if scope == "inbox":
             owner = need(db, "instances", owner_instance_id)
             require(owner["session_id"] == session_id, "PERMISSION_DENIED", "Inbox owner belongs to another session")
@@ -81,6 +85,7 @@ class Boards:
         params = [project_id, cursor]
         if session_id:
             require(need(db, "sessions", session_id)["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
+            require(need(db, "sessions", session_id)["source"] == "platform", "PERMISSION_DENIED", "Application sessions cannot access platform boards")
             query += " AND (b.session_id=? OR b.session_id IS NULL)"
             params.append(session_id)
         if instance:

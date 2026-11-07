@@ -15,7 +15,7 @@ from pathlib import Path
 
 from oea.contracts.configuration import Workspace
 from oea.contracts.errors import RuntimeFault, require
-from oea.workspace.paths import safe_child
+from oea.workspace.paths import safe_child, directory_intersection
 
 
 def worker_error(error, exit_code):
@@ -49,6 +49,24 @@ def toolchains(search_path, shell):
     return tuple(dict.fromkeys(roots)), programs
 
 
+@lru_cache(maxsize=256)
+def windows_profile_directory(directory):
+    """Keep Win32 application profile paths short without changing their owner."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    short_path = kernel.GetShortPathNameW
+    short_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    short_path.restype = wintypes.DWORD
+    size = short_path(directory, None, 0)
+    require(size, "WORKSPACE_UNAVAILABLE", "Windows private profile directory could not be resolved",
+            details={"win32_error": ctypes.get_last_error()})
+    value = ctypes.create_unicode_buffer(size)
+    written = short_path(directory, value, size)
+    require(0 < written < size, "WORKSPACE_UNAVAILABLE", "Windows private profile directory changed during preparation")
+    return value.value
+
+
 @dataclass(frozen=True)
 class WorkspacePaths:
     project_dir: Path | None
@@ -58,9 +76,11 @@ class WorkspacePaths:
     writable_project_dirs: tuple[Path, ...] = ()
     writable_directories: tuple[Path, ...] = ()
     host_state_dir: Path | None = None
+    temp_dir: Path | None = None
+    input_dirs: tuple[Path, ...] = ()
 
     @classmethod
-    def for_instance(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None):
+    def for_instance(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None, scope=None):
         project = settings.project.expanduser().resolve() if settings.project else None
         state = Path(state_dir).resolve()
         if project:
@@ -68,7 +88,19 @@ class WorkspacePaths:
             require(not state.is_relative_to(project) and not project.is_relative_to(state),
                     "PERMISSION_DENIED", "Project cannot expose host state")
         base = settings.work.expanduser().resolve() if settings.work else state / "workspaces"
-        if binding and binding.get("work_dir"):
+        temporary, inputs = None, ()
+        if scope is not None and scope.source == "application":
+            from oea.applications.execution import instance_directory
+            require(project is None and settings.work is None, "PERMISSION_DENIED", "Application workspace must use its managed binding")
+            directory = instance_directory(state, scope, instance_id)
+            work = safe_child(directory, "work")
+            require(os.name != "nt" or len(str(work).encode("utf-16-le")) // 2 < 259,
+                    "WORKSPACE_PATH_TOO_LONG", "Windows application work directory exceeds MAX_PATH; choose a shorter state directory")
+            temporary = safe_child(directory, "temp")
+            inputs = (safe_child(directory.parent.parent, "inputs"),)
+            require(not binding or not binding.get("work_dir") or Path(binding["work_dir"]) == work,
+                    "PERMISSION_DENIED", "Application workspace binding does not match its ownership")
+        elif binding and binding.get("work_dir"):
             previous = Path(binding["work_dir"])
             work = safe_child(previous.parent, previous.name)
         else:
@@ -85,27 +117,31 @@ class WorkspacePaths:
         external = tuple(path.expanduser().resolve() for path in settings.writable_directories)
         require(all(not path.is_relative_to(state) and not state.is_relative_to(path) for path in (*references, *external)),
                 "PERMISSION_DENIED", "Explicit directories cannot expose host state")
-        return cls(project, work, output, references, tuple(writable), external, state)
+        return cls(project, work, output, references, tuple(writable), external, state, temporary, inputs)
 
     @classmethod
-    def prepare(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None):
-        paths = cls.for_instance(settings, instance_id, run_id, state_dir, binding=binding)
+    def prepare(cls, settings: Workspace, instance_id, run_id, state_dir, *, binding=None, scope=None):
+        paths = cls.for_instance(settings, instance_id, run_id, state_dir, binding=binding, scope=scope)
         paths.output_dir.mkdir(parents=True, exist_ok=True)
+        for directory in (*paths.input_dirs, *((paths.temp_dir,) if paths.temp_dir else ())):
+            directory.mkdir(parents=True, exist_ok=True)
         return paths
 
     def as_dict(self):
         return {"project_dir": str(self.project_dir) if self.project_dir else None, "work_dir": str(self.work_dir),
                 "output_dir": str(self.output_dir), "reference_dirs": [str(path) for path in self.reference_dirs],
                 "writable_project_dirs": [str(path) for path in self.writable_project_dirs],
-                "writable_directories": [str(path) for path in self.writable_directories]}
+                "writable_directories": [str(path) for path in self.writable_directories],
+                "temp_dir": str(self.temp_dir) if self.temp_dir else None, "input_dirs": [str(path) for path in self.input_dirs]}
 
     def resolve(self, value, *, write=False):
         require(isinstance(value, str) and value and "\x00" not in value, "INVALID_PATH", "Path must be nonempty text")
         raw = Path(value).expanduser()
         raw = raw if raw.is_absolute() else self.work_dir / raw
         target = raw.resolve()
-        roots = (self.work_dir, *self.writable_project_dirs, *self.writable_directories) if write else (
-            self.work_dir, *self.reference_dirs, *self.writable_directories, *((self.project_dir,) if self.project_dir else ()))
+        roots = (self.work_dir, *self.writable_project_dirs, *self.writable_directories, *((self.temp_dir,) if self.temp_dir else ()))
+        if not write:
+            roots = (*roots, *self.reference_dirs, *self.input_dirs, *((self.project_dir,) if self.project_dir else ()))
         require(any(target.is_relative_to(root) for root in roots), "PERMISSION_DENIED", "Path is outside the granted directories")
         # Resolve links before comparing roots; reject write-through hard links
         # and reparse points at the I/O boundary, without scanning directories.
@@ -134,8 +170,9 @@ class WorkspacePaths:
                 target.parent.mkdir(parents=True, exist_ok=True)
             yield target, None
             return
-        roots = (self.work_dir, *self.writable_project_dirs, *self.writable_directories) if write else (
-            self.work_dir, *self.reference_dirs, *self.writable_directories, *((self.project_dir,) if self.project_dir else ()))
+        roots = (self.work_dir, *self.writable_project_dirs, *self.writable_directories, *((self.temp_dir,) if self.temp_dir else ()))
+        if not write:
+            roots = (*roots, *self.reference_dirs, *self.input_dirs, *((self.project_dir,) if self.project_dir else ()))
         root = max((root for root in roots if target.is_relative_to(root)), key=lambda root: len(root.parts))
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -172,9 +209,9 @@ def intersect_workspace(paths, before, after):
     writable = {(current_project / relative).resolve() for relative in after.writable_project_paths} if current_project else set()
     external = {path.expanduser().resolve() for path in after.writable_directories}
     paths = replace(paths, project_dir=paths.project_dir if current_project == paths.project_dir else None,
-                    reference_dirs=tuple(path for path in paths.reference_dirs if path in references),
-                    writable_project_dirs=tuple(path for path in paths.writable_project_dirs if path in writable),
-                    writable_directories=tuple(path for path in paths.writable_directories if path in external))
+                    reference_dirs=directory_intersection(paths.reference_dirs, references),
+                    writable_project_dirs=directory_intersection(paths.writable_project_dirs, writable),
+                    writable_directories=directory_intersection(paths.writable_directories, external))
     settings = before.model_copy(update={
         "sandbox": "native" if "native" in {before.sandbox, after.sandbox} else "trusted",
         "network": "allow" if before.network == after.network == "allow" else "deny",
@@ -229,8 +266,12 @@ class ExecutionEnvironment:
             executable()
 
     def variables(self, additions=None):
-        temporary = self.paths.work_dir / "tmp"
+        temporary = self.paths.temp_dir or self.paths.work_dir / "tmp"
         temporary.mkdir(exist_ok=True)
+        # Win32 child-process initialization expands paths beneath APPDATA.
+        # An existing DOS name keeps these expansions bounded; it names the
+        # same private directory and creates no junction or extra file grant.
+        profile = windows_profile_directory(str(temporary)) if os.name == "nt" and self.settings.sandbox == "native" else str(temporary)
         # Never inherit model, MCP or controller credentials into a command.
         names = ("PATH", "SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL")
         env = {key: os.environ[key] for key in names if key in os.environ}
@@ -238,7 +279,7 @@ class ExecutionEnvironment:
         env.update(additions or {})
         env.update(TEMP=str(temporary), TMP=str(temporary), TMPDIR=str(temporary),
                    HOME=str(self.paths.work_dir), USERPROFILE=str(self.paths.work_dir),
-                   LOCALAPPDATA=str(temporary), APPDATA=str(temporary),
+                   LOCALAPPDATA=profile, APPDATA=profile,
                    PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1",
                    OEA_PROJECT_DIR=str(self.paths.project_dir or ""), OEA_WORK_DIR=str(self.paths.work_dir),
                    OEA_OUTPUT_DIR=str(self.paths.output_dir))
@@ -252,8 +293,8 @@ class ExecutionEnvironment:
             from oea.workspace.native import spawn
             runtime_dirs, _ = self.programs()
             process = await spawn({"operation": "exec", "argv": list(argv), "cwd": str(cwd),
-                "readonly": list(dict.fromkeys([*runtime_dirs, *map(str, self.paths.reference_dirs), *([str(self.paths.project_dir)] if self.paths.project_dir else [])])),
-                "readwrite": [str(root) for root in (self.paths.work_dir, *self.paths.writable_project_dirs, *self.paths.writable_directories)],
+                "readonly": list(dict.fromkeys([*runtime_dirs, *map(str, (*self.paths.reference_dirs, *self.paths.input_dirs)), *([str(self.paths.project_dir)] if self.paths.project_dir else [])])),
+                "readwrite": [str(root) for root in (self.paths.work_dir, *self.paths.writable_project_dirs, *self.paths.writable_directories, *((self.paths.temp_dir,) if self.paths.temp_dir else ()))],
                 "environment": env, "network": self.settings.network or "deny",
                 "timeout_ms": max(1, int((timeout or self.settings.command_timeout_seconds) * 1000))}, limit=limit)
             return process, process

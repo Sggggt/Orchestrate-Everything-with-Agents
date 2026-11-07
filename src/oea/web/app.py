@@ -8,10 +8,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from pydantic import Field
+from pydantic_core import from_json
 
 from oea import __version__
 from oea.catalog.service import need
@@ -21,6 +23,7 @@ from oea.runtime.host import Host
 from oea.workspace.paths import safe_child
 from oea.storage.persistence import encode, one
 from oea.security.secrets import atomic_write
+from oea.security.browser import BrowserLogins
 
 
 class Call(Configuration):
@@ -46,6 +49,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             if not token_path.exists():
                 atomic_write(token_path, secrets.token_urlsafe(32).encode("utf-8"))
             app.state.token = token_path.read_text(encoding="utf-8").strip()
+            app.state.browser_logins = BrowserLogins()
             if client_url:
                 atomic_write(backend.root / "client.json", encode({"url": client_url, "protocol_version": PROTOCOL_VERSION}).encode("utf-8"))
             yield
@@ -56,24 +60,55 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
     app = FastAPI(title="Orchestrate Everything with Agents", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     assets = Path(__file__).with_name("static")
+    from oea.web import oap
+    from oea.contracts.applications import OAP_PREFIX, OAP_VERSION
+    app.include_router(oap.router())
 
     def envelope(*, result=None, error=None, request_id=None):
         return {"protocol_version": PROTOCOL_VERSION, "request_id": request_id, **({"error": error} if error else {"result": result})}
 
     @app.exception_handler(RuntimeFault)
     async def fault(request, error):
+        if request.url.path.startswith(OAP_PREFIX + "/"):
+            return oap.failure(request, error)
         return JSONResponse(envelope(error=error.as_dict()), status_code=404 if error.code == "NOT_FOUND" else 403 if error.code == "PERMISSION_DENIED" else 400)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation(request, error):
+        if request.url.path.startswith(OAP_PREFIX + "/"):
+            return oap.failure(request, RuntimeFault("INVALID_REQUEST", "Parameters do not match this OAP operation"))
+        from fastapi.exception_handlers import request_validation_exception_handler
+        return await request_validation_exception_handler(request, error)
 
     @app.middleware("http")
     async def security(request, call_next):
+        application = request.url.path.startswith(OAP_PREFIX + "/")
+        if application:
+            request.state.request_id = request.headers.get("X-Request-ID") or oap.new_id("request")
         try:
             local = urlsplit("http://" + request.headers.get("host", "")).hostname in {"127.0.0.1", "localhost", "::1"}
         except ValueError:
             local = False
         origin = request.headers.get("origin")
         if not local or origin and origin.rstrip("/") != str(request.base_url).rstrip("/") or request.headers.get("sec-fetch-site") == "cross-site":
+            if application:
+                return oap.failure(request, RuntimeFault("PERMISSION_DENIED", "Local same-origin access required"))
             return JSONResponse(envelope(error={"code": "PERMISSION_DENIED", "safe_message": "Local same-origin access required"}), status_code=403)
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/browser-login") and (request.client is None or request.client.host not in {"127.0.0.1", "::1"}):
+            return JSONResponse(envelope(error={"code": "PERMISSION_DENIED", "safe_message": "Local browser login required"}), status_code=403)
+        if application:
+            try:
+                require(request.client is not None and request.client.host in {"127.0.0.1", "::1"}, "PERMISSION_DENIED", "OAP requires a local application backend")
+                require(len(request.state.request_id) <= 256, "INVALID_REQUEST", "Use a bounded request identity")
+                require(request.headers.get("X-OAP-Version", OAP_VERSION) == OAP_VERSION, "PROTOCOL_MISMATCH", "Use an OAP 1.0 client")
+                auth = request.headers.get("authorization", "")
+                require(auth.startswith("Bearer "), "PERMISSION_DENIED", "Application bearer authentication required")
+                identity = await app.state.host.applications.authenticate(auth[7:], metadata=True)
+                request.state.app_id = identity["app_id"]
+                request.state.credential_revision = identity["credential_revision"]
+            except RuntimeFault as error:
+                return oap.failure(request, error)
+        elif request.url.path.startswith("/api/") and request.url.path != "/api/browser-login/redeem":
             token = getattr(app.state, "token", "")
             provided = request.headers.get("authorization", "").removeprefix("Bearer ") or request.cookies.get("oea-session-" + str(request.url.port or 80), "")
             if not token or not hmac.compare_digest(token.encode("utf-8"), provided.encode("utf-8")):
@@ -87,7 +122,25 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
 
     @app.get("/")
     async def index(request: Request):
-        response = FileResponse(assets / "index.html")
+        return FileResponse(assets / "index.html")
+
+    @app.post("/api/browser-login")
+    async def browser_login():
+        return envelope(result=app.state.browser_logins.issue())
+
+    @app.post("/api/browser-login/redeem")
+    async def browser_redeem(request: Request):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            require(len(body) <= 1024, "INVALID_REQUEST", "Use a bounded browser login ticket")
+        try:
+            value = from_json(body, allow_inf_nan=False)
+        except ValueError:
+            raise RuntimeFault("INVALID_REQUEST", "Use the browser login request schema") from None
+        require(isinstance(value, dict) and set(value) == {"ticket"}, "INVALID_REQUEST", "Supply only the browser login ticket")
+        app.state.browser_logins.redeem(value["ticket"])
+        response = JSONResponse(envelope(result={"authenticated": True}))
         response.set_cookie("oea-session-" + str(request.url.port or 80), app.state.token, httponly=True, samesite="strict", path="/")
         return response
 
@@ -105,9 +158,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             body.extend(chunk)
             require(len(body) <= 2 * 1024 * 1024, "PAYLOAD_TOO_LARGE", "Request exceeds its bounded input size")
         try:
-            def invalid_constant(value):
-                raise ValueError("Non-finite values are not JSON protocol input")
-            call = Call.model_validate(json.loads(body, parse_constant=invalid_constant))
+            call = Call.model_validate(from_json(body, allow_inf_nan=False))
         except (ValidationError, ValueError):
             return envelope(error={"code": "INVALID_REQUEST", "safe_message": "Use the versioned operation request schema"})
         try:
@@ -163,6 +214,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
 
     @app.put("/api/artifact-uploads/{upload_id}/content")
     async def upload_content(upload_id: str, project_id: str, request: Request):
+        await app.state.host.access.guard("artifacts.write_upload", {"upload_id": upload_id})
         result = await app.state.host.artifacts.write_upload(upload_id, project_id, request.stream(),
             consumer_id=request.headers.get("X-OEA-Consumer-ID"))
         return envelope(result=result)
@@ -170,6 +222,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
     @app.get("/api/artifacts/{artifact_id}/content")
     async def artifact(artifact_id: str, project_id: str, inline: bool = False):
         backend = app.state.host
+        await backend.access.guard("artifacts.download", {"artifact_id": artifact_id})
         record = await backend.store.call(lambda db: one(db, "SELECT * FROM artifacts WHERE id=? AND project_id=?", (artifact_id, project_id)))
         require(record is not None, "NOT_FOUND", "Artifact is not in this project")
         path = safe_child(backend.root / "artifacts", record["id"])
@@ -182,6 +235,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
     @app.get("/api/commands/{command_session_id}/{stream}")
     async def command_output(command_session_id: str, stream: str, run_id: str, project_id: str):
         from oea.artifacts.service import file_io
+        await app.state.host.access.guard("runs.command_output", {"run_id": run_id})
         path, record = await app.state.host.runs.command_output(run_id, command_session_id, project_id, stream)
         size = path.stat().st_size
         async def chunks():

@@ -48,6 +48,7 @@ class ResultReferences:
         "artifacts.read", "host.describe", "host.guide", "executions.graphs",
         "architectures.get", "architectures.list", "architectures.versions", "architectures.preview", "architectures.export",
         "architectures.templates", "architectures.node_types", "architectures.schema",
+        "applications.get", "applications.list", "applications.bindings",
     })
 
     def __init__(self, host):
@@ -167,6 +168,9 @@ class ResultReferences:
     def authorize_snapshot(self, db, record, params):
         """Check retained owners, without materializing a mutable domain query."""
         from oea.catalog.service import need
+        from oea.applications.access import platform_parameters
+
+        platform_parameters(db, params)
 
         project = record["project_id"]
         need(db, "projects", project)
@@ -231,6 +235,8 @@ class ResultReferences:
             record = one(db, "SELECT * FROM result_refs WHERE id=? AND consumer_id=?", (result_ref, reader))
             require(record is not None and record["project_id"] == project_id, "PERMISSION_DENIED", "Result reference belongs to another conversation or project")
             version = json.loads(record["version_json"])
+            from oea.applications.access import platform_parameters
+            platform_parameters(db, json.loads(record["params_json"]))
             snapshot = None
             if version.get("mode") == "snapshot":
                 self.authorize_snapshot(db, record, json.loads(record["params_json"]))

@@ -12,7 +12,7 @@ from oea import __version__
 from oea.interfaces.client import PlatformClient
 from oea.contracts.configuration import AgentDefinition
 from oea.contracts.domain import MessageSpec, RunSpec
-from oea.contracts.errors import RuntimeFault
+from oea.contracts.errors import RuntimeFault, require
 
 
 def parser():
@@ -20,6 +20,9 @@ def parser():
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("paths", help="Show the OEA home, data and managed runtime locations")
+    browser = commands.add_parser("open", help="Open an authenticated local workbench on the existing Host")
+    browser.add_argument("--data-dir", type=Path)
+    browser.add_argument("--print-url", action="store_true", help="Print a single-use browser login link instead of opening it")
     schema = commands.add_parser("schema", help="Export a shared configuration or request schema")
     schema.add_argument("model", choices=("agent", "run", "message"), nargs="?", default="agent")
     schema.add_argument("--output", type=Path)
@@ -58,6 +61,18 @@ async def request(args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.command == "open":
+            async def login():
+                async with PlatformClient.from_data_dir(args.data_dir) as client:
+                    return client.url, await client.browser_url()
+            origin, url = asyncio.run(login())
+            if args.print_url:
+                print(url)
+            else:
+                import webbrowser
+                require(webbrowser.open(url), "BROWSER_UNAVAILABLE", "Open a fresh link with 'oea open --print-url'")
+                print("Workspace: " + origin)
+            return
         if args.command == "paths":
             from oea.workspace.paths import installation_paths
             print(json.dumps(installation_paths(), ensure_ascii=False, indent=2))

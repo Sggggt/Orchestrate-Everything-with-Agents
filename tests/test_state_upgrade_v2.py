@@ -54,6 +54,7 @@ class UpgradeTests(unittest.TestCase):
         (self.root / "work").mkdir()
         (self.root / "work/partial.txt").write_text("Completed partial evidence", encoding="utf-8")
         SecretVault(self.root).set("example", "fixture-secret")
+        (self.root / "client-token").write_text("earlier-browser-credential", encoding="utf-8")
 
     def snapshot(self):
         return {path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
@@ -74,6 +75,7 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(report["applied"])
         self.assertEqual(self.snapshot(), original)
         self.assertEqual((self.target / "imported/protocol-2/oea.sqlite").read_bytes(), original["oea.sqlite"])
+        self.assertNotEqual((self.target / "client-token").read_bytes(), original["client-token"])
         self.assertEqual((self.target / "imported/protocol-2/graphs.sqlite").read_bytes(), original["graphs.sqlite"])
         self.assertFalse((self.target / "graphs.sqlite").exists())
         self.assertEqual((self.target / "work/partial.txt").read_text(), "Completed partial evidence")

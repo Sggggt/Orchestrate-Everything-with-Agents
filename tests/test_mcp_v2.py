@@ -24,6 +24,23 @@ def value(result):
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_application_management_schema_and_business_scope_share_the_control_boundary(self):
+        from oea import AgentDefinition, ApplicationBinding
+        from oea.contracts.applications import ApplicationRun, ConversationCreate
+        await self.host.projects.create("Example", project_id="p")
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p"))
+        async with self.connected():
+            guide = value(await self.client.call_tool("platform_guide", {"consumer_id": "conversation-a", "area": "applications", "action": "bind"}))
+            self.assertIn("ApplicationBinding", guide["parameters_schema"]["$defs"])
+            created = value(await self.call("applications.create", {"name": "Example"}))
+            binding = value(await self.call("applications.bind", {"binding": ApplicationBinding(app_id=created["application"]["id"], project_id="p", agent_id="worker").model_dump(mode="json")}))
+            conversation = await self.host.oap.create_conversation(created["application"]["id"], ConversationCreate(binding_id=binding["id"]), "conversation")
+            run = await self.host.oap.submit(created["application"]["id"], conversation["id"], ApplicationRun(input="Application-owned input"), "work")
+            denied = await self.call("runs.get", {"run_id": run.id})
+            self.assertTrue(denied.isError)
+            self.assertIn("PERMISSION_DENIED", "".join(item.text for item in denied.content if item.type == "text"))
+            self.assertEqual(value(await self.call("sessions.list", {"project_id": "p"}))["items"], [])
+
     async def test_architecture_large_draft_reference_and_shared_revision(self):
         from oea.orchestration.architecture_templates import react
         await self.host.projects.create("Example", project_id="p")

@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 3.2.1, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 3.3.1, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -87,7 +87,7 @@ oea serve --allow-commands
 
 Windows also provides `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl` and `Start-Workspace.ps1`, which enables configured commands by default. See [installation](getting-started.md) for isolated environments, source builds and backend prerequisites.
 
-Open the printed browser URL; the initial default is `http://127.0.0.1:8890`. Ctrl+C stops a foreground host; closing the browser does not. One Host owns each state directory. Existing-host clients use PlatformClient.
+Run `oea open` in another terminal to open an authenticated browser session; pass the same `--data-dir` for custom state. The initial origin is `http://127.0.0.1:8890`. The Windows launcher opens a protected login link automatically. Plain homepage access does not grant management permissions. Ctrl+C stops a foreground host; closing the browser does not. One Host owns each state directory. Existing-host clients use PlatformClient.
 
 Default state is `~/.oea/data`, outside Git, source and synchronized directories. `oea paths` only reports locations. `OEA_HOME` explicitly selects another absolute home; updating the environment does not move or migrate data. Source-only editable mode leaves native local tools unavailable until matching assets are supplied.
 
@@ -370,7 +370,23 @@ Use `arun` / `astream` and asynchronous context managers in an application that 
 
 For executable examples and advanced lifecycle, stream and recovery contracts, see [Python SDK](sdk.md), [model Agent example](../examples/model_agent.py) and [process Agent example](../examples/integration_agent.py). Process Agents implement OEA's protocol-3 UTF-8 JSONL protocol; an arbitrary console script is not automatically an OEA Agent.
 
+### External application access
+
+Open **应用接入** to register a local application and save its one-time credential
+to that application's secret configuration. Add an Agent binding in the selected
+project and grant only its needed tools, Skills, reference directories, network
+access and budget. The source Agent's current configuration remains an upper
+bound. Use `ApplicationClient` from the application backend; platform management
+credentials do not authenticate OAP. Application conversations, files and results
+are read through OAP and stay outside normal workbench business views.
+
+Rotation invalidates the old credential. Disabling an application revokes access
+while retaining its history. Changing a binding's capabilities applies to future
+calls; use a new conversation to select another binding. See
+[Applications and OAP](applications/README.md) for the API and SDK examples.
+
 <a id="mcp"></a>
+
 ## 13. Connect an Agent client through MCP
 
 1. Start the OEA host and confirm its project and data directory.

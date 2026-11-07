@@ -36,7 +36,7 @@ Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Run
 <a id="start"></a>
 ## Start the workspace
 
-`oea serve` prints the local browser URL; the initial default is **http://127.0.0.1:8890**. A foreground server stops with Ctrl+C; closing the browser does not stop it. The browser establishes an authenticated local session. Starting again for the same directory reuses the authenticated host instead of opening another host.
+`oea serve` starts the local Host; the initial origin is **http://127.0.0.1:8890**. Run `oea open` in another terminal to open an authenticated browser session. For a custom state directory, pass the same `--data-dir` to both commands. `oea open --print-url` prints a single-use login link when automatic browser opening is unavailable. The link expires after 60 seconds and does not contain the long-lived control credential. A plain homepage visit never grants management access. A foreground server stops with Ctrl+C; closing the browser does not stop it. Starting again for the same directory reuses the authenticated host instead of opening another host.
 
 ```sh
 oea paths

@@ -131,6 +131,11 @@ class Artifacts:
             if session_id:
                 session = one(db, "SELECT project_id FROM sessions WHERE id=?", (session_id,))
                 require(session and session["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
+                scope = self.host.applications.scope(db, session_id)
+                if scope.source == "application":
+                    self.host.applications.grant(db, scope)
+                    conversation = one(db, "SELECT closed_at FROM application_conversations WHERE id=?", (scope.conversation_id,))
+                    require(conversation["closed_at"] is None, "CONVERSATION_CLOSED", "Conversation is closed to new inputs")
             identity = new_id("artifact")
             media = mimetypes.guess_type(name)[0] or "application/octet-stream"
             db.execute("INSERT INTO artifact_uploads VALUES(?,?,?,?,?,?,?,?,?,?,?)", (identity, project_id, session_id, consumer, idempotency_key, fingerprint, name, bytes, sha256, media, now_ms()))
@@ -152,6 +157,10 @@ class Artifacts:
 
     async def _commit_upload(self, record, path, consumer):
         def save(db):
+            if record["session_id"]:
+                scope = self.host.applications.scope(db, record["session_id"])
+                if scope.source == "application":
+                    self.host.applications.grant(db, scope)
             prior = one(db, "SELECT * FROM artifacts WHERE id=?", (record["id"],))
             if prior:
                 return
@@ -238,7 +247,7 @@ class Artifacts:
             if session_id is not None:
                 session = one(db, "SELECT project_id FROM sessions WHERE id=?", (session_id,))
                 require(session and session["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
-            return rows(db, "SELECT a.rowid AS position,a.*,i.agent_id,i.name AS instance_name,json_extract(d.config_json,'$.name') AS agent_name FROM artifacts a LEFT JOIN instances i ON i.id=a.instance_id LEFT JOIN agent_definitions d ON d.id=i.agent_id WHERE (? IS NULL OR a.session_id=?) AND a.project_id=? AND (?=0 OR a.rowid<?) AND (?='' OR instr(lower(a.name||' '||COALESCE(json_extract(d.config_json,'$.name'),'')||' '||COALESCE(i.agent_id,'')),lower(?))>0) ORDER BY a.rowid DESC LIMIT ?", (session_id, session_id, project_id, cursor, cursor, query, query, limit + 1))
+            return rows(db, "SELECT a.rowid AS position,a.*,i.agent_id,i.name AS instance_name,json_extract(d.config_json,'$.name') AS agent_name FROM artifacts a LEFT JOIN instances i ON i.id=a.instance_id LEFT JOIN agent_definitions d ON d.id=i.agent_id LEFT JOIN sessions s ON s.id=a.session_id WHERE COALESCE(s.source,'platform')='platform' AND (? IS NULL OR a.session_id=?) AND a.project_id=? AND (?=0 OR a.rowid<?) AND (?='' OR instr(lower(a.name||' '||COALESCE(json_extract(d.config_json,'$.name'),'')||' '||COALESCE(i.agent_id,'')),lower(?))>0) ORDER BY a.rowid DESC LIMIT ?", (session_id, session_id, project_id, cursor, cursor, query, query, limit + 1))
         values = await self.host.store.call(read)
         return {"items": [self.view(value) | {key: value[key] for key in ("position", "created_at", "agent_id", "agent_name", "instance_name")} for value in values[:limit]],
                 "cursor": values[limit - 1]["position"] if len(values) > limit else None}
@@ -293,6 +302,9 @@ class Artifacts:
     def authorize(self, db, run_id, instance, artifact_id):
         record = one(db, "SELECT * FROM artifacts WHERE id=?", (artifact_id,))
         require(record is not None and record["project_id"] == instance["project_id"], "PERMISSION_DENIED", "Artifact is outside this project")
+        session = one(db, "SELECT source FROM sessions WHERE id=?", (instance["session_id"],))
+        if session["source"] == "application":
+            require(record["session_id"] == instance["session_id"], "PERMISSION_DENIED", "Artifact belongs to another execution scope")
         if record["instance_id"] == instance["id"] or one(db, "SELECT 1 FROM run_artifacts WHERE run_id=? AND artifact_id=?", (run_id, artifact_id)):
             return record
         shared = one(db, "SELECT 1 FROM message_artifacts a JOIN messages m ON m.id=a.message_id JOIN deliveries d ON d.message_id=m.id JOIN boards b ON b.id=m.board_id WHERE a.artifact_id=? AND d.instance_id=? AND (b.session_id IS NULL OR b.session_id=?) AND (b.scope!='inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=b.id AND r.instance_id=d.instance_id))", (artifact_id, instance["id"], instance["session_id"]))
@@ -305,10 +317,12 @@ class Artifacts:
 
     def assign(self, db, run_id, instance, artifact_ids, parent=None):
         parent_instance = one(db, "SELECT * FROM instances WHERE id=?", (parent["instance_id"],)) if parent and artifact_ids else None
+        application = bool(artifact_ids) and one(db, "SELECT source FROM sessions WHERE id=?", (instance["session_id"],))["source"] == "application"
         for identity in artifact_ids:
             record = one(db, "SELECT project_id,session_id FROM artifacts WHERE id=?", (identity,))
             require(record and record["project_id"] == instance["project_id"] and record["session_id"] in {None, instance["session_id"]},
                     "PERMISSION_DENIED", "Assigned artifact belongs to another project or session")
+            require(not application or record["session_id"] == instance["session_id"], "PERMISSION_DENIED", "Application inputs must belong to this conversation")
             if parent:
                 self.authorize(db, parent["id"], parent_instance, identity)
             db.execute("INSERT INTO run_artifacts VALUES(?,?)", (run_id, identity))

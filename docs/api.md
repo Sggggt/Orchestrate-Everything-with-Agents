@@ -1,5 +1,11 @@
 # API and transports
 
+External application backends use the separately authenticated [OAP 1.0
+interface](applications/README.md) at `/api/oap/v1`. The platform control
+operations below remain protocol 3.0 and do not expose application business
+records. OAP provides fixed business actions, without arbitrary control-operation
+forwarding.
+
 All operations are registered by the shared application service. Discover a current operation with `platform_guide` or the registry; use its typed parameters and error contract. The [interface module](interfaces/README.md) documents the CLI, client, control MCP and registry. The [module index](modules.md) links each domain's interface.
 
 ```python
@@ -10,7 +16,7 @@ async def status(data_dir):
         return await client.call("host.status", {})
 ```
 
-The local HTTP gateway serves `/api/protocol`, `/api/rpc`, authenticated events and source-owned artifact downloads. Protocol version is `3.0`; an RPC request includes `protocol_version`, `operation`, `params`, and `request_id`. The response carries a result or structured error. Browser sessions use a local HttpOnly cookie; programmatic clients use the data directory's private token. Only loopback and same-origin requests are accepted.
+The local HTTP gateway serves `/api/protocol`, `/api/rpc`, authenticated events and source-owned artifact downloads. Protocol version is `3.0`; an RPC request includes `protocol_version`, `operation`, `params`, and `request_id`. The response carries a result or structured error. Programmatic clients use the data directory's private token. `POST /api/browser-login` requires management authentication and issues a single-use 60-second ticket. `POST /api/browser-login/redeem` exchanges that ticket for a local HttpOnly cookie. `PlatformClient.browser_url()` and `oea open` handle this flow without putting the control credential in a URL. The public homepage supplies no credential or cookie. Only loopback and same-origin requests are accepted.
 
 ```sh
 oea --version

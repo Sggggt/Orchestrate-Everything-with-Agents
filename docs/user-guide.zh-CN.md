@@ -2,7 +2,7 @@
 
 [English](user-guide.md) · 简体中文 · [文档目录](README.md)
 
-本指南适用于 Orchestrate Everything with Agents（OEA）3.2.1，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
+本指南适用于 Orchestrate Everything with Agents（OEA）3.3.1，介绍从第一次本机对话，到工具、协作和可复用工作流的使用方式。希望通过界面配置和监督任务的用户，可以先阅读浏览器操作章节；需要开发或接入其他 Agent 客户端的用户，可以继续阅读 SDK 和 MCP 章节。
 
 ## 目录
 
@@ -87,7 +87,7 @@ oea serve --allow-commands
 
 Windows 可运行 `Install-OEA.ps1 -Wheel PLATFORM_WHEEL.whl`，再用 `Start-Workspace.ps1` 启动；启动器默认开放已配置的命令能力。安装环境、源码构建、外部虚拟环境和系统依赖见[安装指南](getting-started.md)。
 
-浏览器打开宿主打印的地址，初次默认 `http://127.0.0.1:8890`。前台宿主可用 Ctrl+C 退出；关闭浏览器不会停止宿主。相同状态目录只由一个 Host 持有，已有宿主使用 PlatformClient 连接。
+在另一个终端运行 `oea open` 打开已授权的浏览器会话；使用自定义状态目录时传入相同的 `--data-dir`。初次默认地址为 `http://127.0.0.1:8890`，Windows 启动器会自动打开一次性登录链接。普通首页访问不授予管理权限。前台宿主可用 Ctrl+C 退出；关闭浏览器不会停止宿主。相同状态目录只由一个 Host 持有，已有宿主使用 PlatformClient 连接。
 
 默认本机状态位于 `~/.oea/data`，必须位于 Git、源码和同步目录之外。`oea paths` 只报告路径；`OEA_HOME` 可显式选择另一个绝对用户根。更新环境不自动移动或迁移数据。源码 editable 模式没有原生组件时，本地原生工具明确不可用。
 
@@ -370,7 +370,18 @@ Agent 拥有这份隔离 SDK 状态，退出上下文时关闭自己创建的资
 
 完整开发、流式和恢复契约见 [Python SDK](sdk.md)、[模型 Agent 示例](../examples/model_agent.py)和[进程 Agent 示例](../examples/integration_agent.py)。进程 Agent 需要实现 OEA 协议 3 UTF-8 JSONL 协议，普通控制台脚本不会自动成为 OEA Agent。
 
+### 外部应用接入
+
+在“应用接入”登记本机应用，将只显示一次的凭据保存到应用后端的秘密配置中。
+为当前项目的 Agent 添加绑定，明确授予所需工具、Skills、参考目录、网络和成本上限；
+实际能力仍受来源 Agent 当前配置限制。应用后端使用 `ApplicationClient`，不使用平台管理凭据。
+应用会话、文件和成果通过 OAP 读取，不进入普通工作台业务页面。
+
+轮换后旧凭据失效；停用应用会撤销访问并保留历史。调整绑定会约束后续能力调用，
+更换 Agent 绑定时创建新会话。接口和 SDK 示例见[应用接入与 OAP](applications/README.md)。
+
 <a id="mcp"></a>
+
 ## 13. 通过 MCP 接入 Agent 客户端
 
 1. 启动 OEA 宿主，确认项目与数据目录。

@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import http.cookiejar
+import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -128,6 +131,44 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("startup options do not change it", reused.stdout)
         self.assertNotIn("Host PID:", reused.stdout)
         self.assert_host(state, port, allow_commands=False)
+
+    def test_browser_launch_uses_a_single_use_ticket_from_the_existing_host(self):
+        state, port = self.root / "browser-state", self.free_port()
+        started = self.launch(state, port=port)
+        self.assertEqual(started.returncode, 0, self.startup_diagnostics(started))
+        captured = self.root / "browser-link.txt"
+        environment = {**self.environment, "OEA_TEST_BROWSER_LINK": str(captured)}
+        script = ("function Start-Process { param([string]$FilePath) "
+                  "if (-not $FilePath.StartsWith('http://127.0.0.1:')) { throw 'Unexpected process launch' }; "
+                  "[IO.File]::WriteAllText($env:OEA_TEST_BROWSER_LINK,$FilePath) }; & " + ps_string(ROOT / "Start-Workspace.ps1") +
+                  " -Python " + ps_string(sys.executable) + " -DataDir " + ps_string(state))
+        result = subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                                env=environment, cwd=self.root, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Host PID:", result.stdout)
+        self.assertNotIn("oea-login=", result.stdout)
+        link = captured.read_text(encoding="utf-8")
+        self.assertNotIn((state / "client-token").read_text(encoding="utf-8").strip(), link)
+        parsed = urllib.parse.urlsplit(link)
+        self.assertEqual((parsed.scheme, parsed.hostname, parsed.port), ("http", "127.0.0.1", port))
+        ticket = urllib.parse.parse_qs(parsed.fragment)["oea-login"][0]
+        origin = "http://127.0.0.1:" + str(port)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        with opener.open(origin, timeout=5) as response:
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+        with self.assertRaises(urllib.error.HTTPError) as anonymous:
+            opener.open(origin + "/api/protocol", timeout=5)
+        self.assertEqual(anonymous.exception.code, 401)
+        request = urllib.request.Request(origin + "/api/browser-login/redeem", data=json.dumps({"ticket": ticket}).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with opener.open(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        with opener.open(origin + "/api/protocol", timeout=5) as response:
+            self.assertEqual(json.load(response)["protocol_version"], "3.0")
+        with self.assertRaises(urllib.error.HTTPError) as reused:
+            opener.open(request, timeout=5)
+        self.assertEqual(reused.exception.code, 403)
 
     def startup_diagnostics(self, result):
         return result.stdout + result.stderr + "\n".join(
