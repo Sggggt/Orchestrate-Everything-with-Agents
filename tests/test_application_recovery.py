@@ -14,7 +14,7 @@ from oea.contracts.applications import ApplicationRun, ApplicationResume, Applic
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from test_command_recovery_v3 import WaitingCommandModel
-from test_host_v2 import WaitModel
+from test_host import WaitModel
 
 
 def process_terminated(pid):

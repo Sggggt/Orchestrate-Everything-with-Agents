@@ -15,7 +15,7 @@ from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.storage.persistence import one, rows
 from oea.web.app import create_app
-from test_http_v2 import ModelFixture
+from test_http import ModelFixture
 
 
 class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -256,7 +256,7 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(downloaded.read_bytes(), data)
 
     async def test_active_stream_observes_rotation_without_replaying_model(self):
-        from test_host_v2 import BarrierModel
+        from test_host import BarrierModel
         from oea.web.oap import progress
         model = self.host.model_api = BarrierModel()
         client = self.clients[0]

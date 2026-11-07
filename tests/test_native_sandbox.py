@@ -238,7 +238,7 @@ print(result)
 
 
 @unittest.skipUnless(os.environ.get("OEA_TEST_NATIVE_COMPONENT"), "Native component is not configured")
-class NativeWorkspaceTests(__import__("test_workspace_v2").WorkspaceTests):
+class NativeWorkspaceTests(__import__("test_workspace").WorkspaceTests):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         from unittest.mock import patch

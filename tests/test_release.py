@@ -16,7 +16,7 @@ from oea.interfaces.cli import main, parser
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class ReleaseV2Tests(unittest.TestCase):
+class ReleaseTests(unittest.TestCase):
     def test_only_oea_namespace_is_installed_and_imports_start_no_threads(self):
         code = "import threading,json,importlib.util; before={t.ident for t in threading.enumerate()}; import oea; print(json.dumps({'new_threads':len({t.ident for t in threading.enumerate()}-before),'retired':{name:importlib.util.find_spec(name) is not None for name in ('ma_runtime','agent')}}))"
         value = json.loads(subprocess.check_output([sys.executable, "-B", "-c", code], text=True))

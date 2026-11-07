@@ -28,7 +28,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("BODY", deduplicate_skills(messages[2:4])[1]["content"])
 
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-context-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="oea-context-")
         self.store = Store(Path(self.temporary.name))
         await self.store.open()
         self.definition = AgentDefinition(id="worker", name="Worker")

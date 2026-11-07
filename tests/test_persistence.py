@@ -1,4 +1,4 @@
-"""Durable v2 facts preserve transactions and reject legacy state in place."""
+"""Durable facts preserve transactions and reject legacy state in place."""
 
 import tempfile
 import unittest
@@ -11,7 +11,7 @@ from oea.interfaces.registry import OperationRegistry
 
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-state-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="oea-state-")
         self.root = Path(self.temporary.name)
         self.store = Store(self.root)
         await self.store.open()
@@ -54,7 +54,7 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("resource" in table["name"] or "lease" in table["name"] for table in tables))
 
     async def test_legacy_source_is_left_untouched(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-legacy-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-legacy-") as directory:
             root = Path(directory)
             original = root / "runtime.sqlite"
             original.write_bytes(b"legacy database marker")

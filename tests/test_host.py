@@ -118,7 +118,7 @@ class SkillModel:
 
 class HostTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-host-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="oea-host-")
         self.root = Path(self.temporary.name)
         self.host = None
 

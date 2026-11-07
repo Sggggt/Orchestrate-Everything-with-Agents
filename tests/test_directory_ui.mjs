@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createMCPDirectory } from "../src/oea/web/static/mcp-directory.mjs";
 import { createSkillIntegration } from "../src/oea/web/static/skill-directory.mjs";
 
-test("editing MCP display metadata preserves saved argv and secret references through the v2 contract",async t=>{
+test("editing MCP display metadata preserves saved argv and secret references through the shared configuration contract",async t=>{
   const previous=globalThis.document;globalThis.document={querySelector:()=>null};t.after(()=>globalThis.document=previous);
   let saved={definition:{id:"tools",name:"Tools",description:"Original",project_id:"p",enabled:true,expose_to_codex:false,session_scope:"consumer",allowed_tools:["echo"],transport:"stdio",command:["python","-B","service.py","--mode","stdio"],cwd:"/tools",url:"",environment:{PUBLIC_OPTION:"value"},environment_refs:{API_KEY:"env:TOOL_KEY"},header_refs:{},timeout_seconds:120},revision:1,connection_state:"disconnected",tool_count:null,active_calls:0,bound_agents:[]};
   const calls=[],state={project:{id:"p"},mcpServers:[],mcpQuery:"",mcpDirectory:"",mcpDraft:null,mcpEpoch:0};

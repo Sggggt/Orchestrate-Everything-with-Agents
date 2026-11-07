@@ -25,7 +25,7 @@ class Submitted:
 
 class ActionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-actions-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="oea-actions-")
         self.root = Path(self.temporary.name)
         self.store = Store(self.root)
         await self.store.open()

@@ -44,7 +44,7 @@ saved.close()
         self.assertEqual(value, {"threads": 1, "legacy": False, "host": False, "graph": False, "ready": False})
 
     def test_standalone_sync_run_stream_and_close_share_one_owned_host(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-sdk-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-sdk-") as directory:
             model = EchoModel()
             with patch("oea.runtime.host.ModelAPI", return_value=model):
                 with Agent(name="Reader", model=Model(base_url="https://example.invalid/v1", model="fixture"),
@@ -141,7 +141,7 @@ class AsyncSDKTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(backend.opened)
 
     async def test_async_agent_uses_existing_host_and_does_not_close_it(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-sdk-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-sdk-") as directory:
             model = EchoModel()
             async with Host(Path(directory) / "state", model_api=model) as host:
                 await host.projects.create("Project", project_id="p")

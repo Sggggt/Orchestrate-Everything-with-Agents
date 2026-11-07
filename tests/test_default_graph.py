@@ -54,7 +54,7 @@ class ControlledContext:
 
 class DefaultGraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_graph_nodes_own_model_tool_observation_cycle(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-graph-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-graph-") as directory:
             context = ControlledContext()
             async with AsyncSqliteSaver.from_conn_string(str(Path(directory) / "graph.sqlite")) as saver:
                 graph = compile_agent_graph(saver)
@@ -65,7 +65,7 @@ class DefaultGraphTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("messages", result)
 
     async def test_restart_resumes_the_failed_node_with_original_identity(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-graph-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-graph-") as directory:
             path = str(Path(directory) / "graph.sqlite")
             config = {"configurable": {"thread_id": "run"}}
             context = ControlledContext(crash=True)
@@ -84,7 +84,7 @@ class DefaultGraphTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("oea", checkpoint.values)
 
     async def test_input_interrupt_resumes_the_original_graph(self):
-        with tempfile.TemporaryDirectory(prefix="oea-v2-graph-") as directory:
+        with tempfile.TemporaryDirectory(prefix="oea-graph-") as directory:
             config = {"configurable": {"thread_id": "run"}}
             context = ControlledContext(wait=True)
             async with AsyncSqliteSaver.from_conn_string(str(Path(directory) / "graph.sqlite")) as saver:

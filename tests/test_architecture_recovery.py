@@ -1,6 +1,6 @@
 """Apply the existing transport recovery contract to the declarative ReAct graph."""
 
-import test_context_recovery_v2 as recovery
+import test_context_recovery as recovery
 from oea import AgentArchitecture, ArchitectureBinding
 from oea.orchestration.architecture_templates import react
 

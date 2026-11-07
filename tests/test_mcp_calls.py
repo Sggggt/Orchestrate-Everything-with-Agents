@@ -13,7 +13,7 @@ from oea import MCPServer
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.storage.persistence import one
-from test_upstream_mcp_v2 import SERVER, content
+from test_upstream_mcp import SERVER, content
 
 
 class NoModel:

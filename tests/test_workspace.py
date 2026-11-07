@@ -17,7 +17,7 @@ from oea.workspace.commands import CommandSessions
 
 class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="oea-v2-目录 ")
+        self.temporary = tempfile.TemporaryDirectory(prefix="oea-目录 ")
         self.root = Path(self.temporary.name)
         self.project = self.root / "原始项目"
         self.project.mkdir()

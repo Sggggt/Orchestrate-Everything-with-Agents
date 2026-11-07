@@ -15,7 +15,7 @@ from oea.models.api import ModelAPI
 from oea.runtime.context import RunContext
 from oea.runtime.host import Host
 from oea.storage.persistence import encode, one, rows
-from test_model_api_v2 import Stream, Transport, frame
+from test_model_api import Stream, Transport, frame
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):

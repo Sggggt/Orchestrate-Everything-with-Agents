@@ -10,7 +10,7 @@ from oea import AgentDefinition, Model, ProjectWorkspace, RunSpec, Tools, Worksp
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.workspace.environment import ExecutionEnvironment
-from test_host_v2 import BarrierModel
+from test_host import BarrierModel
 
 
 class ProjectEnvironmentTests(unittest.IsolatedAsyncioTestCase):

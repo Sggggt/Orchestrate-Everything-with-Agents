@@ -1,4 +1,4 @@
-"""The existing-host client and browser gateway use the same v2 services."""
+"""The existing-host client and browser gateway share the current services."""
 
 import json
 import hashlib

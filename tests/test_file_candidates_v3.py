@@ -163,7 +163,7 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(page["items"]) + len(page["directories"]), 100)
         self.assertEqual(page["version_scope"], "directory_entries")
 
-    @unittest.skipIf(os.name == "nt", "Portable link creation is verified on Linux")
+    @unittest.skipIf(os.name == "nt", "Requires Linux symbolic link support")
     async def test_output_links_cannot_expose_another_directory(self):
         run = await self.run_files()
         private = self.root / "private"

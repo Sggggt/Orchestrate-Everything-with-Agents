@@ -15,7 +15,7 @@ from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
 from oea.storage.persistence import one, rows
 from oea.workspace.environment import ExecutionEnvironment
-from test_host_v2 import BarrierModel, WaitModel
+from test_host import BarrierModel, WaitModel
 
 
 class ApplicationExecutionTests(unittest.IsolatedAsyncioTestCase):
