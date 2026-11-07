@@ -17,7 +17,7 @@ from oea.sdk.architectures import ArchitectureClient
 from oea.mcp.upstream import MCPServer
 from oea.skills.service import SkillSource
 
-__version__ = "3.3.1"
+__version__ = "3.3.3"
 
 __all__ = ["AgentArchitecture", "ArchitectureGraph", "ArchitectureNode", "ArchitectureEdge", "ArchitectureBuilder", "ArchitectureOptions", "ArchitectureClient", "StateField", "ArchitectureBinding",
            "Agent", "AgentInstance", "AgentDefinition", "Model", "ModelPricing", "SummaryPolicy", "Instructions", "Tools", "ToolKit", "tool", "FunctionTool", "ResumeExecutionLimits",

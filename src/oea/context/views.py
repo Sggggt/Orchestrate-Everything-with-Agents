@@ -78,7 +78,7 @@ def reference_message(message, row):
     return {**message, "content": encode(body)}
 
 
-def unresolved(group):
+def unresolved(group, *, states=True):
     for message in group:
         if message["role"] != "tool" or not isinstance(message.get("content"), str):
             continue
@@ -88,7 +88,7 @@ def unresolved(group):
             continue
         if isinstance(value, dict):
             state, error = value.get("state"), value.get("error")
-            if (isinstance(state, str) and state in {"intent", "dispatched", "needs_review", "starting", "running", "unknown"}
+            if (states and isinstance(state, str) and state in {"intent", "dispatched", "needs_review", "starting", "running", "unknown"}
                 or isinstance(error, dict) and error.get("code") == "OUTCOME_UNCERTAIN" or value.get("unresolved_actions")):
                 return True
     return False

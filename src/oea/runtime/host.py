@@ -58,7 +58,8 @@ class Host:
         self.model_api = model_api
         self.models = ModelExecutor(self)
         self.budgets = Budgets(self.store)
-        self.contexts = ContextStore(self.store, redact=self.redact)
+        self.command_sessions = CommandSessions(self.root / "commands", on_settle=self._command_settled)
+        self.contexts = ContextStore(self.store, redact=self.redact, command_facts=self.command_sessions.facts)
         self.tools = ToolGateway(self.store, authorize=self.authorize, record_usage=self.budgets.tool,
                                  record_progress=self.budgets.progress, redact=self.redact, on_settle=self.on_action_settle,
                                  authorize_intent=self.authorize_intent, on_intent_settle=self.on_intent_settle)
@@ -84,7 +85,6 @@ class Host:
         self.access = PlatformAccess(self)
         self.registry = OperationRegistry(authorize=self.access.guard)
         self.file_writes = FileWrites()
-        self.command_sessions = CommandSessions(self.root / "commands", on_settle=self._command_settled)
         self.saver_scope = self.saver = self.graph = None
         for name in SCHEMAS:
             self.tools.register(LocalTool(name, resolve_run=self.resolve_workspace, publish=self.artifacts.publish, commands_enabled=allow_commands, file_writes=self.file_writes, image_artifact=self.artifacts.image_for_run, sessions=self.command_sessions))

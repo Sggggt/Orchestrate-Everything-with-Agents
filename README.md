@@ -97,4 +97,4 @@ Runtime state belongs on a local disk outside Git repositories and synchronized 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and [SECURITY.md](SECURITY.md) for sensitive reports. The repository includes generic automated contract tests and source fixtures, with no populated workspace or generated test output.
 
-Licensed under [MIT](LICENSE). OEA 3.2.1 uses the `oea` package and CLI with protocol 3.0. Upgrade existing state through an explicit offline migration into a new directory.
+Licensed under [MIT](LICENSE). OEA 3.3.3 uses the `oea` package and CLI with protocol 3.0. Supported older state formats require an explicit offline migration into a new directory; updates that keep the same state schema reuse the existing data directory.

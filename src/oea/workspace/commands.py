@@ -46,6 +46,22 @@ class CommandSessions:
             record.update(state="unknown", process_stopped=False)
         return record
 
+    def facts(self, commands):
+        """Read lifecycle metadata only; never wait, inspect processes or consume output."""
+        result = {}
+        for identity, run_id in commands.items():
+            try:
+                record = self.load(identity, run_id).copy()
+            except RuntimeFault as error:
+                if error.code != "COMMAND_NOT_FOUND":
+                    raise
+                continue
+            result[identity] = {key: record.get(key) for key in
+                ("generation", "state", "exit_code", "process_stopped", "termination", "started_at", "stopped_at")}
+            if record.get("error"):
+                result[identity]["error"] = {"code": record["error"]["code"]}
+        return result
+
     async def start(self, request, environment):
         args, identity = request["arguments"], request["action_id"]
         require(bool(args.get("argv")) != bool(args.get("command")), "INVALID_REQUEST", "Choose argv or command")

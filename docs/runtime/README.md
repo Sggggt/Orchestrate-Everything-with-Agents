@@ -27,6 +27,7 @@
   - `async summarize(self, messages, output_tokens)`
   - `async call_model(self, state)`
   - `async model_input(self, output_tokens=None)`
+    - 上下文选择复用宿主注入的只读命令事实能力；当前生命周期元数据与历史回执分别投影，原动作、命令和实例作用域保持一致。压缩和恢复不发起命令观察工具、模型探测或重复执行。
   - `async response(self, identity)`
   - `async execute_tools(self, state)`
   - `async model_messages(self, messages)`
