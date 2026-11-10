@@ -16,18 +16,19 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PYTHONDONTWRITEBYTECODE: '1'
-      PIP_CACHE_DIR: ${{ runner.temp }}/pip-cache
-      CARGO_HOME: ${{ runner.temp }}/cargo
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      TMPDIR: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Prepare pinned toolchain
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}/pip-cache
+          CARGO_HOME: ${{ runner.temp }}/cargo
+          RUSTUP_HOME: ${{ runner.temp }}/rustup
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         shell: python {0}
         run: |
           import os, pathlib, subprocess, tomllib
@@ -38,6 +39,8 @@ jobs:
           toolchain = tomllib.loads((root / 'native/sandbox/rust-toolchain.toml').read_text())['toolchain']['channel']
           subprocess.run(['rustup', 'toolchain', 'install', toolchain, '--profile', 'minimal', '--component', 'rust-docs'], check=True)
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              for key in ('PIP_CACHE_DIR', 'CARGO_HOME', 'RUSTUP_HOME', 'TMPDIR', 'TEMP', 'TMP'):
+                  output.write(key + '=' + os.environ[key] + '\n')
               output.write('RUSTUP_TOOLCHAIN=' + toolchain + '\n')
               output.write('SOURCE_DATE_EPOCH=' + subprocess.check_output(['git', 'log', '-1', '--format=%ct'], text=True).strip() + '\n')
       - name: Install build dependencies
