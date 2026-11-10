@@ -38,6 +38,7 @@
   - `execution_owner(self)`
 - `contracts/domain.py`：`RunResult`
 - `contracts/domain.py`：`RunHandle`
+- `contracts/domain.py`：`RunHandlingSelection`：用户批量处理任务时携带的运行标识和原观察时间。
 - `contracts/domain.py`：`RunSpec`
   - `unique_artifacts(cls, value)`
   - `bounded_input(cls, value)`

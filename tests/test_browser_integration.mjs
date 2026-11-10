@@ -42,3 +42,11 @@ test("MCP results prefer structured fields and render text blocks", () => {
   assert.ok(!toolResult({ structured_content: { text: "Done" }, content: [{ type: "text", text: "duplicate" }] }).includes("duplicate"));
   assert.ok(toolResult({ content: [{ type: "text", text: "# Result" }] }).includes("<h1>Result</h1>"));
 });
+
+test("optional field removal renders an SVG icon while required fields stay protected", () => {
+  const schema = {type:"object",properties:{response_field:{type:"string",default:"response_id"}}};
+  const html = valueEditor({response_field:"response_id"},"deliver",schema);
+  assert.match(html, /<button[^>]*data-value-remove[^>]*>\s*<svg\b/);
+  assert.ok(!html.includes('${icon('));
+  assert.ok(!valueEditor({response_field:"response_id"},"deliver",{...schema,required:["response_field"]}).includes('data-value-remove'));
+});

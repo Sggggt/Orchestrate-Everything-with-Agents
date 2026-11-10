@@ -11,6 +11,12 @@ from oea.contracts.configuration import Configuration, UsePolicy
 RunState = Literal["accepted", "running", "waiting", "completed", "failed", "cancelled", "needs_review"]
 
 
+class RunHandlingSelection(Configuration):
+    """The exact task observation acknowledged by a user."""
+    run_id: str
+    expected_updated_at: int = Field(ge=0)
+
+
 class Artifact(Configuration):
     id: str
     name: str

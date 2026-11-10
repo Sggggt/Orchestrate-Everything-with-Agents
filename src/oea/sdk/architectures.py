@@ -23,8 +23,14 @@ class ArchitectureClient:
     async def templates(self, name: str | None = None):
         return await self._call("templates", name=name)
 
-    async def status(self, agent_id: str, project_id: str, *, role: Literal["main", "manager"] = "main"):
-        return await self._call("status", agent_id=agent_id, project_id=project_id, role=role)
+    async def status(self, agent_id: str, project_id: str, *, role: Literal["main", "manager"] = "main", canvas: bool = False):
+        return await self._call("status", agent_id=agent_id, project_id=project_id, role=role, canvas=canvas)
+
+    async def functions(self, name: str | None = None, *, cursor: int = 0, limit: int = 25):
+        return await self._call("functions", name=name, cursor=cursor, limit=limit)
+
+    async def remove(self, architecture_id: str, project_id: str, owner_agent_id: str, expected_revision: int):
+        return await self._call("remove", architecture_id=architecture_id, project_id=project_id, owner_agent_id=owner_agent_id, expected_revision=expected_revision)
 
     async def node_types(self, kind: str | None = None):
         return await self._call("node_types", kind=kind)
@@ -38,11 +44,11 @@ class ArchitectureClient:
     async def get(self, architecture_id: str, project_id: str, *, version: int | None = None):
         return await self._call("get", architecture_id=architecture_id, project_id=project_id, version=version)
 
-    async def list(self, project_id: str, *, cursor: int = 0, limit: int = 25):
-        return await self._call("list", project_id=project_id, cursor=cursor, limit=limit)
+    async def list(self, project_id: str, *, owner_agent_id: str | None = None, include_removed: bool = False, cursor: int = 0, limit: int = 25):
+        return await self._call("list", project_id=project_id, owner_agent_id=owner_agent_id, include_removed=include_removed, cursor=cursor, limit=limit)
 
-    async def save(self, architecture_id: str, project_id: str, expected_revision: int, draft: ArchitectureGraph | dict):
-        return await self._call("save", architecture_id=architecture_id, project_id=project_id, expected_revision=expected_revision, draft=draft)
+    async def save(self, architecture_id: str, project_id: str, expected_revision: int, draft: ArchitectureGraph | dict, *, name: str | None = None):
+        return await self._call("save", architecture_id=architecture_id, project_id=project_id, expected_revision=expected_revision, draft=draft, name=name)
 
     async def validate(self, architecture_id: str, project_id: str, *, expected_revision: int | None = None):
         return await self._call("validate", architecture_id=architecture_id, project_id=project_id, expected_revision=expected_revision)
@@ -59,8 +65,8 @@ class ArchitectureClient:
     async def compare(self, architecture_id: str, project_id: str, version: int, *, other_version: int | None = None):
         return await self._call("compare", architecture_id=architecture_id, project_id=project_id, version=version, other_version=other_version)
 
-    async def preview(self, architecture_id: str, project_id: str, *, version: int | None = None):
-        return await self._call("preview", architecture_id=architecture_id, project_id=project_id, version=version)
+    async def preview(self, architecture_id: str, project_id: str, *, version: int | None = None, detail: Literal["stages", "canvas"] = "stages"):
+        return await self._call("preview", architecture_id=architecture_id, project_id=project_id, version=version, detail=detail)
 
     async def adjust(self, architecture_id: str, project_id: str, expected_revision: int, options: ArchitectureOptions):
         return await self._call("adjust", architecture_id=architecture_id, project_id=project_id, expected_revision=expected_revision, options=options)

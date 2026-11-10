@@ -125,7 +125,7 @@ class ApplicationExecutionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeFault):
             await self.host.boards.create("p", "Forbidden", session_id=context.instance["session_id"])
 
-    async def test_application_work_blocks_architecture_switch_without_business_identifiers(self):
+    async def test_application_run_keeps_snapshot_when_default_architecture_changes(self):
         from oea import AgentArchitecture, ArchitectureBinding
         from oea.orchestration.architecture_templates import react
         run = await self.submit()
@@ -134,15 +134,13 @@ class ApplicationExecutionTests(unittest.IsolatedAsyncioTestCase):
         version = await self.host.architectures.publish("candidate", "p", 1)
         binding = ArchitectureBinding(architecture_id="candidate", version=version["version"])
         status = await self.host.architectures.status("worker", "p")
-        self.assertEqual(status["blocker"], {"source": "application", "pending": True})
-        with self.assertRaises(RuntimeFault) as blocked:
-            await self.host.architectures.bind("worker", "p", binding, expected_revision=1)
-        self.assertEqual(blocked.exception.code, "AGENT_IN_USE")
-        self.assertEqual(blocked.exception.details, {"source": "application", "pending": True})
+        self.assertIsNone(status["blocker"])
+        await self.host.architectures.bind("worker", "p", binding, expected_revision=1)
+        original = await self.host.store.call(lambda db: one(db, "SELECT config_json FROM runs WHERE id=?", (run.id,)))
+        self.assertIsNone(json.loads(original['config_json'])['execution']['architecture'])
         self.model.release.set()
         await self.host.runs.result(run.id, timeout=10)
-        self.assertIsNone((await self.host.architectures.status("worker", "p"))["blocker"])
-        await self.host.architectures.bind("worker", "p", binding, expected_revision=1)
+        self.assertEqual((await self.host.architectures.status("worker", "p"))["binding"], binding.model_dump())
 
     async def test_current_binding_and_application_revocation_apply_to_active_run(self):
         run = await self.submit()

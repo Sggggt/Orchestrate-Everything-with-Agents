@@ -50,3 +50,9 @@
 
 
 重新连接后可用 `instance.aresume(run_id=original_run_id, ...)` 恢复明确的原 Run；接受恢复后，SDK 保存该 ID，后续等待输入可继续使用同一实例的 `aresume(...)`。恢复复用原运行、预算和目录，不新建工作意图。
+
+## Task history and handling
+
+`PlatformClient.call("runs.list", {"project_id": project_id, "view": "attention", "limit": 20})` pages outstanding platform tasks across the project. Omit `view` for all history; add `session_id` to narrow the scope. The response supplies the next `cursor`, original execution `state`, `handling_state` and `handled_at`.
+
+Use `RunHandlingSelection(run_id=..., expected_updated_at=...)` with `host.runs.mark_handled`, or pass each selection's JSON representation to `PlatformClient.call("runs.mark_handled", ...)` and the same control MCP operation. The project and selected observations are required; batches are bounded at 100. The result separates acknowledged `items` from changed `conflicts`. This operation never resolves external actions, changes accounting or cancels a Run. The original execution state remains available after a task is handled.

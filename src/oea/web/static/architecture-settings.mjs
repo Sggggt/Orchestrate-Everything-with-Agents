@@ -1,106 +1,71 @@
-import { $,escape,icon,iconButton,signal,hint,element,modal,notify } from "./ui.mjs";
-import { codeViewer } from "./code-viewer.mjs";
-
-const candidates=new Map();
-const names={react:"ReAct",plan_execute:"Plan & Execute",reflexion:"Reflexion"};
-const stages={prepare:["准备","装配当前工作与获准上下文"],model:["决策","根据目标、上下文与证据，选择下一步行动"],tools:["工具","通过原有授权和持久回执执行工具"],deliver:["交付","保存完整结果，核验明确的交付要求"],subgraph:["子图","执行独立的阶段结构"]};
-const titles={Prepare:"准备",Decide:"决策",Act:"工具",Deliver:"交付",Plan:"规划","Execute next step":"执行下一步",Evaluate:"评价",Reflect:"反思"};
-const descriptions={Prepare:"装配当前工作与获准上下文。",Decide:"根据当前目标、上下文与证据，选择工具、继续推理或进入交付。",Act:"通过原有授权和持久回执执行工具，普通错误交回 Agent 排查。",Deliver:"保存完整结果，核验明确的交付要求。",Plan:"根据目标与已有证据，生成有界的顺序计划。","Execute next step":"继续计划中尚未完成的步骤，按证据决定是否重规划。",Evaluate:"根据目标和证据评价当前结果，给出具体反馈。",Reflect:"把本轮反馈转为下一次尝试可用的经验。"};
-const defaultPreview={stages:["prepare","model","tools","deliver"].map(type=>({id:type,type,title:stages[type][0],description:stages[type][1]})),links:[{source:"prepare",target:"model"},{source:"model",target:"tools"},{source:"model",target:"deliver"},{source:"tools",target:"model"}],omitted:true,editable:false};
-
-export function stagePreview(preview){
-  const nodes=(preview.stages||[]).map(node=>({...node,description:descriptions[node.title]||node.description,title:titles[node.title]||node.title}));
-  if(!nodes.length)return `<div class="architecture-empty">${icon("code")}<span>暂无预览</span>${hint("在源码中查看完整结构")}</div>`;
-  const ids=nodes.map(node=>node.id),returns=(preview.links||[]).filter(edge=>ids.indexOf(edge.target)!==ids.indexOf(edge.source)+1);
-  const returnPaths=[...new Set(returns.map(edge=>`${nodes.find(node=>node.id===edge.source)?.title||edge.source} → ${nodes.find(node=>node.id===edge.target)?.title||edge.target}`))].slice(0,4).join(" · ");
-  return `<div class="architecture-stages" aria-label="架构关键阶段">${nodes.map((node,index)=>`<button type="button" class="architecture-stage ${index===0?"selected":""}" data-stage="${escape(node.id)}" aria-pressed="${index===0}" title="${escape(node.description||node.title)}"><span class="stage-symbol">${icon(({prepare:"file",model:"spark",tools:"terminal",deliver:"check",subgraph:"flow"})[node.type]||"flow")}</span><span>${escape(node.title||stages[node.type]?.[0]||node.id)}</span></button>${index<nodes.length-1?`<span class="architecture-arrow" aria-hidden="true">${(preview.links||[]).some(edge=>edge.source===node.id&&edge.target===nodes[index+1].id)?"→":"·"}</span>`:""}`).join("")}<span class="architecture-legend">${returns.length?`<span class="hint-icon" role="img" aria-label="${escape(returnPaths)}" title="${escape(returnPaths)}">${icon("branch")}</span>`:""}${preview.omitted?hint("关键阶段预览；部分路径已合并，完整结构见源码"):""}</span></div><span class="architecture-description sr-only" aria-live="polite">${escape(nodes[0].description||stages[nodes[0].type]?.[1]||nodes[0].title)}</span>`;
+import { $,escape,icon,element,modal,notify,confirmRemoval } from "./ui.mjs";
+import { thumbnail } from "./agent-graph.mjs";
+const selections=new Map(),names={react:"ReAct",plan_execute:"Plan & Execute",reflexion:"Reflexion"};
+const key=(app,agent)=>app.state.project.id+":"+agent;
+export function selectArchitecture(app,agent,id){selections.set(key(app,agent),id?{id}:null);}
+export const stagePreview=value=>thumbnail(value.canvas||{nodes:[],edges:[]},escape);
+export const architectureCall=(app,project_id)=>(action,params={})=>app.rpc("architectures."+action,{...(action==="create"?{}:{project_id}),...params});
+export function acceptBinding(draft,saved){
+  if(draft.dirty){
+    const execution=saved.definition.execution;
+    Object.assign(draft.definition.execution,{architecture:execution.architecture,graph:execution.graph,graph_version:execution.graph_version,program:execution.program});
+    // A recovered response may already include another writer's later revision.
+    // Keep the original CAS boundary rather than overwriting those unseen fields.
+    if(saved.revision!==draft.revision+1){draft.bindingConflict=true;return;}
+  }
+  else draft.definition=saved.definition;
+  draft.revision=saved.revision;draft.bindingConflict=false;
 }
 
-function wireStages(root,preview){
-  for(const button of root.querySelectorAll("[data-stage]"))button.onclick=()=>{
-    for(const sibling of root.querySelectorAll("[data-stage]")){const selected=sibling===button;sibling.classList.toggle("selected",selected);sibling.setAttribute("aria-pressed",String(selected));}
-    const node=preview.stages.find(node=>node.id===button.dataset.stage);
-    $(".architecture-description",root).textContent=descriptions[node.title]||node.description||stages[node.type]?.[1]||node.title;
-  };
-}
-
-export async function renderArchitecture(app,root,draft){
-  const load=Symbol();root.architectureLoad=load;
-  const project_id=app.state.project.id,agent_id=draft.definition.id,key=project_id+":"+agent_id;
-  const call=(action,params={})=>app.rpc("architectures."+action,{project_id,...params});
-  const report=error=>{if(root.isConnected){const notice=$(".architecture-notice",root);if(notice){notice.textContent=error.message;notice.classList.add("v2-error");}else notify(error.message,true);}};
-  root.innerHTML=`<div class="inline-status" role="status">${icon("refresh")}<span class="sr-only">正在读取架构状态</span></div>`;
-  if(!draft.revision){root.innerHTML=`<section class="architecture-section"><h3>执行架构</h3><span class="muted-status">${signal("pending","尚未保存")}先保存 Agent</span></section>`;return;}
+export async function renderArchitecture(app,root,agentDraft){
+  const epoch=Symbol();root.loadEpoch=epoch;
+  const project_id=app.state.project.id,agent_id=agentDraft.definition.id;
+  const call=architectureCall(app,project_id);
+  const current=()=>root.isConnected&&root.loadEpoch===epoch,report=error=>{if(current())notify(error.message,true);};
+  if(!agentDraft.revision){root.innerHTML='<div class="ag-empty">保存 Agent 后即可编排节点画布。</div>';return;}
+  root.innerHTML='<div class="ag-loading" role="status">正在读取节点画布…</div>';
   try{
-    const status=await call("status",{agent_id});
-    const candidate=candidates.get(key)||status.binding?.architecture_id;
-    const [active,editing]=await Promise.all([
-      status.binding?call("preview",{architecture_id:status.binding.architecture_id,version:status.binding.version}):Promise.resolve(null),
-      candidate?call("preview",{architecture_id:candidate}):Promise.resolve(null)
-    ]);
-    if(!root.isConnected||root.architectureLoad!==load)return;
-    draft.workStatus=status.blocker?.source==="application"?"应用工作未结束或待核对":status.blocker?({running:"执行中",accepted:"已接受工作",waiting:"等待输入或依赖",needs_review:"结果待核对"}[status.blocker.state]||"有待核对工作"):"可接受新工作";
-    const workStatus=root.closest("form")?.querySelector("[data-work-status]");if(workStatus)workStatus.innerHTML=signal(status.blocker?.source==="application"?"waiting":status.blocker?.state||"idle",draft.workStatus);
-    const title=active?`${active.name} · v${active.version}`:status.program?"进程 Agent":status.graph==="default"?"默认 ReAct":`${status.graph} · ${status.graph_version}`;
-    const preview=active||(!status.program&&status.graph==="default"?defaultPreview:{stages:[],omitted:true});
-    root.innerHTML=`<section class="architecture-section">
-      <header class="architecture-heading"><h3>执行架构 <span class="architecture-version">${signal("online","当前生效架构")}${escape(title)}</span></h3>${iconButton("code","编辑源码",{"data-source":true})}</header>
-      <div class="architecture-preview">${stagePreview(preview)}</div>
-      ${status.blocker?`<div class="architecture-blocker">${signal("waiting","切换受阻")}<span>${status.blocker.source==="application"?"请从所属应用完成或核对原工作":"先完成或核对原工作"}</span>${status.blocker.run_id?iconButton("clock","查看阻塞工作",{"data-blocker":true}):""}</div>`:""}
-      <div class="architecture-candidate"><div><h4>候选草稿</h4><span class="v2-muted">${editing?`${escape(editing.name)} · r${editing.revision}`:"未创建"}</span></div><div class="v2-actions">${editing?iconButton("shield","校验",{"data-validate":true})+iconButton("upload","发布候选",{"data-publish":true}):""}${iconButton("branch","切换版本",{"data-versions":true})}</div></div>
-      ${editing?`<div class="architecture-draft-actions">${iconButton("code","编辑草稿源码",{"data-draft-source":true})}${editing.editable?iconButton("sliders","调整选项",{"data-adjust":true}):hint("代码图仅支持在源码中修改")}</div>`:""}
-      <div class="architecture-template"><label for="architecture-template">模板</label><select id="architecture-template">${Object.entries(names).map(([name,title])=>`<option value="${name}">${title}</option>`).join("")}</select>${iconButton("plus","创建草稿",{"data-create":true})}</div>
-      <div class="architecture-notice" role="status"></div></section>`;
-    wireStages($(".architecture-preview",root),preview);
-    const refresh=()=>renderArchitecture(app,root,draft);
-    async function source(identity,version){
-      if(!identity){const reference=status.program?{program:draft.definition.execution.program}:{graph:status.graph,graph_version:status.graph_version};modal("执行入口",codeViewer(JSON.stringify(reference,null,2),{filename:"execution.json",language:"json"}),{size:"wide"});return;}
-      const exported=await call("export",{architecture_id:identity,...(version?{version}:{})});
-      const text=typeof exported.source==="string"?exported.source:JSON.stringify(exported.source,null,2);
-      modal("编辑架构源码",codeViewer(text,{filename:exported.filename||"source.json",language:exported.filename?"python":"json",download:!!exported.filename}),{size:"wide"});
-    }
-    $("[data-source]",root).onclick=()=>source(status.binding?.architecture_id,status.binding?.version).catch(report);
-    if(editing)$("[data-draft-source]",root).onclick=()=>source(editing.id).catch(report);
-    if(editing){const button=element(iconButton("eye","预览草稿"));$(".architecture-draft-actions",root).prepend(button);button.onclick=()=>{const content=element(`<div>${stagePreview(editing)}</div>`);modal("候选草稿预览",content,{size:"wide"});wireStages(content,editing);};}
-    if(status.blocker?.run_id)$("[data-blocker]",root).onclick=()=>app.showRun(status.blocker.run_id);
-    $("[data-create]",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{
-      const name=$("select",root).value,template=await app.rpc("architectures.templates",{name}),id="architecture-"+crypto.randomUUID();
-      await app.rpc("architectures.create",{definition:{id,project_id,name:names[name]},draft:template.graph});candidates.set(key,id);await refresh();notify("草稿已创建");
-    }catch(error){report(error);button.disabled=false;}};
+    const [status,page]=await Promise.all([call("status",{agent_id,canvas:true}),call("list",{owner_agent_id:agent_id,limit:25})]);
+    let selected=selections.get(key(app,agent_id));
+    const active=status.binding?await call("preview",{...status.binding,detail:"canvas"}):{name:status.program?"进程 Agent":status.graph==="default"?"默认 ReAct":status.graph,canvas:status.canvas};
+    let view=selected?await call("preview",{architecture_id:selected.id,...(selected.version?{version:selected.version}:{}),detail:"canvas"}):active;
+    if(view.removed&&!selected?.version){selected=null;selections.delete(key(app,agent_id));view=active;}
+    if(!current())return;
+    const activeLabel=status.binding?`${active.name} · v${active.version}`:active.name;
+    const viewed=selected?(selected.version?`${view.name} · v${view.version}`:`${view.name} · 草稿 r${view.revision}`):activeLabel;
+    const same=!!status.binding&&view.id===status.binding.architecture_id&&(selected?.version?selected.version===status.binding.version:view.revision===active.revision);
+    const editing=selected&&!selected.version&&!view.removed;
+    root.innerHTML=`<section class="ag-settings">
+      <div class="ag-version-heading"><div><span class="ag-eyebrow">当前生效</span><strong>${escape(activeLabel)}</strong>${status.binding?`<span class="ag-muted">来自草稿 r${active.revision}</span>`:""}</div><button type="button" class="btn small" data-history>${icon("clock")}历史版本</button></div>
+      <button type="button" class="ag-preview-entry" aria-label="进入 Agent 节点画布工作台" title="点击进入画布工作台">${view.canvas?.nodes?.length?thumbnail(view.canvas,escape):`<span class="ag-empty">${icon("code")}${status.program?"进程 Agent 使用已配置的程序入口":"此代码图暂无已注册拓扑"}</span>`}<span class="ag-preview-caption"><span>${icon("flow")} ${escape(viewed)}</span><span>${icon("external")}进入画布</span></span>${view.canvas?.omitted?'<span class="ag-preview-note">动态路径可能未完整展示</span>':""}</button>
+      <div class="ag-candidate-heading"><div><h3>候选草稿</h3><span class="ag-muted">选择草稿查看，确认切换后生效</span></div><button class="btn small" type="button" data-new>${icon("plus")}新建草稿</button></div>
+      <div class="ag-candidate-controls"><select aria-label="选择候选草稿" data-select><option value="">当前生效 · ${escape(activeLabel)}</option>${page.items.map(item=>`<option value="${escape(item.id)}" ${editing&&item.id===selected.id?"selected":""}>${escape(item.name)} · r${item.revision}</option>`).join("")}</select>${page.cursor!=null?'<button class="btn small" type="button" data-more>更多草稿</button>':""}<button class="btn small" type="button" data-copy title="复制正在查看的架构">${icon("branch")}复制</button>${editing?`<button class="icon-btn" type="button" data-rename title="重命名草稿" aria-label="重命名草稿">${icon("file")}</button><button class="icon-btn danger-text" type="button" data-remove title="删除草稿" aria-label="删除草稿">${icon("trash")}</button>`:""}</div>
+      <div class="ag-switch-row"><span class="ag-muted">正在查看：${escape(viewed)}</span><button class="btn primary" type="button" data-activate ${!selected||same?"disabled":""}>${icon("check")}切换版本</button></div>
+      <p class="ag-muted">切换只影响之后新接受的任务，已有任务继续使用原版本。</p>
+    </section>`;
+    if(editing&&!page.items.some(item=>item.id===selected.id))$("[data-select]",root).add(new Option(`${view.name} · r${view.revision}`,selected.id,true,true));
+    if(selected?.version){const option=new Option(`正在查看已发布版本：${viewed}`,"@version",true,true);option.disabled=true;$("[data-select]",root).add(option);}
+    const refresh=()=>renderArchitecture(app,root,agentDraft);
+    $("[data-select]",root).onchange=event=>{selectArchitecture(app,agent_id,event.target.value);refresh();};
+    $(".ag-preview-entry",root).onclick=()=>app.openAgentCanvas({agent_id,architecture_id:selected?.id||status.binding?.architecture_id||null,version:selected?selected.version||null:status.binding?.version||null});
+    async function create(name,graph,representation="declarative",source={}){const id="architecture-"+crypto.randomUUID();await call("create",{definition:{id,project_id,owner_agent_id:agent_id,name,representation,source},draft:graph});selectArchitecture(app,agent_id,id);await refresh();notify("候选草稿已创建，当前版本未改变");}
+    async function copyViewed(){const identity=selected?.id||status.binding?.architecture_id,version=selected?selected.version:status.binding?.version;if(identity){const value=await call("get",{architecture_id:identity,...(version?{version}:{})});await create(value.name+" 副本",value.definition||value.draft,value.representation,{...value.source,copied_from:{architecture_id:identity,version:version||null,revision:value.revision}});}else if(status.graph==="default"&&!status.program)await create("ReAct 草稿",(await app.rpc("architectures.templates",{name:"react"})).graph);else notify("请从模板新建草稿，代码入口不会被逆向改写",true);}
+    $("[data-copy]",root).onclick=()=>copyViewed().catch(report);
+    $("[data-new]",root).onclick=()=>{
+      const form=element(`<form><label class="field">草稿名称<input name="name" required maxlength="120" value="新架构"></label><label class="field">开始方式<select name="template">${Object.entries(names).map(([id,title])=>`<option value="${id}">${title}</option>`).join("")}<option value="copy">从已有架构复制</option></select></label><div data-library hidden></div><p data-error class="v2-error"></p><footer class="dialog-footer"><button class="btn primary" type="submit">创建草稿</button></footer></form>`),close=modal("新建候选草稿",form);let library={items:[],cursor:null};
+      async function load(append=false){const next=await call("list",{limit:25,...(append?{cursor:library.cursor}:{})});library={items:append?[...library.items,...next.items]:next.items,cursor:next.cursor};const area=$("[data-library]",form);area.hidden=false;area.innerHTML=`<label class="field">已有架构<select name="source">${library.items.map(item=>`<option value="${escape(item.id)}">${escape(item.name)}</option>`).join("")}</select></label>${library.cursor!=null?'<button type="button" class="btn small" data-next>加载更多</button>':""}`;const more=$("[data-next]",area);if(more)more.onclick=()=>load(true).catch(error=>$("[data-error]",form).textContent=error.message);}
+      form.elements.template.onchange=()=>{if(form.elements.template.value==="copy")load().catch(error=>$("[data-error]",form).textContent=error.message);else $("[data-library]",form).hidden=true;};
+      form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector('[type=submit]');button.disabled=true;try{const mode=form.elements.template.value;if(mode==="copy"){const value=await call("get",{architecture_id:form.elements.source.value});await create(form.elements.name.value,value.draft,value.representation,{...value.source,copied_from:{architecture_id:value.id,revision:value.revision}});}else await create(form.elements.name.value,(await app.rpc("architectures.templates",{name:mode})).graph);close();}catch(error){$("[data-error]",form).textContent=error.message;button.disabled=false;}};
+    };
+    const more=$("[data-more]",root);if(more)more.onclick=async()=>{try{const next=await call("list",{owner_agent_id:agent_id,cursor:page.cursor,limit:25});for(const item of next.items)if(![...$("[data-select]",root).options].some(o=>o.value===item.id))$("[data-select]",root).add(new Option(`${item.name} · r${item.revision}`,item.id));page.cursor=next.cursor;more.hidden=next.cursor==null;}catch(error){report(error);}};
     if(editing){
-      $("[data-validate]",root).onclick=async()=>{try{const result=await call("validate",{architecture_id:editing.id,expected_revision:editing.revision});$(".architecture-notice",root).textContent=result.valid?"校验通过":result.errors.map(error=>`${error.path.join(".")}：${error.message}`).join("\n");}catch(error){report(error);}};
-      $("[data-publish]",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const result=await call("publish",{architecture_id:editing.id,expected_revision:editing.revision});await refresh();const notice=$(".architecture-notice",root);if(notice)notice.textContent=`候选 v${result.version} 已发布`;}catch(error){report(error);button.disabled=false;}};
-      const adjust=$("[data-adjust]",root);
-      if(adjust)adjust.onclick=()=>{
-        const content=element(`<form><div class="field"><label for="architecture-max-steps">图步数上限</label><input id="architecture-max-steps" type="number" min="1" max="100000" required value="${escape(editing.options?.max_steps||512)}"></div>${editing.options?.max_attempts?`<div class="field"><label for="architecture-max-attempts">尝试次数上限</label><input id="architecture-max-attempts" type="number" min="1" max="10" required value="${escape(editing.options.max_attempts)}"></div>`:""}<p class="architecture-notice" role="status"></p><footer class="dialog-footer">${iconButton("check","保存草稿选项",{type:"submit",className:"primary"})}</footer></form>`),close=modal("调整草稿选项",content);
-        content.onsubmit=async event=>{event.preventDefault();try{const attempts=$("#architecture-max-attempts",content),options={max_steps:Number($("#architecture-max-steps",content).value),...(attempts?{max_attempts:Number(attempts.value)}:{})};await call("adjust",{architecture_id:editing.id,expected_revision:editing.revision,options});close();await refresh();}catch(error){$(".architecture-notice",content).textContent=error.message;}};
-      };
+      $("[data-remove]",root).onclick=()=>confirmRemoval("删除候选草稿",`删除“${view.name}”的候选草稿？已发布版本、当前生效版本和历史运行会保留。`,async()=>{await call("remove",{architecture_id:view.id,owner_agent_id:agent_id,expected_revision:view.revision});selectArchitecture(app,agent_id,null);await refresh();});
+      $("[data-rename]",root).onclick=()=>{const form=element(`<form><label class="field">草稿名称<input required maxlength="120" value="${escape(view.name)}"></label><p class="v2-error"></p><footer class="dialog-footer"><button class="btn primary" type="submit">保存名称</button></footer></form>`),close=modal("重命名草稿",form);form.onsubmit=async event=>{event.preventDefault();try{const value=await call("get",{architecture_id:view.id});await call("save",{architecture_id:view.id,expected_revision:view.revision,draft:value.draft,name:$("input",form).value});close();await refresh();}catch(error){$("p",form).textContent=error.message;}};};
     }
-    $("[data-versions]",root).onclick=()=>versions().catch(report);
-    async function versions(){
-      let page=await call("list",{limit:25}),items=page.items;
-      const content=element(`<form class="architecture-version-form"><div class="field"><label for="version-architecture">架构</label><div class="input-actions"><select id="version-architecture"></select>${iconButton("plus","加载更多架构",{"data-more":true})}</div></div><div class="field"><label for="architecture-version">已发布版本</label><div class="input-actions"><select id="architecture-version"></select>${iconButton("plus","加载更多版本",{"data-more-versions":true})}</div></div><p class="architecture-notice" role="status"></p><footer class="dialog-footer">${iconButton("check","应用到当前 Agent",{type:"submit",className:"primary",disabled:true})}</footer></form>`),close=modal("切换生效版本",content);
-      content.onsubmit=event=>event.preventDefault();
-      let versionPage;
-      const architectures=$("#version-architecture",content),versions=$("#architecture-version",content),submit=$("button[type=submit]",content);
-      function choices(){architectures.innerHTML=items.map(item=>`<option value="${escape(item.id)}">${escape(item.name)}</option>`).join("");$("[data-more]",content).hidden=!page.cursor;}
-      choices();if(items.some(item=>item.id===candidate))architectures.value=candidate;
-      const blocked=status.blocker||draft.dirty;
-      $(".architecture-notice",content).textContent=status.blocker?"原工作未完成或待核对，暂不能切换":draft.dirty?"请先保存 Agent 设置":"";
-      async function loadVersions(append=false){
-        versionPage=architectures.value?await call("versions",{architecture_id:architectures.value,limit:25,...(append?{cursor:versionPage.cursor}:{})}):{items:[],cursor:null};
-        if(!append)versions.replaceChildren();for(const item of versionPage.items){const option=document.createElement("option");option.value=item.version;option.textContent=`v${item.version} · 草稿修订 ${item.draft_revision}`;versions.append(option);}
-        if(!append&&versionPage.items.length)versions.value=versionPage.items.at(-1).version;
-        $("[data-more-versions]",content).hidden=!versionPage.cursor;submit.disabled=!!blocked||!versions.value;
-      }
-      architectures.onchange=()=>loadVersions().catch(error=>$(".architecture-notice",content).textContent=error.message);
-      $("[data-more]",content).onclick=async()=>{try{page=await call("list",{cursor:page.cursor,limit:25});const old=architectures.value;items.push(...page.items);choices();architectures.value=old;}catch(error){$(".architecture-notice",content).textContent=error.message;}};
-      $("[data-more-versions]",content).onclick=()=>loadVersions(true).catch(error=>$(".architecture-notice",content).textContent=error.message);
-      await loadVersions();
-      content.onsubmit=async event=>{event.preventDefault();submit.disabled=true;try{
-        const saved=await call("bind",{agent_id,binding:{architecture_id:architectures.value,version:Number(versions.value)},expected_revision:draft.revision});
-        draft.definition=saved.definition;draft.revision=saved.revision;candidates.set(key,architectures.value);close();await app.reloadAgents();await refresh();notify("架构版本已生效。");
-      }catch(error){$(".architecture-notice",content).textContent=error.message;submit.disabled=false;}};
-    }
-  }catch(error){if(!root.isConnected||root.architectureLoad!==load)return;root.innerHTML=`<section class="architecture-section"><h3>执行架构</h3><p class="v2-error">${escape(error.message)}</p>${iconButton("refresh","重新读取",{"data-retry":true})}</section>`;$("[data-retry]",root).onclick=()=>renderArchitecture(app,root,draft);}
+    $("[data-activate]",root).onclick=()=>{
+      const form=element(`<form><p>将当前 Agent 从 <strong>${escape(activeLabel)}</strong> 切换为 <strong>${escape(viewed)}</strong>？</p><p class="ag-muted">确认后校验并固定版本。已有任务沿用原图，之后新接受的任务使用新版本。</p><p class="v2-error" data-error></p><footer class="dialog-footer"><button class="btn" type="button" data-cancel>取消</button><button class="btn primary" type="submit">确认切换</button></footer></form>`),close=modal("切换生效版本",form);$("[data-cancel]",form).onclick=close;
+      form.onsubmit=async event=>{event.preventDefault();form.querySelector('[type=submit]').disabled=true;let published=null;try{published=selected.version?{version:selected.version}:await call("publish",{architecture_id:view.id,expected_revision:view.revision});const saved=await call("bind",{agent_id,binding:{architecture_id:view.id,version:published.version},expected_revision:agentDraft.revision});acceptBinding(agentDraft,saved);selectArchitecture(app,agent_id,null);await app.reloadAgents();close();await refresh();notify("版本已切换");}catch(error){let applied=false;if(published){try{const actual=await call("status",{agent_id});applied=actual.binding?.architecture_id===view.id&&actual.binding.version===published.version;if(applied){const saved=await app.rpc("agents.get",{agent_id});acceptBinding(agentDraft,saved);}}catch{/* Reconcile before any repeat. */}}if(applied){close();selectArchitecture(app,agent_id,null);await refresh();notify("已核实版本生效");}else $("[data-error]",form).textContent=(published?"版本已生成，尚未确认生效。":"未切换版本。")+error.message+" 关闭后重新读取状态再操作。";}};
+    };
+    $("[data-history]",root).onclick=async()=>{try{const identity=selected?.id||status.binding?.architecture_id;if(!identity){notify("当前使用内置程序，尚无发布版本");return;}const content=element('<div><div data-versions></div><button class="btn small" data-next>加载更多</button></div>'),close=modal("选择已发布版本",content);let cursor=0;async function load(){const page=await call("versions",{architecture_id:identity,cursor,limit:25});for(const item of page.items){const button=element(`<button class="ag-version-option" type="button">v${item.version}<span>来自草稿 r${item.draft_revision}</span>${status.binding?.architecture_id===identity&&status.binding.version===item.version?'<span class="ag-pill">当前生效</span>':""}</button>`);button.onclick=()=>{selections.set(key(app,agent_id),{id:identity,version:item.version});close();refresh();};$("[data-versions]",content).append(button);}cursor=page.cursor;$("[data-next]",content).hidden=cursor==null;}$("[data-next]",content).onclick=()=>load().catch(report);await load();}catch(error){report(error);}};
+  }catch(error){if(current()){root.innerHTML=`<div class="ag-empty">${escape(error.message)}<button class="btn" type="button">重新读取</button></div>`;$("button",root).onclick=()=>{selections.delete(key(app,agent_id));renderArchitecture(app,root,agentDraft);};}}
 }

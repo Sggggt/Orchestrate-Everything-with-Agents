@@ -12,7 +12,7 @@ export async function removeAgent(app,id,revision){
   clearRemovedAgent(app,id);await app.reloadAgents();return result;
 }
 const groups=[
-  ["概览与架构","当前架构和下一步操作。",[]],
+  ["概览与画布","配置、草稿与生效版本。",[]],
   ["模型与职责","定义清楚的职责，选择实际使用的模型。",[["model","base_url"],["model","model"],["model","reasoning_effort"],["model","max_output_tokens"],["instructions","system"]]],
   ["常用能力","工具、Skills 与工作环境。",[["tools","local"],["tools","mcp"],["skills"],["workspace","inherit_project"],["workspace","sandbox"],["workspace","network"],["workspace","project"],["workspace","references"],["context","input_tokens"]]]
 ];
@@ -36,13 +36,12 @@ export async function renderSettings(app,root){
   async function renderBody(){
     const body=$("#config-body",root);if(!selected){body.innerHTML=empty("添加一个 Agent","");return;}
     const draft=draftFor(app,selected),[title,hint,paths]=groups[tab];
-    const definition=draft.definition,tools=definition.tools||{},toolCount=(tools.local?.length||0)+(tools.functions?.length||0),working=s.instances.filter(instance=>instance.agent_id===selected&&instance.active_run_id).length;
-    const configured=!!(definition.model?.model&&definition.model?.base_url);
+    const definition=draft.definition,tools=definition.tools||{},toolCount=(tools.local?.length||0)+(tools.functions?.length||0);
     const form=element(`<form class="v2-config-form">
-      <header class="settings-profile"><span class="settings-profile-avatar" title="${escape(definition.id)}">${icon("agents")}</span><div><h2>${escape(definition.name||selected)}</h2><div class="settings-signals">${signal(definition.enabled?"online":"muted",definition.enabled?"Agent 已启用":"Agent 已停用")}<span class="signal-label">${escape(definition.model?.model||"未配置模型")}</span>${signal(configured?"configured":"pending",configured?"模型参数已配置；连接状态以探测结果为准":"模型未配置")}<span data-work-status>${signal(working?"running":"muted",draft.workStatus||(working?"工作进行中":"工作状态待核对"))}</span></div></div>${iconButton("check","保存设置",{type:"submit",className:"primary"})}</header>
+      <header class="settings-profile"><span class="settings-profile-avatar" title="${escape(definition.id)}">${icon("agents")}</span><div><h2>${escape(definition.name||selected)}</h2><div class="settings-signals"><span data-availability>${signal(definition.enabled?"pending":"muted",definition.enabled?"配置待检查":"已停用")}<span class="signal-label">${definition.enabled?"配置待检查":"已停用"}</span></span><span class="signal-label">${escape(definition.model?.model||"未配置模型")}</span></div></div>${iconButton("check","保存设置",{type:"submit",className:"primary"})}</header>
       <div class="settings-capabilities"><span title="本地工具" aria-label="${toolCount} 个本地工具">${icon("terminal")}${toolCount}</span>${tools.mcp?.length?`<span title="MCP 服务" aria-label="${tools.mcp.length} 个 MCP 服务">${icon("plug")}${tools.mcp.length}</span>`:""}<span title="Skills" aria-label="${definition.skills?.length||0} 个 Skill">${icon("book")}${definition.skills?.length||0}</span><span title="${definition.workspace?.inherit_project!==false?"继承项目环境":"独立工作环境"}" aria-label="${definition.workspace?.inherit_project!==false?"继承项目环境":"独立工作环境"}">${icon("folder")}</span></div>
       <div id="architecture-settings" ${tab!==0?'hidden':""}></div><div id="config-fields" class="settings-fields"></div><div id="credential-fields"></div><div id="config-check" role="status"></div>
-      <details class="settings-advanced"><summary>更多 ${helpHint("完整配置可通过导入、导出或 SDK 管理")}</summary><div class="settings-extra"><code>${escape(definition.id)}</code></div></details>
+      <div class="settings-extra settings-management"><span class="v2-muted">${escape(definition.id)}</span></div>
       <footer class="v2-savebar"><span id="save-status" class="v2-muted"></span><div class="v2-actions">${iconButton("shield","检查配置",{id:"check-agent"})}</div></footer></form>`);body.replaceChildren(form);
     const changed=()=>{draft.dirty=true;$("#save-status",form).innerHTML=signal("pending","有未保存的修改");for(const input of form.querySelectorAll("[data-secret-role=manager]"))input.disabled=draft.definition.manager==null;};
     const add=(path,schema)=>{const name=path.at(-1);$("#config-fields",form).append(formField({schema:schema||schemaAt(s.schema,path),root:s.schema,get:()=>getAt(draft.definition,path),set:value=>setAt(draft.definition,path,value),name,path,changed,basic:basic[name]}));};
@@ -58,9 +57,11 @@ export async function renderSettings(app,root){
         $("input",secret).oninput=event=>{draft.secrets[key]=event.target.value;changed();};$(".detach-secret",secret).onclick=()=>{if(model){model.credential_ref=null;draft.secrets[key]="";changed();renderBody();}};$("#credential-fields",form).append(secret);
       }
     }
-    $("#save-status",form).innerHTML=draft.dirty?signal("pending","有未保存的修改"):`${signal("online","配置已保存")}<span>r${draft.revision}</span>`;
+    $("#save-status",form).innerHTML=draft.dirty?signal("pending","有未保存的修改"):`${signal("online","配置已保存")}<span>配置 r${draft.revision}</span>`;
+    const availability=check=>{if(!form.isConnected)return;const enabled=definition.enabled,ready=(!!definition.execution.program?.length&&!definition.execution.program_uses_model||check.model.state==="configured")&&!check.tools.unavailable.length&&check.workspace_check.state==="resolved";const label=!enabled?"已停用":ready?"配置可用":"需要配置";$("[data-availability]",form).innerHTML=signal(!enabled?"muted":ready?"online":"pending",label)+`<span class="signal-label" title="配置检查不代表模型连接已验证">${label}</span>`;};
+    if(draft.revision)rpc("agents.check",{agent_id:definition.id,project_id:s.project.id}).then(availability).catch(error=>{if(form.isConnected)$("[data-availability]",form).textContent="检查失败："+error.message;});
     $("#check-agent",form).disabled=draft.revision===0;
-    $("#check-agent",form).onclick=async()=>{try{const check=await rpc("agents.check",{agent_id:selected,project_id:s.project.id});$("#config-check",form).innerHTML=configurationCheck(check);}catch(error){notify(error.message,true);}};
+    $("#check-agent",form).onclick=async()=>{try{const check=await rpc("agents.check",{agent_id:selected,project_id:s.project.id});$("#config-check",form).innerHTML=configurationCheck(check);availability(check);}catch(error){notify(error.message,true);}};
     const remove=element(iconButton("trash","删除 Agent",{className:"danger-text"}));
     remove.disabled=draft.revision===0;$(".settings-extra",form).append(remove);
     remove.onclick=()=>{const id=draft.definition.id;confirmRemoval("删除 Agent",`删除 ${draft.definition.name} 后将停止接受新工作。历史任务、回执、产物和源文件保留；未结束或待核对的工作会阻止删除。`,async()=>{await removeAgent(app,id,draft.revision);await renderSettings(app,root);notify("Agent 已删除，历史和文件已保留。");});};
@@ -75,7 +76,7 @@ export async function renderSettings(app,root){
         const result=await rpc("runs.result",{run_id:probe.handle.id,timeout:30});
         const usage=result.usage.run_direct.provider_reported;
         $("#config-check",form).textContent=`模型连接已响应 · 输入 ${usage.input_tokens??"未知"} token · 输出 ${usage.output_tokens??"未知"} token · ${probe.handle.id}`;
-        probes.delete(key);
+        probes.delete(key);$("[data-availability]",form).innerHTML=signal("online","模型连接已验证")+'<span class="signal-label">模型连接已验证</span>';
       }catch(error){$("#config-check",form).textContent=error.message+(probe.handle?" · "+probe.handle.id:"");if(error.run_id&&error.code!=="RESULT_PENDING")probes.delete(key);}finally{button.disabled=false;button.title=probes.has(key)?"查看探测结果":"测试模型连接";button.setAttribute("aria-label",button.title);}};
     }
     form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector("button[type=submit]");button.disabled=true;try{let saved=await rpc("agents.save",{definition:draft.definition,expected_revision:draft.revision});draft.revision=saved.revision;draft.definition=saved.definition;for(const [key,value]of Object.entries(draft.secrets)){const [role,purpose]=key.split(":"),owner=role==="main"?draft.definition:draft.definition.manager,model=purpose==="summary"?owner?.summary_model:owner?.model;if(value&&model){const credential=await rpc("agents.set_credential",{agent_id:selected,project_id:s.project.id,role,purpose,value,expected_revision:draft.revision});draft.revision=credential.revision;model.credential_ref=credential.credential_ref;}}draft.secrets={};draft.dirty=false;await app.reloadAgents();notify("配置已保存");await renderSettings(app,root);}catch(error){notify(error.message,true);}finally{button.disabled=false;}};

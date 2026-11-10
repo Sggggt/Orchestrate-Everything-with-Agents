@@ -8,6 +8,21 @@ from oea.contracts.errors import require
 class AgentGraphs:
     def __init__(self, host):
         self.host, self.factories, self.compiled, self.metadata = host, {}, {}, {}
+        self.canvases = {}
+
+    def canvas(self, name, version):
+        """Cache the known topology of one registered graph, without execution."""
+        from oea.contracts.configuration import Execution
+        from oea.orchestration.architecture_preview import canvas_preview
+        key = name, version
+        if key not in self.canvases:
+            topology = self.resolve(Execution(graph=name, graph_version=version)).get_graph()
+            nodes = [{'id': identity, 'type': 'python', 'title': identity} for identity in topology.nodes]
+            edges = [{'id': 'edge-' + str(index), 'source': edge.source, 'target': edge.target,
+                      'branch': str(edge.data or 'default')} for index, edge in enumerate(topology.edges)]
+            self.canvases[key] = {**canvas_preview({'nodes': nodes, 'edges': edges, 'entry': '__start__'}),
+                                  'omitted': any(edge.conditional for edge in topology.edges)}
+        return self.canvases[key]
 
     def register(self, name, factory, *, version, required_tools=(), required_skills=(), source=None):
         from oea.contracts.configuration import Execution

@@ -31,7 +31,7 @@ def pointer(value, path):
 class ResultReferences:
     inline_bytes = 16384
     snapshot_operations = frozenset({
-        "runs.get", "runs.list", "runs.command", "boards.get", "boards.list", "runs.inspect", "runs.action", "runs.attempts", "runs.response", "runs.result",
+        "runs.get", "runs.list", "runs.mark_handled", "runs.command", "boards.get", "boards.list", "runs.inspect", "runs.action", "runs.attempts", "runs.response", "runs.result",
         "budgets.get", "sessions.get", "sessions.list", "sessions.summary", "sessions.unread",
         "instances.get", "instances.list", "instances.history", "messages.get", "messages.list", "messages.unread",
         "artifacts.get", "artifacts.list", "artifacts.for_run", "artifacts.get_upload", "artifacts.candidates", "artifacts.candidate", "events.list",
@@ -47,7 +47,7 @@ class ResultReferences:
         "workflows.get", "workflows.list", "workflows.schema", "workflows.node_types", "workflows.validate",
         "artifacts.read", "host.describe", "host.guide", "executions.graphs",
         "architectures.get", "architectures.list", "architectures.versions", "architectures.preview", "architectures.export",
-        "architectures.templates", "architectures.node_types", "architectures.schema",
+        "architectures.templates", "architectures.node_types", "architectures.schema", "architectures.functions",
         "applications.get", "applications.list", "applications.bindings",
     })
 
@@ -103,7 +103,7 @@ class ResultReferences:
             if operation in {"agents.list", "workflows.list", "architectures.list"}:
                 version["revisions"] = {item.get("id", (item.get("definition") or {}).get("id")): item["revision"] for item in items}
         if operation in {"agents.schema", "mcp.schema", "workflows.schema", "workflows.node_types", "host.describe", "host.guide", "executions.graphs",
-                         "architectures.preview", "architectures.export", "architectures.templates", "architectures.node_types", "architectures.schema"}:
+                         "architectures.preview", "architectures.export", "architectures.templates", "architectures.node_types", "architectures.schema", "architectures.functions"}:
             version["content_hash"] = hashlib.sha256(encode(result).encode("utf-8")).hexdigest()
         return operation, params, version, overlay
 

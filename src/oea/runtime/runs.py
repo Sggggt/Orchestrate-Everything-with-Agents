@@ -1,21 +1,28 @@
 """Explicit work intents, inspection, waits, cancellation, and continuation."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
 from oea.contracts.execution import ResumeExecutionLimits, agent_steps, resume_limits
 from oea.contracts.paging import ResultOffset, ResponseLimit
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+from pydantic import Field
 from urllib.parse import urlencode
 
 
 from oea.catalog.service import need
 from oea.contracts.configuration import PROTOCOL_VERSION, AgentDefinition, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, ProjectWorkspace, manager_snapshot
-from oea.contracts.domain import Artifact, RunHandle, RunResult, RunSpec
+from oea.contracts.domain import Artifact, RunHandle, RunResult, RunSpec, RunHandlingSelection
 from oea.contracts.measurement import content_view
 from oea.contracts.errors import RuntimeFault, require
 from oea.storage.persistence import encode, event, new_id, now_ms, one, rows
+from oea.runtime.attention import NEEDS_ATTENTION
+
+RUN_VIEW_COLUMNS = ("id", "instance_id", "root_run_id", "root_workflow_run_id", "parent_run_id", "workflow_run_id", "budget_id", "state", "model_role", "execution_version", "cancel_requested_at", "stopped_at", "created_at", "updated_at")
+RUN_VIEW_SELECT = ",".join("r." + column for column in RUN_VIEW_COLUMNS) + ",r.error_json,r.wait_json,r.display_json,r.handled_at,r.result_json IS NOT NULL AS result_available"
 
 
 class Runs:
@@ -163,7 +170,8 @@ class Runs:
         return value
 
     def read(self, db, run_id):
-        row = need(db, "runs", run_id)
+        row = one(db, "SELECT " + RUN_VIEW_SELECT + ", " + NEEDS_ATTENTION + " AS needs_attention FROM runs r WHERE r.id=?", (run_id,))
+        require(row is not None, "NOT_FOUND", "Run does not exist")
         value = self.view(row)
         if row["cancel_requested_at"] is not None:
             value["cancellation"] = self._cancellations(db, [run_id])[run_id]
@@ -184,25 +192,71 @@ class Runs:
 
     @staticmethod
     def view(row):
-        return {key: row[key] for key in ("id", "instance_id", "root_run_id", "root_workflow_run_id", "parent_run_id", "workflow_run_id", "budget_id", "state", "model_role", "execution_version", "cancel_requested_at", "stopped_at", "created_at", "updated_at")} | {
+        return {key: row[key] for key in RUN_VIEW_COLUMNS} | {
             "error": json.loads(row["error_json"]) if row["error_json"] else None,
             "wait": json.loads(row["wait_json"]) if row["wait_json"] else None,
-            "result_available": row["result_json"] is not None,
+            "result_available": bool(row['result_available']) if 'result_available' in row else row["result_json"] is not None,
             "display": json.loads(row["display_json"]),
+            "handled_at": row["handled_at"],
+            "handling_state": "handled" if row["handled_at"] is not None else "pending" if row.get("needs_attention", row["state"] in {"waiting", "failed", "needs_review"}) else "none",
         }
 
-    async def list(self, session_id: str, *, project_id: str, cursor: int = 0, limit: int = 25, instance_id: str | None = None):
+    async def list(self, session_id: str | None = None, *, project_id: str, view: Literal["all", "attention"] = "all", cursor: int = 0, limit: int = 25, instance_id: str | None = None):
+        """Page project task history, or unhandled attention, optionally in one session."""
         require(0 <= cursor < 2**63 and 1 <= limit <= 100, "INVALID_REQUEST", "Read a bounded run page")
         def read(db):
-            require(need(db, "sessions", session_id)["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
+            need(db, "projects", project_id)
+            if session_id:
+                session = need(db, "sessions", session_id)
+                require(session["project_id"] == project_id and session['source'] == 'platform', "PERMISSION_DENIED", "Session is not available in this project")
             if instance_id:
-                require(need(db, "instances", instance_id)["session_id"] == session_id, "PERMISSION_DENIED", "Instance belongs to another session")
-            values = rows(db, "SELECT r.rowid AS position,r.*,i.name AS instance_name,i.agent_id,substr(COALESCE(m.body,json_extract(r.input_json,'$')),1,240) AS goal FROM runs r JOIN instances i ON i.id=r.instance_id LEFT JOIN messages m ON m.id=r.source_message_id WHERE i.session_id=? AND (? IS NULL OR i.id=?) AND (?=0 OR r.rowid<?) ORDER BY r.rowid DESC LIMIT ?", (session_id, instance_id, instance_id, cursor, cursor, limit + 1))
+                instance = need(db, "instances", instance_id)
+                require(instance['project_id'] == project_id and (session_id is None or instance['session_id'] == session_id), "PERMISSION_DENIED", "Instance belongs to another scope")
+            query = "SELECT r.rowid AS position," + RUN_VIEW_SELECT + ",i.name AS instance_name,i.agent_id,s.id AS session_id,s.name AS session_name,s.archived AS session_archived," + NEEDS_ATTENTION + " AS needs_attention," + \
+                    "EXISTS(SELECT 1 FROM usage u WHERE u.run_id=r.id AND u.state='needs_review') AS usage_pending," + \
+                    "substr(COALESCE(m.body,json_extract(r.input_json,'$')),1,240) AS goal FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id LEFT JOIN messages m ON m.id=r.source_message_id " + \
+                    "WHERE i.project_id=? AND s.source='platform' AND (? IS NULL OR i.session_id=?) AND (? IS NULL OR i.id=?) AND (?=0 OR r.rowid<?)"
+            if view == 'attention':
+                query += ' AND ' + NEEDS_ATTENTION
+            values = rows(db, query + " ORDER BY r.rowid DESC LIMIT ?", (project_id, session_id, session_id, instance_id, instance_id, cursor, cursor, limit + 1))
             return values, self._cancellations(db, [row["id"] for row in values[:limit] if row["cancel_requested_at"] is not None])
         values, cancellations = await self.host.store.call(read, transaction="read")
         return {"items": [{**self.observe({**self.view(row), **({"cancellation": cancellations[row["id"]]} if row["id"] in cancellations else {})}),
-                           **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal")}} for row in values[:limit]],
+                           **{key: row[key] for key in ("position", "instance_name", "agent_id", "goal", "session_id", "session_name", "session_archived")},
+                           "needs_attention": bool(row['needs_attention']), "attention_reasons": (["execution"] if row['state'] in {'waiting', 'failed', 'needs_review'} else []) + (["usage"] if row['usage_pending'] else [])} for row in values[:limit]],
             "cursor": values[limit - 1]["position"] if len(values) > limit else None}
+
+    async def mark_handled(self, project_id: str, items: Annotated[list[RunHandlingSelection], Field(min_length=1, max_length=100)]):
+        """Acknowledge user attention in a batch; never settle effects or usage, cancel or resume."""
+        self.host.assert_open()
+        selections = [RunHandlingSelection.model_validate(item) for item in items]
+        require(1 <= len(selections) <= 100 and len({item.run_id for item in selections}) == len(selections),
+                'INVALID_REQUEST', 'Select one to one hundred distinct tasks')
+        def write(db):
+            need(db, 'projects', project_id)
+            self.host.assert_project_available(project_id)
+            found = rows(db, "SELECT r.id,r.state,r.updated_at,r.handled_at, " + NEEDS_ATTENTION + " AS needs_attention FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id "
+                         "WHERE i.project_id=? AND s.source='platform' AND r.id IN (SELECT value FROM json_each(?))",
+                         (project_id, encode([item.run_id for item in selections])))
+            require(len(found) == len(selections), 'PERMISSION_DENIED', 'Selected tasks must belong to this project and the platform workspace')
+            by_id = {row['id']: row for row in found}
+            handled, conflicts = [], []
+            for item in selections:
+                row = by_id[item.run_id]
+                if row['handled_at'] is not None:
+                    handled.append({'run_id': item.run_id, 'handling_state': 'handled', 'handled_at': row['handled_at'], 'reused': True})
+                    continue
+                if row['updated_at'] != item.expected_updated_at or not row['needs_attention']:
+                    conflicts.append({'run_id': item.run_id, 'code': 'RUN_CHANGED', 'state': row['state'], 'updated_at': row['updated_at']})
+                    continue
+                at = now_ms()
+                db.execute('UPDATE runs SET handled_at=? WHERE id=?', (at, item.run_id))
+                event(db, 'run.handled', run_id=item.run_id, data={'handled_at': at, 'execution_state': row['state']})
+                handled.append({'run_id': item.run_id, 'handling_state': 'handled', 'handled_at': at, 'reused': False})
+            return {'project_id': project_id, 'items': handled, 'conflicts': conflicts}
+        result = await self.host.store.call(write, transaction=True)
+        self.host.notify()
+        return result
 
     async def inspect(self, run_id: str):
         return self.observe(await self.host.store.call(lambda db: self.read_inspection(db, run_id), transaction="read"))
@@ -424,7 +478,7 @@ class Runs:
             snapshot = snapshot.model_copy(update=changes)
             if refresh_capabilities and instance["role"] == "main":
                 snapshot = self.host.skills.pin(db, snapshot, instance["project_id"])
-        db.execute("UPDATE runs SET state='accepted',error_json=NULL,stopped_at=NULL,config_json=?,updated_at=? WHERE id=?", (snapshot.model_dump_json(), now_ms(), run_id))
+        db.execute("UPDATE runs SET state='accepted',error_json=NULL,stopped_at=NULL,handled_at=NULL,config_json=?,updated_at=? WHERE id=?", (snapshot.model_dump_json(), now_ms(), run_id))
         waiting = json.loads(run["wait_json"]) if run["wait_json"] else {}
         position = event(db, "run.resume_requested", instance_id=run["instance_id"], run_id=run_id, data={"has_input": input is not None or source_message_id is not None})
         db.execute("INSERT INTO run_resumptions(id,run_id,idempotency_key,input_hash,input_json,interrupt_id,applied_at,created_at,event_position,failure_json,source_message_id,execution_limits_json) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?)",

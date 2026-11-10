@@ -106,49 +106,48 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["code"], "ARCHITECTURE_DEPENDENCY_MISMATCH")
         self.assertEqual(self.model.calls, 0)
 
-    async def test_switch_blocked_for_pending_work_in_all_entry_points(self):
-        binding = await self.candidate()
+    async def test_switch_changes_future_runs_in_all_entry_points(self):
+        first = await self.candidate()
         self.model.release.clear()
         handle = await self.submit()
         await asyncio.wait_for(self.model.entered.wait(), 5)
-        await self.host.architectures.save(binding.architecture_id, "p", 1, react().model_dump(mode="json"))
-        await self.host.architectures.publish(binding.architecture_id, "p", 2)
-        for operation in ("bind", "save"):
-            with self.subTest(operation=operation), self.assertRaises(RuntimeFault) as failure:
-                if operation == "bind":
-                    await self.host.registry.call("architectures.bind", {"agent_id": "agent", "project_id": "p", "binding": binding.model_dump(), "expected_revision": 1})
-                else:
-                    saved = await self.host.agents.get("agent")
-                    saved["definition"]["execution"]["architecture"] = binding.model_dump()
-                    await self.host.registry.call("agents.save", {"definition": saved["definition"], "expected_revision": saved["revision"]})
-            self.assertEqual(failure.exception.code, "AGENT_IN_USE")
+        await self.bind(first)
+        await self.host.architectures.save(first.architecture_id, "p", 1, react().model_dump(mode="json"))
+        await self.host.architectures.publish(first.architecture_id, "p", 2)
+        second = ArchitectureBinding(architecture_id=first.architecture_id, version=2)
+        saved = await self.host.agents.get("agent")
+        saved["definition"]["execution"]["architecture"] = second.model_dump()
+        await self.host.registry.call("agents.save", {"definition": saved["definition"], "expected_revision": saved["revision"]})
+        old = await self.host.store.call(lambda db: one(db, "SELECT config_json FROM runs WHERE id=?", (handle.id,)))
+        self.assertIsNone(json.loads(old["config_json"])["execution"]["architecture"])
+        self.assertIsNone((await self.host.architectures.status("agent", "p"))["blocker"])
         self.model.release.set()
         self.assertEqual((await self.settle(handle))["state"], "completed")
-        await self.bind(binding)
+        fresh = await self.submit("after-switch")
+        accepted = await self.host.store.call(lambda db: one(db, "SELECT config_json FROM runs WHERE id=?", (fresh.id,)))
+        self.assertEqual(json.loads(accepted["config_json"])["execution"]["architecture"], second.model_dump())
+        self.assertEqual(fresh.instance_id, handle.instance_id)
+        await self.settle(fresh)
 
     async def test_atomic_acceptance_and_binding_have_a_serial_order(self):
         binding = await self.candidate()
         self.model.release.clear()
         accepted, switched = await asyncio.gather(self.submit(), self.bind(binding), return_exceptions=True)
         self.assertFalse(isinstance(accepted, Exception))
+        self.assertFalse(isinstance(switched, Exception))
         snapshot = await self.host.store.call(lambda db: one(db, "SELECT config_json FROM runs WHERE id=?", (accepted.id,)))
-        bound = json.loads(snapshot["config_json"])["execution"]["architecture"]
-        if isinstance(switched, RuntimeFault):
-            self.assertEqual(switched.code, "AGENT_IN_USE")
-            self.assertIsNone(bound)
-        else:
-            self.assertEqual(bound, binding.model_dump())
+        self.assertIn(json.loads(snapshot["config_json"])["execution"]["architecture"], [None, binding.model_dump()])
         self.model.release.set()
         await self.settle(accepted)
 
-    async def test_unknown_actions_block_even_when_run_is_terminal(self):
+    async def test_switch_does_not_settle_original_uncertain_actions(self):
         binding = await self.candidate()
         handle = await self.submit()
         await self.settle(handle)
         await self.host.store.call(lambda db: db.execute("UPDATE actions SET state='needs_review' WHERE run_id=?", (handle.id,)), transaction=True)
-        with self.assertRaises(RuntimeFault) as failure:
-            await self.bind(binding)
-        self.assertEqual(failure.exception.code, "AGENT_IN_USE")
+        await self.bind(binding)
+        pending = await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM actions WHERE run_id=? AND state='needs_review'", (handle.id,)))
+        self.assertGreater(pending["count"], 0)
 
     async def test_export_roundtrip_and_bounded_preview(self):
         binding = await self.candidate()
@@ -560,7 +559,7 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         handle = await self.submit("missing-capability")
         self.assertEqual((await self.settle(handle))["error"]["code"], "REQUIRED_TOOL_UNAVAILABLE")
 
-    async def test_manager_inherits_binding_and_blocks_main_switch_while_waiting(self):
+    async def test_manager_run_retains_its_binding_after_main_switch(self):
         from oea import Manager
         saved = await self.host.agents.get("agent")
         definition = AgentDefinition.model_validate(saved["definition"]).model_copy(update={"manager": Manager(model=Model(base_url="http://model.invalid", model="test"))})
@@ -574,9 +573,9 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.model.release.clear()
         run = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Work", idempotency_key="manager"))
         await asyncio.wait_for(self.model.entered.wait(), 5)
-        with self.assertRaises(RuntimeFault) as blocked:
-            await self.bind(second)
-        self.assertEqual(blocked.exception.code, "AGENT_IN_USE")
+        await self.bind(second)
+        original = await self.host.store.call(lambda db: one(db, "SELECT config_json FROM runs WHERE id=?", (run.id,)))
+        self.assertEqual(json.loads(original['config_json'])['execution']['architecture'], first.model_dump())
         self.model.release.set()
         self.assertEqual((await self.settle(run))["state"], "completed")
 

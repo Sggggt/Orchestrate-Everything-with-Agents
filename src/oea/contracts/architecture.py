@@ -44,6 +44,7 @@ class ArchitectureGraph(Configuration):
 class AgentArchitecture(Configuration):
     id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,127}$")
     project_id: str
+    owner_agent_id: str | None = None
     name: str = Field(min_length=1, max_length=120)
     representation: Literal["declarative", "python"] = "declarative"
     source: dict = Field(default_factory=dict)

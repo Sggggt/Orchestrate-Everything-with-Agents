@@ -66,7 +66,7 @@ test("active sessions, paginated archive restoration and confirmed project delet
   };
   globalThis.__archiveUI=ui;
   globalThis.window={addEventListener(){}};
-  globalThis.document={querySelector:selector=>ui.$(selector),createElement:()=>new Node(),activeElement:null};
+  globalThis.document={querySelector:selector=>ui.$(selector),createElement:()=>new Node(),activeElement:null,body:{classList:{toggle(){}}}};
   globalThis.location={hash:"#workspace"};globalThis.history={replaceState(){}};
   globalThis.localStorage={getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key)};
   globalThis.EventSource=class{constructor(){streams.push(this);}close(){this.closed=true;}};
@@ -83,6 +83,12 @@ test("active sessions, paginated archive restoration and confirmed project delet
   assert.equal(storage.get("oea-session:p"),"a");
   assert.doesNotMatch(roots.get("#app").innerHTML,/Old archived session/);
   assert.equal(calls.find(value=>value.operation==="sessions.list").params.archived,false);
+
+  await t.test("an older attention response cannot restore tasks after a newer refresh",async()=>{
+    const original=ui.rpc;let release,waiting=false,once=true;
+    ui.rpc=async(operation,params={})=>{if(operation==="runs.list"&&params.view==="attention"&&once){once=false;waiting=true;return await new Promise(resolve=>release=resolve);}return original(operation,params);};
+    try{const older=app.reloadInstances();await settle(()=>waiting);await app.reloadInstances();release({items:[{id:"old-attention",state:"failed"}],cursor:null});await older;assert.deepEqual(app.state.attentionRuns,[]);}finally{ui.rpc=original;}
+  });
 
   await t.test("archiving the selected session clears its open conversation and selects the next active session",async()=>{
     app.state.page="conversation";app.state.openTabs=["instance-a"];app.state.selectedInstance=app.state.instances[0];app.refreshFrame();

@@ -4,6 +4,7 @@ import { renderArtifactsPage,previewArtifact,uploadArtifact } from "./artifact-d
 export { renderArtifactsPage };
 import { avatar,agentCards,unreadBadge } from "./workbench-shell.mjs";
 import { showRun } from "./runs.mjs";
+import { showTaskHistory } from "./task-history.mjs";
 import { markdown } from "./markdown.mjs";
 import { formField } from "./configuration-form.mjs";
 
@@ -18,6 +19,7 @@ export function bindWorkbench(app,root){
   for(const button of root.querySelectorAll("[data-agent-chat]"))button.onclick=()=>openAgent(app,button.dataset.agentChat);
   for(const button of root.querySelectorAll("[data-instance]"))button.onclick=()=>openInstance(app,button.dataset.instance);
   for(const button of root.querySelectorAll("[data-close-instance]"))button.onclick=()=>{const s=app.state;s.openTabs=s.openTabs.filter(id=>id!==button.dataset.closeInstance);if(s.selectedInstance?.id===button.dataset.closeInstance){s.selectedInstance=null;app.navigate("overview");}else app.refreshFrame();};
+  for(const button of root.querySelectorAll("[data-task-history]"))button.onclick=()=>showTaskHistory(app,button.dataset.taskHistory).catch(error=>notify(error.message,true));
   for(const button of root.querySelectorAll("[data-run]"))button.onclick=()=>showRun(app,button.dataset.run);
   for(const button of root.querySelectorAll("[data-artifact]"))button.onclick=()=>previewArtifact(app,button.dataset.artifact);
   const actions={"new-project":app.createProject,"new-session":app.createSession,"open-agent":()=>chooseAgent(app),"add-agent":()=>app.openSettings(null,true),search:()=>quickJump(app),archive:()=>showArchive(app).catch(error=>notify(error.message,true)),upload:()=>uploadArtifact(app),"project-settings":()=>projectSettings(app),"session-settings":()=>sessionSettings(app),"more-projects":()=>app.loadMoreProjects().catch(error=>notify(error.message,true)),"more-sessions":()=>app.loadMoreSessions().catch(error=>notify(error.message,true))};

@@ -15,29 +15,9 @@ from oea.contracts.configuration import AgentDefinition, ArchitectureBinding, ma
 from oea.contracts.domain import RunSpec
 from oea.contracts.errors import require
 from oea.orchestration.architecture_validation import NODE_CONFIGS, validate_graph
+from oea.orchestration.architecture_preview import canvas_preview
 from oea.storage.persistence import encode, event, now_ms, one, rows
 
-
-def execution_identity(execution):
-    return execution.graph, execution.graph_version, execution.program, execution.architecture
-
-
-def assert_switchable(db, agent_id):
-    pending = switch_blocker(db, agent_id)
-    require(not pending, "AGENT_IN_USE", "Finish pending work and reconcile original effects before switching architecture", details=pending or {})
-
-
-def switch_blocker(db, agent_id):
-    pending = one(db, "SELECT r.id,r.state,s.source FROM runs r JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND r.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (agent_id,))
-    if pending:
-        return {"source": "application", "pending": True} if pending["source"] == "application" else {"run_id": pending["id"], "state": pending["state"]}
-    action = one(db, "SELECT a.id,a.run_id,a.state,s.source FROM actions a JOIN runs r ON r.id=a.run_id JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND a.state IN ('intent','dispatched','needs_review') LIMIT 1", (agent_id,))
-    if action:
-        return {"source": "application", "pending": True} if action["source"] == "application" else {"action_id": action["id"], "run_id": action["run_id"], "state": action["state"]}
-    usage = one(db, "SELECT u.id,u.run_id,u.state,s.source FROM usage u JOIN runs r ON r.id=u.run_id JOIN instances i ON i.id=r.instance_id JOIN sessions s ON s.id=i.session_id WHERE i.agent_id=? AND u.state!='settled' LIMIT 1", (agent_id,))
-    if usage and usage["source"] == "application":
-        return {"source": "application", "pending": True}
-    return {"usage_id": usage["id"], "run_id": usage["run_id"], "state": usage["state"]} if usage else None
 
 
 class Architectures:
@@ -61,20 +41,16 @@ class Architectures:
         for execution in (definition.execution, definition.manager.execution if definition.manager else None):
             if execution and execution.architecture:
                 require(definition.project_id is not None, "PROJECT_REQUIRED", "Project-owned architectures require a project-owned Agent")
-                self._version(db, execution.architecture, definition.project_id)
+                owner, _ = self._version(db, execution.architecture, definition.project_id)
+                require(owner['owner_agent_id'] in {None, definition.id}, 'PERMISSION_DENIED', 'Copy this architecture before binding it to another Agent')
 
     def check_save(self, db, definition, previous):
         self.check_binding(db, definition)
-        if previous:
-            old = AgentDefinition.model_validate_json(previous["config_json"])
-            before = (execution_identity(old.execution), execution_identity(manager_snapshot(old).execution) if old.manager else None)
-            after = (execution_identity(definition.execution), execution_identity(manager_snapshot(definition).execution) if definition.manager else None)
-            if before != after:
-                assert_switchable(db, definition.id)
 
     @staticmethod
     def _view(row, *, draft=True):
-        value = {key: row[key] for key in ("id", "project_id", "name", "representation", "revision")}
+        value = {key: row[key] for key in ("id", "project_id", "name", "representation", "revision", "owner_agent_id")}
+        value["removed"] = bool(row["removed"])
         value["source"] = json.loads(row["source_json"])
         if draft:
             value["draft"] = json.loads(row["draft_json"])
@@ -83,8 +59,8 @@ class Architectures:
     async def schema(self, representation: Literal["declarative", "python"] = "declarative"):
         return (ArchitectureGraph if representation == "declarative" else PythonGraphReference).model_json_schema()
 
-    async def status(self, agent_id: str, project_id: str, *, role: Literal["main", "manager"] = "main"):
-        """Bounded current binding and one concrete switch blocker, across all instances."""
+    async def status(self, agent_id: str, project_id: str, *, role: Literal["main", "manager"] = "main", canvas: bool = False):
+        """Current default binding. Changes apply only to subsequently accepted Runs."""
         def read(db):
             row = need(db, "agent_definitions", agent_id)
             definition = AgentDefinition.model_validate_json(row["config_json"])
@@ -96,8 +72,22 @@ class Architectures:
             return {"agent_id": agent_id, "revision": row["revision"], "role": role,
                     "binding": execution.architecture.model_dump(mode="json") if execution.architecture else None,
                     "graph": execution.graph, "graph_version": execution.graph_version, "program": bool(execution.program),
-                    "blocker": switch_blocker(db, agent_id)}
-        return await self.host.store.call(read)
+                    "blocker": None, "activation_scope": "future_runs"}
+        result = await self.host.store.call(read)
+        if canvas and not result['binding'] and not result['program']:
+            result['canvas'] = self.host.agent_graphs.canvas(result['graph'], result['graph_version'])
+        return result
+
+    async def functions(self, name: str | None = None, *, cursor: int = 0, limit: int = 25):
+        """Discover pure extensions without invoking them."""
+        require(cursor >= 0 and 1 <= limit <= 100, 'INVALID_REQUEST', 'Use a bounded page')
+        if name is not None:
+            provider = self.host.workflows.functions.get(name)
+            require(provider is not None, 'NOT_FOUND', 'Pure function is not registered')
+            return provider.describe().model_dump(mode='json')
+        names = sorted(self.host.workflows.functions)
+        return {'items': [{'name': key, 'description': self.host.workflows.functions[key].describe().description} for key in names[cursor:cursor + limit]],
+                'cursor': cursor + limit if cursor + limit < len(names) else None}
 
     async def node_types(self, kind: str | None = None):
         """Discover a single primitive or the short Agent node directory."""
@@ -123,13 +113,17 @@ class Architectures:
         def write(db):
             need(db, "projects", definition.project_id)
             self.host.assert_project_available(definition.project_id)
+            if definition.owner_agent_id:
+                agent = need(db, 'agent_definitions', definition.owner_agent_id)
+                require(agent['project_id'] == definition.project_id and not json.loads(agent['config_json']).get('removed'),
+                        'PERMISSION_DENIED', 'Draft owner must be an active Agent in this project')
             previous = one(db, "SELECT * FROM agent_architectures WHERE id=?", (definition.id,))
             if previous:
                 require(previous["project_id"] == definition.project_id, "PERMISSION_DENIED", "Architecture belongs to another project")
-                require(self._view(previous) == {**definition.model_dump(mode="json"), "revision": 1, "draft": draft}, "IDEMPOTENCY_CONFLICT", "Architecture ID has different content")
+                require(self._view(previous) == {**definition.model_dump(mode="json"), "revision": 1, "draft": draft, "removed": False}, "IDEMPOTENCY_CONFLICT", "Architecture ID has different content")
                 return self._view(previous)
             preview = encode(self._preview(draft, definition.representation))
-            db.execute("INSERT INTO agent_architectures VALUES(?,?,?,?,?,?,1,?,?,?)", (definition.id, definition.project_id, definition.name, definition.representation, encode(definition.source), encoded, now_ms(), now_ms(), preview))
+            db.execute("INSERT INTO agent_architectures(id,project_id,name,representation,source_json,draft_json,revision,created_at,updated_at,preview_json,owner_agent_id) VALUES(?,?,?,?,?,?,1,?,?,?,?)", (definition.id, definition.project_id, definition.name, definition.representation, encode(definition.source), encoded, now_ms(), now_ms(), preview, definition.owner_agent_id))
             event(db, "architecture.created", project_id=definition.project_id, data={"architecture_id": definition.id, "revision": 1})
             return self._view(need(db, "agent_architectures", definition.id))
         value = await self.host.store.call(write, transaction=True)
@@ -147,29 +141,48 @@ class Architectures:
                     "definition": json.loads(row["definition_json"]), "dependencies": json.loads(row["dependencies_json"]), "sha256": row["sha256"]}
         return await self.host.store.call(read)
 
-    async def list(self, project_id: str, *, cursor: int = 0, limit: int = 25):
+    async def list(self, project_id: str, *, owner_agent_id: str | None = None, include_removed: bool = False, cursor: int = 0, limit: int = 25):
         require(0 <= cursor < 2**63 and 1 <= limit <= 100, "INVALID_REQUEST", "Use a bounded page")
         def read(db):
             need(db, "projects", project_id)
-            return rows(db, "SELECT rowid AS position,id,project_id,name,representation,revision,source_json FROM agent_architectures WHERE project_id=? AND rowid>? ORDER BY rowid LIMIT ?", (project_id, cursor, limit + 1))
+            return rows(db, "SELECT rowid AS position,id,project_id,name,representation,revision,source_json,owner_agent_id,removed FROM agent_architectures WHERE project_id=? AND rowid>? AND (? IS NULL OR owner_agent_id=?) AND (? OR removed=0) ORDER BY rowid LIMIT ?", (project_id, cursor, owner_agent_id, owner_agent_id, int(include_removed), limit + 1))
         values = await self.host.store.call(read)
         return {"items": [self._view(row, draft=False) for row in values[:limit]], "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
-    async def save(self, architecture_id: str, project_id: str, expected_revision: int, draft: dict):
+    async def save(self, architecture_id: str, project_id: str, expected_revision: int, draft: dict, *, name: str | None = None):
         """Save a full declaration by revision, including incomplete advanced fields."""
         self.host.assert_open()
         encoded = encode(draft)
         require(len(encoded.encode()) <= 1024 * 1024, "INVALID_REQUEST", "Keep declarations bounded")
+        require(name is None or 0 < len(name.strip()) <= 120, "INVALID_REQUEST", "Draft name must contain 1 to 120 characters")
         def write(db):
             row = self._row(db, architecture_id, project_id)
+            require(not row["removed"], "ARCHITECTURE_REMOVED", "Deleted drafts cannot be edited")
             require(row["revision"] == expected_revision, "REVISION_CONFLICT", "Architecture draft changed")
             preview = encode(self._preview(draft, row["representation"]))
-            db.execute("UPDATE agent_architectures SET draft_json=?,preview_json=?,revision=revision+1,updated_at=? WHERE id=?", (encoded, preview, now_ms(), architecture_id))
+            db.execute("UPDATE agent_architectures SET draft_json=?,preview_json=?,name=?,revision=revision+1,updated_at=? WHERE id=?", (encoded, preview, name.strip() if name is not None else row["name"], now_ms(), architecture_id))
             event(db, "architecture.saved", project_id=project_id, data={"architecture_id": architecture_id, "revision": expected_revision + 1})
             return self._view(need(db, "agent_architectures", architecture_id))
         value = await self.host.store.call(write, transaction=True)
         self.host.notify()
         return value
+
+    async def remove(self, architecture_id: str, project_id: str, owner_agent_id: str, expected_revision: int):
+        """Remove a candidate, retaining immutable versions and bindings."""
+        self.host.assert_open()
+        def write(db):
+            row = self._row(db, architecture_id, project_id)
+            require(row['owner_agent_id'] == owner_agent_id, 'PERMISSION_DENIED', 'Draft belongs to another Agent')
+            if row['removed']:
+                require(expected_revision in {row['revision'], row['revision'] - 1}, 'REVISION_CONFLICT', 'Draft changed')
+                return self._view(row, draft=False)
+            require(row['revision'] == expected_revision, 'REVISION_CONFLICT', 'Draft changed')
+            db.execute('UPDATE agent_architectures SET removed=1,revision=revision+1,updated_at=? WHERE id=?', (now_ms(), architecture_id))
+            event(db, 'architecture.removed', project_id=project_id, data={'architecture_id': architecture_id, 'owner_agent_id': owner_agent_id, 'revision': expected_revision + 1})
+            return self._view(need(db, 'agent_architectures', architecture_id), draft=False)
+        result = await self.host.store.call(write, transaction=True)
+        self.host.notify()
+        return result
 
     def _validate(self, owner, draft):
         if owner["representation"] == "python":
@@ -196,7 +209,7 @@ class Architectures:
             key = draft.get("graph"), draft.get("graph_version")
             if all(isinstance(item, str) for item in key) and key in self.host.agent_graphs.factories:
                 preview = self.host.agent_graphs.preview(*key)
-                return {name: preview[name] for name in ("stages", "omitted", "description", "editable")}
+                return {**{name: preview[name] for name in ("stages", "omitted", "description", "editable")}, "canvas": self.host.agent_graphs.canvas(*key)}
             return {"stages": [], "omitted": True, "description": "Register this graph version to inspect its known topology", "editable": False}
         raw_nodes = draft.get("nodes", [])
         nodes = [node for node in raw_nodes if isinstance(node, dict) and isinstance(node.get("id"), str) and len(node["id"]) <= 64] if isinstance(raw_nodes, list) else []
@@ -237,7 +250,7 @@ class Architectures:
                     pending.extend((edge.get("target"), branch if branch != "default" else edge.get("branch", "default")) for edge in outgoing.get(target, []))
         def label(value, fallback, limit):
             return (value if isinstance(value, str) else fallback)[:limit]
-        return {"stages": [{"id": node["id"], "title": label(node.get("title") or node["id"], node["id"], 120), "type": label(node.get("type"), "unknown", 64), "description": label(node.get("description"), "", 640)} for node in visible],
+        return {"canvas": canvas_preview(draft), "stages": [{"id": node["id"], "title": label(node.get("title") or node["id"], node["id"], 120), "type": label(node.get("type"), "unknown", 64), "description": label(node.get("description"), "", 640)} for node in visible],
                 "links": links[:24], "omitted": len(visible) != len(nodes) or len(links) > 24, "description": "Key stages; edit source for the complete topology", "editable": True,
                 "options": {"max_steps": draft.get("max_steps", 512) if isinstance(draft.get("max_steps", 512), int) else None, **({"max_attempts": next((node["config"].get("value", 2) + 1 for node in nodes if node.get("id") == "bounded" and isinstance(node.get("config"), dict) and isinstance(node["config"].get("value", 2), int)), 3)} if isinstance(draft.get("source"), dict) and draft["source"].get("template") == "reflexion" else {})}}
 
@@ -247,6 +260,7 @@ class Architectures:
         dependencies = {name: package_version(name) for name in ("langgraph", "langgraph-checkpoint-sqlite")}
         def write(db):
             owner = self._row(db, architecture_id, project_id)
+            require(not owner["removed"], "ARCHITECTURE_REMOVED", "Deleted drafts cannot be published")
             require(owner["revision"] == expected_revision, "REVISION_CONFLICT", "Architecture draft changed")
             existing = one(db, "SELECT version,sha256 FROM architecture_versions WHERE architecture_id=? AND draft_revision=?", (architecture_id, expected_revision))
             if existing:
@@ -286,10 +300,10 @@ class Architectures:
             definition = definition.model_copy(update={"manager": definition.manager.model_copy(update={"execution": execution})})
         return await self.host.agents.save(definition, expected_revision=expected_revision)
 
-    async def preview(self, architecture_id: str, project_id: str, *, version: int | None = None):
+    async def preview(self, architecture_id: str, project_id: str, *, version: int | None = None, detail: Literal["stages", "canvas"] = "stages"):
         """Read at most eight cached stages without loading the full draft or version."""
         def read(db):
-            owner = one(db, "SELECT id,project_id,name,representation,revision,preview_json FROM agent_architectures WHERE id=?", (architecture_id,))
+            owner = one(db, "SELECT id,project_id,name,representation,revision,preview_json,owner_agent_id,removed FROM agent_architectures WHERE id=?", (architecture_id,))
             require(owner is not None, "NOT_FOUND", "Architecture does not exist")
             require(owner["project_id"] == project_id, "PERMISSION_DENIED", "Architecture belongs to another project")
             if version is not None:
@@ -299,8 +313,8 @@ class Architectures:
                 owner = {**owner, "revision": row["draft_revision"]}
             else:
                 preview = json.loads(owner["preview_json"])
-            return {**{key: owner[key] for key in ("id", "project_id", "name", "representation", "revision")}, "version": version,
-                    **{key: preview[key] for key in ("stages", "links", "omitted", "description", "editable", "options") if key in preview}}
+            return {**{key: owner[key] for key in ("id", "project_id", "name", "representation", "revision", "owner_agent_id")}, "version": version,
+                    **{key: preview[key] for key in (("canvas", "editable", "omitted") if detail == "canvas" else ("stages", "links", "omitted", "description", "editable", "options")) if key in preview}, "owner_agent_id": owner["owner_agent_id"], "removed": bool(owner["removed"])}
         return await self.host.store.call(read)
 
     async def compare(self, architecture_id: str, project_id: str, version: int, *, other_version: int | None = None):
@@ -356,7 +370,8 @@ class Architectures:
         def write(db):
             instance = need(db, "instances", spec.instance_id)
             require(instance["project_id"] == project_id, "PERMISSION_DENIED", "Instance belongs to another project")
-            self._version(db, binding, project_id)
+            owner, _ = self._version(db, binding, project_id)
+            require(owner["owner_agent_id"] in {None, instance["agent_id"]}, "PERMISSION_DENIED", "Candidate belongs to another Agent")
             return self.host.runs._submit(db, spec, architecture=binding)
         row, reused = await self.host.store.call(write, transaction=True)
         self.host.launch(row["id"])

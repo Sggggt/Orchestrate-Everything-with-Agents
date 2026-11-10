@@ -184,6 +184,5 @@ the browser through `oea open` or the Windows launcher.
 
 Normal platform SDK, control MCP, workbench lists, search, unread counts, events,
 downloads, candidates and result references exclude application business
-objects. Active application work still blocks incompatible architecture changes;
-management sees only a generic application-work blocker. Removing a source
+objects. Default architecture changes affect only subsequently accepted work; active application Runs retain their original graph. Management task history and user-handling operations exclude application business records. Removing a source
 project follows the ordinary project deletion contract and revokes its bindings.

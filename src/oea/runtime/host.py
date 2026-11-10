@@ -97,7 +97,7 @@ class Host:
                                      ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
                                      ("instances", self.instances, ("create", "get", "list", "history", "mark_read")),
-                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action")),
+                                     ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action", "mark_handled")),
                                      ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "candidates", "candidate", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),
                                      ("boards", self.boards, ("create", "get", "list", "set_reader")),
@@ -112,9 +112,9 @@ class Host:
         self.registry.register("host.describe", self.describe, read_only=True)
         self.registry.register("host.guide", self.guide, read_only=True)
         self.registry.register("executions.graphs", self.agent_graphs.list, read_only=True)
-        for name in ("create", "get", "list", "save", "validate", "publish", "versions", "compare", "bind", "preview", "export", "templates", "node_types", "schema", "adjust", "run", "inspect", "node_result", "status"):
+        for name in ("create", "get", "list", "save", "validate", "publish", "versions", "compare", "bind", "preview", "export", "templates", "node_types", "schema", "adjust", "run", "inspect", "node_result", "status", "remove", "functions"):
             self.registry.register("architectures." + name, getattr(self.architectures, name),
-                read_only=name not in {"create", "save", "publish", "bind", "adjust", "run"})
+                read_only=name not in {"create", "save", "publish", "bind", "adjust", "run", "remove"})
         self.registry.register("contexts.revoke", self.contexts.revoke)
         self.registry.register("events.list", self.events_service.list, read_only=True)
         self.registry.register("results.read", self.results.read, read_only=True)
@@ -303,7 +303,7 @@ class Host:
                 error = {"code": "OUTCOME_UNCERTAIN", "safe_message": "Command control was lost; inspect the original session before continuing",
                          "evidence_ref": {"action_id": record["action_id"], "command_session_id": record["command_session_id"]}}
                 db.execute("UPDATE actions SET state='needs_review',error_json=?,updated_at=? WHERE id=? AND run_id=?", (encode(error), now_ms(), record["action_id"], run_id))
-                db.execute("UPDATE runs SET state='needs_review',stopped_at=NULL,error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), run_id))
+                db.execute("UPDATE runs SET state='needs_review',stopped_at=NULL,error_json=?,updated_at=?,handled_at=NULL WHERE id=?", (encode(error), now_ms(), run_id))
             elif idle and not unknown:
                 db.execute("UPDATE runs SET stopped_at=COALESCE(stopped_at,?) WHERE id=? AND state='waiting'", (now_ms(), run_id))
             return True
@@ -604,7 +604,8 @@ class Host:
             if state == "waiting" and run["state"] == "needs_review" and unresolved:
                 return False
             instance = need(db, "instances", run["instance_id"])
-            db.execute("UPDATE runs SET state=?,error_json=?,wait_json=?,stopped_at=?,updated_at=? WHERE id=?",
+            handling_update = ",handled_at=NULL" if state in {"waiting", "failed", "needs_review"} else ""
+            db.execute("UPDATE runs SET state=?,error_json=?,wait_json=?,stopped_at=?,updated_at=?" + handling_update + " WHERE id=?",
                        (state, encode(self.redact(error.as_dict())) if error else None, encode(wait) if wait else None,
                         now_ms() if locally_stopped and not unresolved else None, now_ms(), run_id))
             if state not in {"waiting", "needs_review"}:
@@ -648,7 +649,7 @@ class Host:
                 error = {"code": "OUTCOME_UNCERTAIN", "safe_message": "Command ownership was lost; inspect its saved output before continuing",
                          "action_id": command["id"], "command_session_id": command["id"]}
                 db.execute("UPDATE actions SET state='needs_review',error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), command["id"]))
-                db.execute("UPDATE runs SET state='needs_review',error_json=?,updated_at=? WHERE id=?", (encode(error), now_ms(), command["run_id"]))
+                db.execute("UPDATE runs SET state='needs_review',error_json=?,updated_at=?,handled_at=NULL WHERE id=?", (encode(error), now_ms(), command["run_id"]))
                 event(db, "action.needs_review", run_id=command["run_id"], data={"action_id": command["id"], "error": error})
             interrupted = rows(db, "SELECT * FROM actions WHERE state='dispatched'")
             for action in interrupted:
@@ -659,6 +660,7 @@ class Host:
                 db.execute("UPDATE actions SET state=?,error_json=?,updated_at=? WHERE id=?",
                            ("needs_review" if unknown else "failed", encode(error), now_ms(), action["id"]))
                 db.execute("UPDATE usage SET state='needs_review' WHERE action_id=? AND state='reserved'", (action["id"],))
+                db.execute("UPDATE runs SET handled_at=NULL,updated_at=? WHERE id=? AND handled_at IS NOT NULL", (now_ms(), action["run_id"]))
                 event(db, "model.failed" if model else "action.needs_review" if unknown else "action.failed", run_id=action["run_id"], intent_id=action["intent_id"], data={"action_id": action["id"], "error": error})
             return rows(db, "SELECT id,instance_id,state FROM runs WHERE state IN ('accepted','running','needs_review') ORDER BY rowid")
         pending = await self.store.call(recover, transaction=True)

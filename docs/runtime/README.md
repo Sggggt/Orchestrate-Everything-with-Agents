@@ -62,7 +62,8 @@
   - `async submit(self, spec: RunSpec, *, workflow_run_id: str | None=None)`
   - `async get(self, run_id: str)`
   - `view(row)`
-  - `async list(self, session_id: str, *, project_id: str, cursor: int=0, limit: int=25, instance_id: str | None=None)`
+  - `async list(self, session_id: str | None=None, *, project_id: str, view='all', cursor: int=0, limit: int=25, instance_id: str | None=None)`：项目历史或 `attention` 待办分页，排除应用业务记录。
+  - `async mark_handled(self, project_id: str, items: list[RunHandlingSelection])`：按原观察时间批量标记用户待办，保留执行状态、停止事实及用量；返回已处理项和冲突项。
   - `async inspect(self, run_id: str)`
   - `async action(self, action_id: str, *, offset: int=0, limit: int=8192, attempt_id: str | None=None)`
   - `async attempts(self, action_id: str, project_id: str, *, cursor: int=0, limit: int=25)`

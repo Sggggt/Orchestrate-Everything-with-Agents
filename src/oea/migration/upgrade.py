@@ -107,6 +107,14 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
     with offline_source(source) as check, closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as original:
         original.row_factory = sqlite3.Row
         metadata = dict(original.execute("SELECT key,value FROM metadata"))
+        from oea.migration.handling import PRE_HANDLING_SCHEMA
+        if metadata.get('protocol_version') == '3.0' and metadata.get('schema_sha256') == PRE_HANDLING_SCHEMA:
+            from oea.migration.applications import transition as handling_transition
+            return handling_transition(original, source, destination, apply, check, handling_only=True)
+        from oea.migration.canvas import PRE_CANVAS_SCHEMA
+        if metadata.get('protocol_version') == '3.0' and metadata.get('schema_sha256') == PRE_CANVAS_SCHEMA:
+            from oea.migration.applications import transition as canvas_transition
+            return canvas_transition(original, source, destination, apply, check, canvas_only=True)
         if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == PRE_OAP_SCHEMA:
             from oea.migration.applications import transition as application_transition
             return application_transition(original, source, destination, apply, check)
@@ -290,7 +298,7 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
             verify_files(source, files)
             require(file_sha256(database) == source_hash, "MIGRATION_SOURCE_CHANGED", "Source database changed during conversion")
             if apply:
-                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "2"), ("migration_complete", "true")])
+                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "4"), ("migration_complete", "true")])
                 report.update(applied=True, changed=True)
             output.commit()
         if apply:

@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 3.3.3, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide explains how to use Orchestrate Everything with Agents (OEA) 3.4.2, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
 
 ## Contents
 
@@ -130,6 +130,8 @@ An Agent with one instance opens directly; an Agent with several instances opens
 
 Unread markers track new conversation or collaboration content. Reading the latest content in a visible window advances the corresponding read position. Older pages and long responses remain available through their history and original-content controls.
 
+Use the arrow next to **最近任务** to page through all task history, including archived sessions. The arrow next to **需要我处理** opens all outstanding attention items. Both dialogs default to the current project and can filter to the current session. Select one or more rows and choose **标记已处理** to acknowledge them. They disappear from attention lists but remain in all history as **已处理**, with their original execution outcome and accounting. This does not cancel a waiting task, confirm an external effect or settle usage. Explicit resumption or a new execution state can require attention again.
+
 <a id="configuration"></a>
 ## 6. Configure an Agent
 
@@ -137,11 +139,11 @@ Open an Agent's gear control to edit its settings. Save changes before starting 
 
 | Configuration group | What to decide |
 | --- | --- |
-| **概览与架构** — Overview and architecture | Current version, key stages, draft validation, candidate publication and explicit version switching |
+| **概览与画布** — Overview and canvas | Configuration availability, active version, candidate selection and the clickable canvas preview |
 | **模型与职责** — Model and responsibility | Name, instructions, provider, model, credential and common generation settings |
 | **常用能力** — Common capabilities | Local/MCP tools, Skills, environment and working input size |
 
-The desktop settings page preserves advanced fields it does not display. Edit full configuration through source/SDK or explicit configuration export/import. Candidate publication and applying a version are separate actions; unfinished or unresolved work blocks switching, while drafts remain editable. See [Agent architectures](agent-architectures.md).
+The desktop settings page preserves advanced fields it does not display. Edit full configuration through source/SDK or explicit configuration export/import. Click the canvas preview to edit nodes, state, mappings and subgraphs in the full-screen workbench. Save a candidate without changing execution, then confirm **切换版本** to publish and apply it. Select another candidate to preview it; confirm deletion to remove a draft while retaining published versions. Trials use independent instances. Switching applies only to subsequently accepted tasks; existing tasks and resumptions keep their original graph. Historical attention or usage does not block the change. See [Agent architectures](agent-architectures.md).
 
 The built-in model transport uses OpenAI-compatible Chat Completions. Enter the provider's API base prefix; OEA appends `/chat/completions`. Choose options supported by that provider. The model's context-window setting and reserved output must fit its actual limits. Increase input capacity only when the model supports it. Model output, recent history, tools and images all consume context.
 

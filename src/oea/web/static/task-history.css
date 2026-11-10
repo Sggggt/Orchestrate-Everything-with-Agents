@@ -1,0 +1,22 @@
+.task-history-dialog{display:flex;flex-direction:column;gap:14px;max-height:74vh;min-height:280px}
+.task-history-toolbar,.task-history-actions,.task-history-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.task-history-toolbar label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.task-history-toolbar select{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:white;font:inherit;max-width:300px}
+.task-history-actions{justify-content:flex-end;font-size:12px;color:var(--muted)}
+.task-history-actions .btn{font-size:12px;padding:7px 11px;min-height:32px}
+.task-history-hint{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.task-history-table{flex:1;overflow:auto;min-height:0}
+.task-history-table table{border-collapse:collapse;width:100%;min-width:700px;font-size:12px;table-layout:fixed}
+.task-history-table th{text-align:left;color:var(--muted);font-weight:500;background:#fafbfe;position:sticky;top:0;z-index:1}
+.task-history-table th,.task-history-table td{padding:10px 9px;border-bottom:1px solid var(--line);vertical-align:middle;overflow-wrap:anywhere}
+.task-history-table .task-scope-column{width:180px}.task-history-table .task-state-column{width:135px}.task-history-table .task-time-column{width:140px}.task-history-table th:last-child{width:40px}
+.task-history-table th.task-checkbox,.task-history-table td.task-checkbox{width:34px;padding-right:0}
+.task-history-table input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.task-history-table td small{display:block;margin-top:5px;font-size:10px;color:var(--muted)}
+.task-history-title{display:block;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.task-history-time{font-size:11px;color:var(--muted)}
+.task-history-table .icon-btn{width:28px;height:28px;padding:5px}.task-history-table .icon{width:15px;height:15px}
+.task-history-error{min-height:18px;margin:0;font-size:12px;color:var(--muted)}
+.task-history-footer{border-top:1px solid var(--line);padding-top:8px;color:var(--muted);font-size:12px}
+.task-history-footer>div{display:flex;gap:5px}.task-history-footer [data-previous] .icon{transform:rotate(180deg)}
+.badge.handled{background:#eef3f6;color:#53687b}

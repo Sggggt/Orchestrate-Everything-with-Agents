@@ -9,15 +9,19 @@ import { manageApplications } from "./application-settings.mjs";
 import { renderChat,refreshChat,disposeChat } from "./chat.mjs";
 import { renderRuns,showRun } from "./runs.mjs";
 import { renderWorkflows } from "./workflows.mjs";
+import { renderAgentCanvas } from "./agent-canvas.mjs";
 import { transitionView } from "./motion.mjs";
 
 let browserTicket=new URLSearchParams(location.hash.slice(1)).get("oea-login");
 if(browserTicket)history.replaceState(null,"",location.pathname+location.search+"#workspace");
 
-export const app={state:{page:({workspace:"overview",settings:"agent-settings",agents:"agents",mcp:"mcp",skills:"skills",workflows:"workflows",applications:"applications"}[location.hash.slice(1)]||"overview"),projects:[],agents:[],instances:[],sessions:[],project:null,session:null,schema:null,status:null,epoch:0,openTabs:[],selectedInstance:null,runs:[],artifacts:[],summary:{},unread:null,mcp:[],skills:[]},rpc};
+function canvasRoute(){if(!location.hash.startsWith("#agent-canvas?"))return null;const params=new URLSearchParams(location.hash.split("?")[1]);return {project_id:params.get("project"),agent_id:params.get("agent"),architecture_id:params.get("draft"),version:params.get("version")?Number(params.get("version")):null};}
+const initialCanvas=canvasRoute();
+export const app={state:{canvasRoute:initialCanvas,page:initialCanvas?"agent-canvas":({workspace:"overview",settings:"agent-settings",agents:"agents",mcp:"mcp",skills:"skills",workflows:"workflows",applications:"applications"}[location.hash.slice(1)]||"overview"),projects:[],agents:[],instances:[],sessions:[],project:null,session:null,schema:null,status:null,epoch:0,openTabs:[],selectedInstance:null,runs:[],attentionRuns:[],artifacts:[],summary:{},unread:null,mcp:[],skills:[]},rpc};
 app.runListeners=new Set();
-let stream=null,refreshing=false,refreshAgain=false,sessionsChanged=false;
+let stream=null,refreshing=false,refreshAgain=false,sessionsChanged=false,instanceLoad=0;
 function frame(preserve=false) {
+  document.body.classList.toggle("agent-canvas-open",app.state.page==="agent-canvas");
   const s=app.state,previous=preserve?$("#page"):null,focused=preserve?document.activeElement:null;
   const scrolls=previous?[...previous.querySelectorAll(".transcript,.v2-feed,.inspector,.settings-list")].map(node=>[node,node.scrollTop,node.scrollLeft]):[],pageTop=previous?.parentElement.scrollTop||0;
   $("#app").innerHTML=shell(s);
@@ -27,18 +31,19 @@ function frame(preserve=false) {
   bindWorkbench(app,$("#app"));if(focused?.isConnected)focused.focus({preventScroll:true});
 }
 async function loadInstances(){
-  const s=app.state;if(!s.session){Object.assign(s,{instances:[],runs:[],artifacts:[],artifactCursor:null,summary:{},unread:null});return;}
+  const request=++instanceLoad;
+  const s=app.state;if(!s.session){Object.assign(s,{instances:[],runs:[],attentionRuns:[],artifacts:[],artifactCursor:null,summary:{},unread:null});return;}
   const scope={session_id:s.session.id,project_id:s.project.id};
-  const [instances,runs,artifacts,summary]=await Promise.all([rpc("instances.list",{session_id:s.session.id,limit:100}),rpc("runs.list",{...scope,limit:25}),rpc("artifacts.list",{...scope,limit:25}),rpc("sessions.summary",scope)]);
-  if(s.project?.id!==scope.project_id||s.session?.id!==scope.session_id)return;
-  Object.assign(s,{instances:instances.items,runs:runs.items,artifacts:artifacts.items,artifactCursor:artifacts.cursor,summary});
+  const [instances,runs,artifacts,summary,attention]=await Promise.all([rpc("instances.list",{session_id:s.session.id,limit:100}),rpc("runs.list",{...scope,limit:25}),rpc("artifacts.list",{...scope,limit:25}),rpc("sessions.summary",scope),rpc("runs.list",{...scope,view:"attention",limit:4})]);
+  if(request!==instanceLoad||s.project?.id!==scope.project_id||s.session?.id!==scope.session_id)return;
+  Object.assign(s,{instances:instances.items,runs:runs.items,attentionRuns:attention.items,artifacts:artifacts.items,artifactCursor:artifacts.cursor,summary});
   app.applyUnread(summary.unread,false);
   if(s.selectedInstance&&!s.selectedInstance.draft)s.selectedInstance=s.instances.find(value=>value.id===s.selectedInstance.id)||s.selectedInstance;
 }
 async function loadProject(identity){
   disposeConversation();disposeChat();stream?.close();const s=app.state;s.project=s.projects.find(value=>value.id===identity)||null;const epoch=++s.epoch;
   if(s.project){const [agents,sessions,mcp,skills]=await Promise.all([rpc("agents.list",{project_id:identity,limit:100}),rpc("sessions.list",{project_id:identity,archived:false,limit:100}),rpc("mcp.list",{project_id:identity,limit:100}),rpc("skills.list",{project_id:identity,limit:100})]);if(s.epoch!==epoch)return;s.agents=agents.items;s.sessions=sessions.items.filter(value=>!value.archived);s.sessionCursor=sessions.cursor;s.mcp=mcp.items;s.skills=skills.items;s.openTabs=[];s.selectedInstance=null;s.session=s.sessions.find(value=>value.id===localStorage.getItem("oea-session:"+identity))||s.sessions[0]||null;localStorage.setItem("oea-project",identity);rememberSession();await loadInstances();}
-  else{Object.assign(s,{agents:[],sessions:[],session:null,sessionCursor:null,instances:[],runs:[],artifacts:[],artifactCursor:null,summary:{},unread:null,unread:null,mcp:[],skills:[],openTabs:[],selectedInstance:null});localStorage.removeItem("oea-project");}
+  else{Object.assign(s,{agents:[],sessions:[],session:null,sessionCursor:null,instances:[],runs:[],attentionRuns:[],artifacts:[],artifactCursor:null,summary:{},unread:null,unread:null,mcp:[],skills:[],openTabs:[],selectedInstance:null});localStorage.removeItem("oea-project");}
   await transitionView(async()=>{frame();await app.render();});connect();
 }
 app.reloadAgents=async()=>{app.state.agents=(await rpc("agents.list",{project_id:app.state.project.id,limit:100})).items;};
@@ -71,7 +76,11 @@ app.loadMoreSessions=async()=>{const s=app.state,projectId=s.project.id;if(s.ses
 app.createSession=createSession;
 app.createProject=createProject;
 let navigation=0;
-app.navigate=async page=>{const request=++navigation;await transitionView(async()=>{if(request!==navigation)return;disposeConversation();disposeChat();app.state.mobileNavigationOpen=false;app.state.page=page;history.replaceState(null,"",workspacePages.has(page)?"#workspace":page==="agent-settings"?"#settings":"#"+page);frame();await app.render();});};
+app.navigate=async (page,{fromHistory=false,canvasRoute:nextCanvas=null,push=false}={})=>{const request=++navigation;
+  if(app.canvasController){if(!await app.canvasController.leave()){app.updateCanvasRoute();return;}app.canvasController.dispose();app.canvasController=null;}
+await transitionView(async()=>{if(request!==navigation)return;if(nextCanvas)app.state.canvasRoute=nextCanvas;if(push)history.pushState(null,"","#agent-canvas");disposeConversation();disposeChat();app.state.mobileNavigationOpen=false;app.state.page=page;if(page==="agent-canvas")app.updateCanvasRoute();else if(!fromHistory)history.replaceState(null,"",workspacePages.has(page)?"#workspace":page==="agent-settings"?"#settings":"#"+page);frame();await app.render();});};
+app.updateCanvasRoute=()=>{const r=app.state.canvasRoute;if(!r)return;const params=new URLSearchParams({project:app.state.project.id,agent:r.agent_id});if(r.architecture_id)params.set("draft",r.architecture_id);if(r.version)params.set("version",r.version);history.replaceState(null,"","#agent-canvas?"+params);};
+app.openAgentCanvas=route=>app.navigate("agent-canvas",{canvasRoute:{...route,project_id:app.state.project.id},push:true});
 app.refreshFrame=()=>frame(true);
 app.openSettings=async(id,create=false)=>{selectSettingsAgent(id,create);await app.navigate("agent-settings");};
 
@@ -79,7 +88,8 @@ app.render=async()=>{
   const s=app.state,root=$("#page");root.className="";
   if(s.page!=="conversation")disposeConversation();
   if(!s.project){root.innerHTML=empty("创建你的第一个项目","把 Agent、协作会话和业务图放在同一个工作空间里。",'<button class="btn primary" data-action="new-project">新建项目</button>');bindWorkbench(app,root);return;}
-  if(s.page==="agent-settings"){await app.reloadAgents();await renderSettings(app,root);}
+  if(s.page==="agent-canvas")await renderAgentCanvas(app,root);
+  else if(s.page==="agent-settings"){await app.reloadAgents();await renderSettings(app,root);}
   else if(s.page==="agents")renderAgentCatalog(app,root);
   else if(s.page==="mcp")await manageMCP(app,root);
   else if(s.page==="skills")await manageSkills(app,root);
@@ -116,9 +126,9 @@ async function scheduleRefresh(fact){
     catch(error){if(error.code!=="NOT_FOUND"){notify(error.message,true);return;}await app.reloadProjects({deletedId:fact.project_id});}
     return;
   }
-  if(["action.confirmed","action.needs_review","usage.corrected"].includes(fact.kind))app.onArchitectureEvent?.(fact);
+  if(fact.kind==="usage.corrected"){await loadInstances();if(app.state.page==="overview")await app.render();return;}
   if(fact.kind.startsWith("action.")||fact.kind.startsWith("mcp.call.")){app.onToolEvent?.(fact);return;}
-  if(["architecture.created","architecture.saved","architecture.published","run.accepted","run.started","run.completed","run.failed","run.waiting","run.cancelled","run.needs_review"].includes(fact.kind))app.onArchitectureEvent?.(fact);
+  if(["architecture.created","architecture.saved","architecture.published","architecture.removed"].includes(fact.kind))app.onArchitectureEvent?.(fact);
   if(fact.kind.startsWith("architecture."))return;
   if(fact.kind==="agent.saved"||fact.kind==="agent.removed"){await app.reloadAgents();await app.onAgentEvent?.(fact);if(["agents","overview"].includes(app.state.page))await app.render();app.refreshFrame();return;}
   if(fact.kind==="mcp.saved"||fact.kind.startsWith("skill.")){
@@ -136,7 +146,7 @@ async function scheduleRefresh(fact){
 }
 function createProject(){const form=element(`<form><div class="field"><label for="project-name">项目名称</label><input id="project-name" required maxlength="80"></div><div class="field"><label for="project-folder">项目原件目录（可选）</label><input id="project-folder" title="原件默认只读"></div><p>${iconButton("plus","创建项目",{type:"submit",className:"primary"})}</p></form>`);const close=modal("新建项目",form);form.onsubmit=async event=>{event.preventDefault();try{const project=await rpc("projects.create",{name:$("#project-name",form).value,folder:$("#project-folder",form).value||null});app.state.projects.push(project);close();await loadProject(project.id);}catch(error){notify(error.message,true);}};}
 function createSession(){if(!app.state.project)return;const form=element(`<form><div class="field"><label for="session-name">会话名称</label><input id="session-name" required maxlength="80" placeholder="例如：本轮开发协作"></div><p>${iconButton("plus","创建会话",{type:"submit",className:"primary"})}</p></form>`);const close=modal("新建会话",form);form.onsubmit=async event=>{event.preventDefault();try{const session=await rpc("sessions.create",{project_id:app.state.project.id,name:$("#session-name",form).value});localStorage.setItem("oea-session:"+app.state.project.id,session.id);close();await loadProject(app.state.project.id);}catch(error){notify(error.message,true);}};}
-async function boot(){try{if(browserTicket){const ticket=browserTicket;browserTicket=null;const response=await fetch("/api/browser-login/redeem",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket})}),value=await response.json();if(!response.ok||value.error){const error=new Error(value.error?.safe_message||"Browser login failed");error.code=value.error?.code||"PERMISSION_DENIED";throw error;}}const [schema,status,projects]=await Promise.all([rpc("agents.schema"),rpc("host.status"),rpc("projects.list",{limit:100})]);Object.assign(app.state,{schema,status,projects:projects.items,projectCursor:projects.cursor});await loadProject(projects.items.find(value=>value.id===localStorage.getItem("oea-project"))?.id||projects.items[0]?.id);}catch(error){$("#app").innerHTML=error.code==="PERMISSION_DENIED"?empty("请从本机启动器打开工作区","运行 oea open，或使用 Start-Workspace 启动器获取新的登录链接。") : empty("暂时无法连接工作区",error.message);}}
+async function boot(){try{if(browserTicket){const ticket=browserTicket;browserTicket=null;const response=await fetch("/api/browser-login/redeem",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket})}),value=await response.json();if(!response.ok||value.error){const error=new Error(value.error?.safe_message||"Browser login failed");error.code=value.error?.code||"PERMISSION_DENIED";throw error;}}const [schema,status,projects]=await Promise.all([rpc("agents.schema"),rpc("host.status"),rpc("projects.list",{limit:100})]);Object.assign(app.state,{schema,status,projects:projects.items,projectCursor:projects.cursor});await loadProject(projects.items.find(value=>value.id===(initialCanvas?.project_id||localStorage.getItem("oea-project")))?.id||projects.items[0]?.id);}catch(error){$("#app").innerHTML=error.code==="PERMISSION_DENIED"?empty("请从本机启动器打开工作区","运行 oea open，或使用 Start-Workspace 启动器获取新的登录链接。") : empty("暂时无法连接工作区",error.message);}}
 window.addEventListener("pagehide",()=>{stream?.close();disposeConversation();disposeChat();});
-window.addEventListener("hashchange",()=>{if(new URLSearchParams(location.hash.slice(1)).has("oea-login"))location.reload();});
+window.addEventListener("hashchange",()=>{if(new URLSearchParams(location.hash.slice(1)).has("oea-login")){location.reload();return;}const route=canvasRoute();if(route){app.navigate("agent-canvas",{fromHistory:true,canvasRoute:route}).catch(error=>notify(error.message,true));}else if(app.state.page==="agent-canvas")app.navigate(location.hash==="#settings"?"agent-settings":"overview",{fromHistory:true}).catch(error=>notify(error.message,true));});
 window.addEventListener("keydown",event=>{if(event.key==="Escape"&&app.state.mobileNavigationOpen)$(".nav-scrim")?.click();if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();if(!$(".v2-dialog-backdrop"))$('[data-action="search"]')?.click();}});boot();

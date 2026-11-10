@@ -14,7 +14,7 @@ from oea.storage.persistence import encode
 from oea.security.secrets import atomic_write
 
 
-def transition(original, source, destination, apply, check):
+def transition(original, source, destination, apply, check, *, canvas_only=False, handling_only=False):
     """Copy facts and checkpoints unchanged, then add application ownership tables."""
     files = inventory_files(source)
     material = {item["relative_path"]: item for item in files}
@@ -23,7 +23,9 @@ def transition(original, source, destination, apply, check):
     require(original.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not original.execute("PRAGMA foreign_key_check").fetchall(),
             "STATE_INTEGRITY", "Source database integrity needs review")
     schema = Path(__file__).parents[1].joinpath("storage/schema-v3.sql").read_text(encoding="utf-8")
-    additions = schema.split("-- Application ownership (OAP 1.0).", 1)[1]
+    from oea.migration.canvas import upgrade_canvas
+    additions = '' if canvas_only or handling_only else ("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n"
+                  "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n" + schema.split("-- Application ownership (OAP 1.0).", 1)[1])
     report = {"format_version": "3.0", "source_protocol": "3.0", "applied": False, "changed": False,
               "ready_for_apply": True, "secrets": secret_status, "checkpoint_policy": "preserve original graph positions",
               "workspace_policy": "preserve absolute directory bindings", "artifact_path_policy": "bind managed copies to upgraded target",
@@ -35,10 +37,13 @@ def transition(original, source, destination, apply, check):
         for (table,) in original.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"):
             from oea.migration.upgrade import quote
             report["table_counts"][table] = original.execute("SELECT COUNT(*) FROM " + quote(table)).fetchone()[0]
-        output.executescript("BEGIN; ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n"
-                            "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n" + additions)
+        output.executescript('BEGIN;\n' + additions)
+        if not handling_only:
+            upgrade_canvas(output)
+        from oea.migration.handling import upgrade_handling
+        upgrade_handling(output)
         output.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (hashlib.sha256(schema.encode()).hexdigest(),))
-        output.execute("UPDATE metadata SET value='2' WHERE key='schema_revision'")
+        output.execute("UPDATE metadata SET value='4' WHERE key='schema_revision'")
         for identity, path, size, digest in original.execute("SELECT id,path,bytes,sha256 FROM artifacts"):
             relative = Path("artifacts") / identity
             copied = material.get(relative.as_posix())

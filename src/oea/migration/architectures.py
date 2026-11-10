@@ -97,7 +97,7 @@ def transition(original, source, destination, apply, check):
                 atomic_write(destination / "client-token", token_urlsafe(32).encode("utf-8"))
             copied_vault, copied_secrets = _vault(destination)
             require(copied_secrets["available"] and copied_vault == vault, "MIGRATION_SECRET_INVALID", "Copied vault could not be verified")
-            output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", "3.0"), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "2"), ("migration_complete", "true")])
+            output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", "3.0"), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "4"), ("migration_complete", "true")])
             report.update(applied=True, changed=True)
         check()
         verify_files(source, files)

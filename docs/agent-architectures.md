@@ -4,6 +4,16 @@ An Agent architecture controls one Agent's model calls, tool use, state, branche
 
 The default Agent keeps its existing ReAct driver. A published architecture is an explicit alternative; publishing a candidate does not change any Agent's binding.
 
+## Canvas workbench
+
+The Agent settings page separates the active immutable version from the candidate being viewed. Select a candidate to change the preview; click the preview itself to enter the full-screen workbench. The editor supports all 13 Agent primitives, typed state and reducers, input/output mappings, conditional paths, cycles, pure parallel regions, nested subgraphs, and capability narrowing. Python functions come from the host's registered pure-function directory; arbitrary Python graphs remain read-only and are registered through the SDK.
+
+Drag nodes and ports to edit, use Shift for selection, Space to pan, and Ctrl+S to save. Undo/redo and copy/paste operate on declarations. Viewport movement does not mark a draft as changed. The editor preserves advanced fields and reports concurrent revisions without overwriting local edits. Trial runs use a dedicated session and independent instance; they incur real model/tool costs and do not change the active binding. Closing the panel does not cancel a Run.
+
+New browser candidates set `owner_agent_id`. `list(owner_agent_id=...)` reads that Agent's candidates; copying another architecture creates a new identity. `save(..., name=...)` can rename a candidate. `remove(architecture_id, project_id, owner_agent_id, expected_revision)` hides and freezes the candidate while retaining all immutable versions, bindings and execution evidence. Deleted candidate identities cannot be reused. Legacy project-shared drafts remain available for explicit copying.
+
+Saving does not activate a graph. The settings page's **切换版本** confirmation publishes the exact saved revision and then binds it using the Agent's expected configuration revision. A binding failure leaves the previous active version intact. A published candidate may therefore exist without being active; reconcile the saved binding after a connection failure. Deleting a candidate also requires confirmation. Published versions remain available for explicit rollback.
+
 ## Create, validate and try a candidate
 
 Connect to an existing host with `PlatformClient`. `ArchitectureClient` also accepts an open `Host` owned by your application. It does not own either object's lifecycle.
@@ -40,7 +50,7 @@ The [executable example](../examples/agent_architecture.py) accepts explicit pro
 
 `save` replaces the complete draft at an `expected_revision` and permits incomplete declarations. `adjust` changes only exposed options: `max_steps`, and the unchanged Reflexion template's `max_attempts`. Advanced fields remain intact. `publish` validates and creates an immutable version; retrying the same revision returns the original version. `compare` lists changed paths, and `export` returns reproducible Python source. Exporting or editing a file does not register code or switch execution.
 
-Use `bind(agent_id, project_id, binding, expected_revision, role="main")` to apply a version. The optional manager inherits main execution unless explicitly overridden; `role="manager"` changes only that override. Binding and `agents.save` both reject switches while any related instance has accepted, running, waiting or review work, unresolved actions or unsettled usage. `status` returns one concrete blocker. Draft edits and candidate publication remain available. Other Agents and independent instances have no resource admission limit.
+Use `bind(agent_id, project_id, binding, expected_revision, role="main")` to apply a version. The optional manager inherits main execution unless explicitly overridden; `role="manager"` changes only that override. Binding and `agents.save` change the default for subsequently accepted Runs, including new work in an existing instance. Accepted, running, waiting and review work retains its original architecture snapshot. Unsettled usage and historical outcomes do not block a default change. `status` reports `activation_scope="future_runs"` and no work-state blocker. Project ownership, permissions, graph validation and expected revisions remain authoritative. Other Agents and independent instances have no resource admission limit.
 
 ## State and primitives
 
@@ -82,7 +92,7 @@ Keep state small. Node updates are limited to 32 KiB; long model responses, obse
 
 These are editable declarations, not hidden execution engines. Instantiating a template produces an independent draft. The text markers are template routing conventions; edit the corresponding conditions and instructions together for another acceptance policy. Model evaluation is evidence to inspect, not a guarantee of task correctness.
 
-`inspect(run_id, project_id, node_id=..., cursor=..., limit=...)` returns actual node activations. `node_result` reads one activation's small output and error. Full model/tool bodies remain available through the original Run action and context references. `preview` returns at most eight stages and a bounded set of paths. Both drafts and published versions read a saved summary without fetching or traversing the full declaration. Optional `metadata.preview_stages` selects known stage IDs for display and never changes execution.
+`inspect(run_id, project_id, node_id=..., cursor=..., limit=...)` returns actual node activations. `node_result` reads one activation's small output and error. Full model/tool bodies remain available through the original Run action and context references. `preview` defaults to at most eight stages and a bounded set of paths. `preview(detail="canvas")` returns a cached topology of at most 128 nodes and 512 edges, including node positions and output ports, without node configuration. `status(canvas=True)` provides the known topology for an unbound registered graph. `functions()` paginates the pure-function directory; `functions(name=...)` reads one function contract without executing it. Both drafts and published versions read a saved summary without fetching or traversing the full declaration. Optional `metadata.preview_stages` selects known stage IDs for display and never changes execution.
 
 Runs pin the accepted configuration and published version. Node action identities include Run, graph scope, node and activation, so loops, nested graphs and dynamic members are distinct. Re-entry after a committed model/tool receipt reuses that receipt. Confirmed context recovery keeps the original logical model action and archives the earlier attempt. Timeouts and unknown side effects stay pending for inspection; a reflection loop cannot authorize blind replay.
 

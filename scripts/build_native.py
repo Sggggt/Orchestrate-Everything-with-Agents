@@ -102,7 +102,7 @@ def main():
         for source in dict.fromkeys(sources):
             include(source, Path("crates") / (package["name"] + "-" + package["version"]) / source.name)
     rustc = str(Path(args.cargo).with_name("rustc.exe" if os.name == "nt" else "rustc")) if Path(args.cargo).is_absolute() else "rustc"
-    sysroot = Path(subprocess.check_output([rustc,"--print","sysroot"], env=env, text=True).strip())
+    sysroot = Path(subprocess.check_output([rustc,"--print","sysroot"], env=env, text=True, encoding="utf-8").strip())
     rust_notices = sysroot / "share/doc/rust"
     include(rust_notices / "COPYRIGHT-library.html", Path("rust/COPYRIGHT-library.html"))
     for source in sorted((rust_notices / "licenses").glob("*")):

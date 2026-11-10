@@ -16,7 +16,7 @@ leader 负责目标、计划、委派、核验和汇总；OEA Host 负责权限�
 | 设计单个 Agent 的执行架构、可编辑模板、候选版本与生效 | [Agent 架构](workflows/agent-architecture.md) |
 | 保存业务图、map、条件、循环、子图、中断与恢复 | [编排](workflows/orchestration.md) |
 | 群聊、manager 协作、跨 Agent证据与模式切换 | [协作](workflows/collaboration.md) |
-| 运行、读取结果、指导、取消和原回执核对 | [控制](workflows/control.md) |
+| 运行、历史分页、待办处理、取消和原回执核对 | [控制](workflows/control.md) |
 | 配置和发现上游业务 MCP | [业务 MCP](workflows/mcp.md) |
 | 安装、连接、升级和状态目录 | [维护](workflows/maintenance.md) |
 | 登记外部应用、授权 Agent、开发 OAP 客户端 | [应用接入](workflows/applications.md) |

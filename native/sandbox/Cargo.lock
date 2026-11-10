@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "oea-sandbox"
-version = "3.3.3"
+version = "3.4.2"
 dependencies = [
  "libc",
  "mxc-sdk",

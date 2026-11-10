@@ -385,8 +385,10 @@ class Sessions:
             session = need(db, "sessions", session_id)
             require(session["project_id"] == project_id, "PERMISSION_DENIED", "Session belongs to another project")
             counts = rows(db, "SELECT r.state,COUNT(*) AS count FROM runs r JOIN instances i ON i.id=r.instance_id WHERE i.session_id=? GROUP BY r.state", (session_id,))
+            from oea.runtime.attention import NEEDS_ATTENTION
+            attention = one(db, "SELECT COUNT(*) AS count FROM runs r JOIN instances i ON i.id=r.instance_id WHERE i.session_id=? AND " + NEEDS_ATTENTION, (session_id,))["count"]
             artifacts = one(db, "SELECT COUNT(*) AS count FROM artifacts WHERE session_id=?", (session_id,))["count"]
-            return {"session_id": session_id, "project_id": project_id, "runs": {value["state"]: value["count"] for value in counts}, "artifacts": artifacts,
+            return {"session_id": session_id, "project_id": project_id, "runs": {value["state"]: value["count"] for value in counts}, "artifacts": artifacts, "attention_count": attention,
                     "unread": reading.summary(db, session_id, project_id, consumer) if consumer else None}
         return await self.host.store.call(read)
 
