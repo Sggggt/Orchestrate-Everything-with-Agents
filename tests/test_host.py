@@ -783,11 +783,21 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
         await self.open(model, tools=ToolKit.local(files=False).with_tools(submit))
         self.host.register_tool(submit)
-        try:
-            handle = await self.submit()
+        result = self.host.tools._result
+
+        async def result_after_start(task, receipt, spec):
+            # Exercise timeout after provider entry; slow dispatch must not turn
+            # this scenario into cancellation before the provider starts.
             await asyncio.wait_for(started.wait(), 5)
-            with self.assertRaises(RuntimeFault):
-                await self.host.runs.result(handle.id, timeout=10)
+            return await result(task, receipt, spec)
+
+        try:
+            with patch.object(self.host.tools, "_result", result_after_start):
+                handle = await self.submit()
+                await asyncio.wait_for(started.wait(), 5)
+                with self.assertRaises(RuntimeFault) as caught:
+                    await self.host.runs.result(handle.id, timeout=10)
+            self.assertEqual(caught.exception.code, "OUTCOME_UNCERTAIN")
             status = await self.host.runs.get(handle.id)
             self.assertEqual(status["state"], "needs_review")
             self.assertIsNone(status["stopped_at"])
