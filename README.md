@@ -24,16 +24,16 @@ The frontend is served directly from local assets, with no build step. Saved Age
 
 ## Run locally
 
-Use Python 3.12+ and a prebuilt wheel matching Windows x64 or Linux x64. Normal installation needs no Rust compiler. Replace the placeholder below with the release wheel's full filename:
+Use Python 3.12+ and download the wheel matching your system from [OEA 3.4.2 releases](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.2). Windows x64 uses `win_amd64`; Linux x64 uses `linux_x86_64`. Normal installation needs no Rust compiler. After downloading the Windows wheel:
 
 MSVC-built Windows wheels also need the [Microsoft Visual C++ v14 x64 runtime](docs/getting-started.md#windows-runtime).
 
 ```sh
-python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-Run `oea open` in another terminal to open the authenticated workbench. The first-launch origin is **http://127.0.0.1:8890**; a plain page visit does not grant management access. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for system prerequisites and source development.
+On Linux, use the downloaded `linux_x86_64` wheel filename instead. Run `oea open` in another terminal to open the authenticated workbench. The first-launch origin is **http://127.0.0.1:8890**; a plain page visit does not grant management access. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for direct downloads, system prerequisites and source development.
 
 Configure project directory/network defaults, then an Agent's model, credentials and capabilities. Start with one capable Agent and add independent instances when the work needs separate context or responsibility. Managers are optional; main and summary models can be configured independently.
 

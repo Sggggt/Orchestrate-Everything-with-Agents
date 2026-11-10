@@ -1,0 +1,114 @@
+name: Release packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_CACHE_DIR: ${{ runner.temp }}/pip-cache
+      CARGO_HOME: ${{ runner.temp }}/cargo
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      TMPDIR: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare pinned toolchain
+        shell: python {0}
+        run: |
+          import os, pathlib, subprocess, tomllib
+          root = pathlib.Path.cwd()
+          version = tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']
+          if os.environ['GITHUB_REF_TYPE'] == 'tag' and os.environ['GITHUB_REF_NAME'] != 'v' + version:
+              raise SystemExit('Tag and product version differ')
+          toolchain = tomllib.loads((root / 'native/sandbox/rust-toolchain.toml').read_text())['toolchain']['channel']
+          subprocess.run(['rustup', 'toolchain', 'install', toolchain, '--profile', 'minimal', '--component', 'rust-docs'], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('RUSTUP_TOOLCHAIN=' + toolchain + '\n')
+              output.write('SOURCE_DATE_EPOCH=' + subprocess.check_output(['git', 'log', '-1', '--format=%ct'], text=True).strip() + '\n')
+      - name: Install build dependencies
+        run: python -m pip install 'build>=1.2,<2' 'hatchling>=1.26,<2'
+      - name: Install Linux sandbox dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap slirp4netns iproute2 iptables
+      - name: Build and inspect distribution files
+        shell: python {0}
+        run: |
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path.cwd()
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'oea-release'
+          output.mkdir()
+          assets = subprocess.check_output([sys.executable, '-B', 'scripts/build_native.py', '--output', str(output / 'native')], text=True).strip().splitlines()[-1]
+          os.environ['OEA_NATIVE_ASSETS'] = assets
+          dist = output / 'dist'
+          subprocess.run([sys.executable, '-B', '-m', 'build', '--wheel', '--outdir', str(dist)], check=True)
+          if sys.platform == 'linux':
+              subprocess.run([sys.executable, '-B', '-m', 'build', '--sdist', '--outdir', str(dist)], check=True)
+          wheel, = dist.glob('*.whl')
+          verify = [sys.executable, '-B', 'scripts/check_release.py', '--wheel', str(wheel)]
+          for source in dist.glob('*.tar.gz'):
+              verify += ['--sdist', str(source)]
+          subprocess.run(verify, check=True)
+          install = [sys.executable, '-B', 'scripts/check_wheel_install.py', '--wheel', str(wheel), '--work-dir', str(output / 'install-check')]
+          if sys.platform == 'linux':
+              install.append('--native')
+          subprocess.run(install, check=True)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              environment.write('OEA_RELEASE_DIST=' + str(dist) + '\n')
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.os }}
+          path: ${{ env.OEA_RELEASE_DIST }}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/oea-release
+      - name: Prepare checksums and draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_DIST: ${{ runner.temp }}/oea-release
+        shell: python {0}
+        run: |
+          import hashlib, os, pathlib, subprocess, tomllib
+          dist = pathlib.Path(os.environ['RELEASE_DIST'])
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          expected = {f'orchestrate_everything_with_agents-{version}-py3-none-{platform}.whl' for platform in ('win_amd64', 'linux_x86_64')}
+          expected.add(f'orchestrate_everything_with_agents-{version}.tar.gz')
+          files = sorted(dist.iterdir())
+          if {path.name for path in files} != expected:
+              raise SystemExit('Release files do not match the expected platform packages')
+          checksums = dist / 'SHA256SUMS'
+          checksums.write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n' for path in files), encoding='utf-8')
+          subprocess.run(['gh', 'release', 'create', os.environ['RELEASE_TAG'], '--verify-tag', '--draft',
+                          '--title', 'OEA ' + version, '--notes-file', f'docs/releases/{version}.md',
+                          *map(str, files), str(checksums)], check=True)

@@ -43,6 +43,8 @@ Windows source builds need Rust's MSVC toolchain and C++/Windows SDK build depen
 
 Set `OEA_NATIVE_ASSETS` to the generated `assets-...` directory, then build the wheel outside the checkout. The hook includes only manifest-listed, hash-verified assets matching OS, architecture, SDK, protocol and version. Source archives include Rust source and the lock file, never binaries or target directories. Release builds remap private source/cache paths.
 
+Run the release workflow manually for the intended commit or version tag. It builds on Windows and Ubuntu 24.04, checks the exact archives and installs each wheel into a separate environment. For a version tag, it also prepares a draft release with both wheels, the source archive and SHA-256 checksums. Verify the required native backends before publishing the draft. To check a downloaded wheel locally, run `python -B scripts/check_wheel_install.py --wheel /path/to/package.whl --work-dir /path/to/new-check-directory --native`; the directory must be new and outside the checkout.
+
 Editable installation without assets supports model/MCP development; native local tools remain unavailable and do not silently become trusted. See [installation](../getting-started.md).
 
 Upstream: [MXC 1.0.1](https://github.com/microsoft/mxc/tree/v1.0.1), [typed SDK](https://github.com/microsoft/mxc/blob/v1.0.1/src/mxc-sdk/README.md), [Windows support](https://github.com/microsoft/mxc/blob/v1.0.1/docs/backends/process-container/os-version-support.md).

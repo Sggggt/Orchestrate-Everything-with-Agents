@@ -26,16 +26,16 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-OEA 需要 Python 3.12+。安装与 Windows x64 或 Linux x64 匹配的预编译 wheel，普通安装无需 Rust 编译器。把下方占位文件名替换为发布包中的完整文件名：
+OEA 需要 Python 3.12+。从 [OEA 3.4.2 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.2)下载与你的系统匹配的 wheel：Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。下载 Windows 安装包后运行：
 
 MSVC 构建的 Windows wheel 还需要 [Microsoft Visual C++ v14 x64 运行库](docs/getting-started.md#windows-runtime)。请先安装或修复微软官方运行库；OEA 安装器不代为安装此系统依赖。
 
 ```sh
-python -m pip install "./PLATFORM_WHEEL.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
-在另一个终端运行 `oea open` 打开已授权的工作台。首次默认地址是 **http://127.0.0.1:8890**，直接访问首页不会获得管理权限。状态保存在本机源码和同步目录之外。Windows 也可用安装器的 `-Wheel` 参数准备托管环境和启动脚本；源码开发及系统依赖见[安装指南](docs/getting-started.md)。
+Linux 请使用下载的 `linux_x86_64` 安装包文件名。在另一个终端运行 `oea open` 打开已授权的工作台。首次默认地址是 **http://127.0.0.1:8890**，直接访问首页不会获得管理权限。状态保存在本机源码和同步目录之外。Windows 也可用安装器的 `-Wheel` 参数准备托管环境和启动脚本；直接下载链接、源码开发及系统依赖见[安装指南](docs/getting-started.md)。
 
 创建项目，配置默认目录与网络策略，再保存 Agent 的模型、密钥和能力。先让一个 Agent 完成工作，需要独立上下文或职责时再增加实例。manager 是可选角色；主模型和摘要可独立配置。
 
