@@ -5,7 +5,7 @@ The Python host owns authorization, sessions, budgets and receipts. A private Ru
 | Platform | Backend | Requirements |
 | --- | --- | --- |
 | Windows x64 | ProcessContainer/PSEC | Windows 11 with the required native APIs and policy capabilities; MSVC builds also require the Visual C++ v14 x64 runtime |
-| Linux x64 | Bubblewrap | Compatible C runtime, `bwrap`, namespaces and process descriptors |
+| Linux x64 | Bubblewrap | Compatible C runtime, `bwrap` 0.5+, permitted unprivileged user/network namespaces and process descriptors |
 
 Windows rejects AppContainer/DACL augmentation and other fallback tiers. It creates no dedicated account and changes no global ACL or firewall policy. Linux does not fall back to another backend. Unsupported dependencies or policies fail explicitly.
 
@@ -27,6 +27,8 @@ Filesystem isolation is a process boundary, not a separate virtual disk. Explici
 
 Linux outbound networking also needs `slirp4netns`, `ip`, `nsenter`, `iptables`, `ip6tables` and their restore tools. The SDK applies rules in private namespaces. Installation must not modify global sysctl, AppArmor or firewall policy to make a request pass. DNS caches and resolver behavior remain distinct from actual socket traffic.
 
+Host security policy can deny capabilities inside unprivileged namespaces even when namespace creation succeeds. Ubuntu 24.04 and later include AppArmor restrictions in this area. A namespace or loopback-setup permission failure leaves native execution unavailable; OEA does not disable the host's security policy. See [Ubuntu's namespace restriction documentation](https://documentation.ubuntu.com/security/security-features/privilege-restriction/apparmor/).
+
 `host.status` and `agents.check` report component/backend inspection, cached by component revision and host PATH. Inspection does not prove business correctness or replace execution testing. The SDK validates every launch, including Windows' native-only selection.
 
 ## Build and package
@@ -43,7 +45,7 @@ Windows source builds need Rust's MSVC toolchain and C++/Windows SDK build depen
 
 Set `OEA_NATIVE_ASSETS` to the generated `assets-...` directory, then build the wheel outside the checkout. The hook includes only manifest-listed, hash-verified assets matching OS, architecture, SDK, protocol and version. Source archives include Rust source and the lock file, never binaries or target directories. Release builds remap private source/cache paths.
 
-Run the release workflow manually for the intended commit or version tag. It builds on Windows and Ubuntu 24.04, checks the exact archives and installs each wheel into a separate environment. For a version tag, it also prepares a draft release with both wheels, the source archive and SHA-256 checksums. Verify the required native backends before publishing the draft. To check a downloaded wheel locally, run `python -B scripts/check_wheel_install.py --wheel /path/to/package.whl --work-dir /path/to/new-check-directory --native`; the directory must be new and outside the checkout.
+Run the release workflow manually for the intended commit or version tag. It builds on Windows and Ubuntu 22.04, checks the exact archives and installs each wheel into a separate environment. For a version tag, it also prepares a draft release with both wheels, the source archive and SHA-256 checksums. Verify the required native backends before publishing the draft. To check a downloaded wheel locally, run `python -B scripts/check_wheel_install.py --wheel /path/to/package.whl --work-dir /path/to/new-check-directory --native`; the directory must be new and outside the checkout.
 
 Editable installation without assets supports model/MCP development; native local tools remain unavailable and do not silently become trusted. See [installation](../getting-started.md).
 

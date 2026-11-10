@@ -13,7 +13,7 @@ Download the wheel matching your operating system from [OEA 3.4.2](https://githu
 | Linux x64 | [Linux wheel](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.2/orchestrate_everything_with_agents-3.4.2-py3-none-linux_x86_64.whl) |
 | Integrity check | [SHA256SUMS](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.2/SHA256SUMS) |
 
-Run the installation command from the directory containing the downloaded file. Windows uses `win_amd64`; Linux uses `linux_x86_64`. The Linux wheel is built on Ubuntu 24.04, requires a compatible C runtime, and is not a manylinux wheel.
+Run the installation command from the directory containing the downloaded file. Windows uses `win_amd64`; Linux uses `linux_x86_64`. The Linux wheel is built on Ubuntu 22.04, requires a compatible C runtime, and is not a manylinux wheel. Native Linux tools also require host policy to permit unprivileged user and network namespaces.
 
 Windows users should complete the [Visual C++ runtime prerequisite](#windows-runtime) before starting native tools.
 

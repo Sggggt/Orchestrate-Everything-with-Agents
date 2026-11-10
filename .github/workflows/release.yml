@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest]
+        os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       PYTHONUTF8: '1'
@@ -47,7 +47,10 @@ jobs:
         run: python -m pip install 'build>=1.2,<2' 'hatchling>=1.26,<2'
       - name: Install Linux sandbox dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap slirp4netns iproute2 iptables
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iproute2 iptables
+          unshare --user --map-root-user --net sh -c 'ip address add 127.0.0.1/8 dev lo && ip link set lo up'
       - name: Build and inspect distribution files
         shell: python {0}
         run: |
