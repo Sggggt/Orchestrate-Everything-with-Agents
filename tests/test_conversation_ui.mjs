@@ -38,6 +38,7 @@ test("run stream batches long output, deduplicates facts, retains interrupted te
   assert.equal(changes.at(-1).text.length,10000,"keep text until the saved history arrives");
   wire.onerror();t.mock.timers.tick(80);
   assert.equal(changes.at(-1).connected,false);assert.equal(changes.at(-1).text.length,10000);
+  t.mock.timers.tick(170);
   wire.onopen();t.mock.timers.tick(80);assert.equal(changes.at(-1).text.length,10000);assert.equal(syncs,1);
   emit({kind:"model.delta",action_id:"a2",attempt_id:"u2",attempt_position:3,sequence:1,text:"partial"});
   emit({kind:"run.failed",run:{state:"failed"}});
@@ -75,11 +76,45 @@ test("a gap reads exactly that attempt and an obsolete connection cannot overwri
     readResponse:params=>{reads.push(params);return new Promise(resolve=>pending.push(resolve));}});
   const emit=(sequence,text)=>wire.onmessage({data:JSON.stringify({kind:"model.delta",action_id:"a",attempt_id:"u",attempt_position:1,sequence,text})});
   emit(1,"A");emit(3,"C");assert.equal(reads[0].action_id,"a");assert.equal(reads[0].attempt_id,"u");
-  wire.onerror();wire.onopen();
+  wire.onerror();t.mock.timers.tick(250);wire.onopen();
   pending[1]({available:true,action_id:"a",attempt_id:"u",attempt_position:1,sequence:3,status:"streaming",text:"ABC",next_offset:null});
   await new Promise(setImmediate);
   pending[0]({available:true,action_id:"a",attempt_id:"u",attempt_position:1,sequence:1,status:"streaming",text:"obsolete",next_offset:null});
   await new Promise(setImmediate);t.mock.timers.tick(80);assert.equal(latest.text,"ABC");observer.close();
+});
+
+test("progress reconnects from the durable cursor and stops after five failures",t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const wires=[];let latest;
+  const observer=observeRun({runId:"r",projectId:"p",onSync:()=>{},onChange:value=>latest=value,
+    source:url=>{const wire={url,close(){this.closed=true;}};wires.push(wire);return wire;}});
+  wires[0].onopen();
+  wires[0].onmessage({data:JSON.stringify({kind:"event",event:{run_id:"r",position:12,kind:"model.started",data:{action_id:"a",attempt_id:"u"}}})});
+  for(let i=0;i<5;i++){
+    wires.at(-1).onerror();
+    assert.equal(latest.note,"正在重连");
+    t.mock.timers.tick(250*2**i);
+    assert.match(wires.at(-1).url,/after=12/);
+  }
+  wires.at(-1).onerror();t.mock.timers.tick(8000);
+  assert.equal(wires.length,6);assert.match(latest.note,/重连未成功/);
+  assert.ok(wires.every(wire=>wire.closed));observer.close();
+});
+
+test("model reconnect shows its status and keeps the original partial output until new text arrives",t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});let wire,latest;
+  const observer=observeRun({runId:"r",projectId:"p",source:()=>wire={close(){}},onSync:()=>{},onChange:value=>latest=value});
+  const emit=frame=>wire.onmessage({data:JSON.stringify(frame)});
+  const fact=(position,kind,data)=>emit({kind:"event",event:{run_id:"r",position,kind,data}});
+  const original={action_id:"a",attempt_id:"first"};
+  const next={action_id:"a",attempt_id:"second"};
+  emit({kind:"model.delta",...original,attempt_position:1,sequence:1,text:"partial"});
+  fact(2,"model.reconnecting",{...original,attempt:1,limit:5});
+  assert.equal(latest.note,"正在重连");
+  fact(3,"model.started",{...next,reconnect:{attempt:1,limit:5}});t.mock.timers.tick(80);
+  assert.equal(latest.previous.text,"partial");assert.equal(latest.note,"正在重连");
+  emit({kind:"model.delta",...next,attempt_position:3,sequence:1,text:"replacement"});
+  assert.equal(latest.text,"replacement");assert.doesNotMatch(latest.note,/重连/);observer.close();
 });
 
 test("stable Markdown blocks match full rendering across every token boundary",()=>{

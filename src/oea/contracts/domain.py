@@ -94,7 +94,8 @@ class RunSpec(Configuration):
 class MessageSpec(Configuration):
     board_id: str
     content: str = Field(min_length=1, max_length=65536)
-    mentions: tuple[str, ...] = Field(default=(), max_length=256)
+    mentions: tuple[str, ...] = Field(default=(), max_length=256, description="Exact recipient instance IDs.")
+    agent_mentions: tuple[str, ...] = Field(default=(), max_length=256, description="Recipient Agent IDs in this session. Route to the only reachable instance or, when several are reachable, the only reachable manager.")
     reply_to: str | None = None
     topic_id: str | None = None
     context_refs: tuple[str, ...] = Field(default=(), max_length=128)

@@ -38,6 +38,15 @@
 .settings-fields:has(>.field) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px; margin-bottom:24px; }
 .settings-fields>.schema-object,.settings-fields>.field:has(textarea) { grid-column:1/-1; }
 .settings-fields .field { margin:0; }
+.communication-settings { max-width:720px; }
+.communication-settings fieldset { min-width:0; margin:16px 0; padding:12px 0 16px; border:0; border-bottom:1px solid var(--line); }
+.communication-settings legend { padding:0; font-size:14px; font-weight:600; }
+.communication-settings .input-actions input { min-width:0; }
+.communication-settings [data-manager-fields]>.field { margin-bottom:16px; }
+.partner-list { display:flex; flex-wrap:wrap; gap:4px 10px; }
+.partner-entry { display:inline-flex; align-items:center; gap:2px; font-size:13px; overflow-wrap:anywhere; }
+.partner-entry .icon-btn { width:28px; height:28px; }
+.permission-toggle { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; }
 .architecture-section button:focus-visible,.settings-profile button:focus-visible,.settings-advanced summary:focus-visible { outline:3px solid #6750d870; outline-offset:3px; }
 [hidden] { display: none !important; }
 .v2-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:28px 32px 22px; }

@@ -70,6 +70,47 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeFault):
             await self.host.messages.send(self.spec("notice", "changed"))
 
+    async def test_agent_mentions_select_one_instance_or_the_only_manager(self):
+        await self.host.sessions.set_mode(self.session["id"], "collaborative", self.session["epoch"])
+        await self.host.agents.save(AgentDefinition(id="reviewer", name="Reviewer", project_id="p", manager=Manager()))
+        reviewer = await self.host.instances.create(self.session["id"], "reviewer", name="review")
+        initial = self.spec("single", agent_mentions=("reviewer",))
+        receipt = await self.host.registry.call("messages.send", {"spec": initial.model_dump(mode="json")}, agent_name="external-client")
+        self.assertEqual([item["instance_id"] for item in receipt["deliveries"]], [reviewer["id"]])
+        await self.host.instances.create(self.session["id"], "reviewer", name="another review")
+        ambiguous = await self.host.messages.send(self.spec("ambiguous", agent_mentions=("reviewer",)))
+        self.assertEqual(ambiguous["content"], "Information")
+        self.assertEqual(ambiguous["deliveries"], [])
+        self.assertEqual(ambiguous["issues"][0]["reason"], "RECIPIENT_AMBIGUOUS")
+        manager = await self.host.instances.create(self.session["id"], "reviewer", name="coordinator", role="manager")
+        routed = await self.host.messages.send(self.spec("manager", agent_mentions=("reviewer",)))
+        self.assertEqual([item["instance_id"] for item in routed["deliveries"]], [manager["id"]])
+        exact = await self.host.messages.send(self.spec("exact", mentions=(reviewer["id"],), agent_mentions=("reviewer",)))
+        self.assertEqual([item["instance_id"] for item in exact["deliveries"]], [reviewer["id"]])
+        replay = await self.host.messages.send(initial)
+        self.assertTrue(replay["reused"])
+        self.assertEqual(replay["deliveries"], receipt["deliveries"])
+        await self.host.instances.create(self.session["id"], "reviewer", name="second coordinator", role="manager")
+        conflict = await self.host.messages.send(self.spec("two-managers", agent_mentions=("reviewer",)))
+        self.assertEqual(conflict["issues"][0]["reason"], "RECIPIENT_AMBIGUOUS")
+
+    async def test_agent_mentions_keep_partner_grants_for_agent_senders(self):
+        await self.host.agents.save(AgentDefinition(id="reviewer", name="Reviewer", project_id="p"))
+        reviewer = await self.host.instances.create(self.session["id"], "reviewer", name="review")
+        run = await self.active()
+        spec = {"board_id": self.board, "content": "A note", "agent_mentions": ["reviewer"]}
+        denied = await self.host.tools.invoke(run.id, "send_message", spec | {"idempotency_key": "denied"}, "denied")
+        self.assertEqual(denied["deliveries"], [])
+        self.assertEqual(denied["issues"][0]["reason"], "NOT_DELIVERED")
+        worker = await self.host.agents.get("worker")
+        definition = AgentDefinition.model_validate(worker["definition"])
+        await self.host.agents.save(definition.model_copy(update={"communication": Communication(departments=("reviewer",))}),
+                                    expected_revision=worker["revision"])
+        fresh = await self.active(self.second, key="with-grant")
+        sent = await self.host.tools.invoke(fresh.id, "send_message", spec | {"idempotency_key": "granted"}, "granted")
+        self.assertEqual(sent["issues"], [])
+        self.assertEqual([item["instance_id"] for item in sent["deliveries"]], [reviewer["id"]])
+
     async def test_private_readers_are_explicit_and_mentions_cannot_expand_them(self):
         run = await self.active()
         sent = await self.host.tools.invoke(run.id, "send_message", {"board_id": self.inbox, "content": "Private evidence", "mentions": [self.instance["id"]], "idempotency_key": "private"}, "private")

@@ -4,7 +4,7 @@
 2. 缺少字段定义时查询 `agents.schema`。保存 `AgentDefinition` 六要素，保留当前完整定义后只改目标字段，`agents.save` 携带 `expected_revision`。
 3. 模型端点和模型名写入 model；凭据经本地设置或 `agents.set_credential` 保存，只读回引用和 configured。main/summary 可独立配置；manager 使用自己的模型、秘密、指令、通信和 Context，其余能力可继承或收窄。
 4. local、functions、mcp 分别绑定实际工具。Python 函数须在宿主进程注册；共享 Skill 按 id 绑定，名称和描述随正文版本固定，required 才预加载；直接目录绑定可显式提供用途元数据。ProjectWorkspace 提供默认目录、Shell 和网络，Workspace 可覆盖或关闭继承；原件只读，写目录显式授予，命令另需宿主 grant。所有本地入口共用原生边界，不支持时不自动放宽授权。
-5. 用 `agents.check` 核对 main／manager 各自的配置与密钥来源、当前授权、目录预览和程序查找结果。它不创建工作目录、不发起模型请求，不能作为真实模型或业务验收。开始实际执行前明确材料、出站目的地、预算和验收条件。
+5. 用 `agents.check` 核对 main／manager 各自的模型配置、凭据和工具信息，以及目录预览和程序查找结果。它不创建工作目录、不发起模型请求，不能作为真实模型或业务验收。需要跨 Agent 定向通知或委派时，在提交工作前核对下方的[通信权限](#通信权限)。开始实际执行前明确材料、出站目的地、预算和验收条件。
 6. 用户需要模型连接测试时，使用 `agents.probe(agent_id, session_id, idempotency_key, role)`，通过返回的原 Run 查询结果及用量；不要在普通业务 Run 中仅写“只回复 READY”。探测不加载业务能力，最多一次模型调用与 128 输出 token。main／manager 独立，manager 仍要求协作模式；超时保留原键并读回执，不自动重派。
 7. 用户要求删除登记时，按对象查询单个 `agents.remove`／`mcp.remove`／`skills.remove` 协议，携带当前项目、对象 ID 与 expected_revision。删除从活动目录隐藏并撤权，保留历史和物理源文件；源缺失不阻止删除。Agent 存在未结束或待核对工作时先报告并处理原工作，不自动取消。关联配置不静默改写；响应未知先核对原对象与修订，不改键重派。
 8. 用户明确确认项目永久删除时，使用 `projects.delete` 的精确名称与稳定键。该动作撤销项目工作并注销全部所属平台记录、未决账目及图检查点，不要求先把遗留状态改成成功或已结算。原件、备份与其它项目保留，已发出的外部效果不自动回滚；清理中断沿原键继续，不重新执行业务动作。
@@ -14,3 +14,8 @@
 读取修订冲突后的最新定义再合并当前修改。缺少秘密时保留配置并提示通过本地设置填写，不在对话中索取密钥。
 
 执行前处理 `agents.check.tools.unavailable` 与 `workspace_check.issues`。`*:host_grant` 交控制端核对已有用户授权，缺少时申请后再安排空闲宿主以 `--allow-commands` 重启；不能反复保存 Agent 配置来开放宿主权限。共享目录的读取与写入分别配置：项目原件和 references 默认只读，需写入时使用明确获准的 `writable_project_paths` 或 `writable_directories`，再核对 `workspace_check.paths`；不因任务正文写了路径就扩大范围。
+
+## 通信权限
+
+- 已认证的外部控制 MCP 可以直接向会话实例留言、提交工作和读取回执。`communication.departments` 只用于平台内 Agent 之间的协作，填写伙伴的 `AgentDefinition.id`。需要双向通知或自动合并进双方运行时，两边各加对方。manager 用自己的 `manager.communication.departments`。委派另由 `can_request` 控制。
+- 派发前用 `agents.get` 读回实际配置。运行期间的伙伴授权取 Run 快照与当前配置的交集。同一 Agent 只有一个实例时可直接联系；需要多个实例共用一个协调入口时，可配置 manager、开启会话协作模式，并显式创建一个 manager 实例。发消息按[协作流程](collaboration.md)寻址。

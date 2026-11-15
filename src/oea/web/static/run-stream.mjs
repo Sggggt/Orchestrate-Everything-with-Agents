@@ -1,26 +1,28 @@
 // Attempt identities and sequence numbers reconcile transient text with receipts.
 export const liveStates=new Set(["accepted","running"]);
 const endings=new Set(["run.completed","run.failed","run.cancelled","run.needs_review","run.waiting"]);
+const maxReconnects=5;
 
 export function observeRun({runId,projectId,listeners,onChange,onSync,readResponse,source=url=>new EventSource(url)}){
-  const state={text:"",actionId:null,attemptId:null,attemptPosition:0,sequence:0,blockId:"content",note:"正在连接执行进度…",connected:false,run:null,saved:false};
-  let stopped=false,position=0,timer=null,generation=0,hydration=null;
-  const paint=()=>{clearTimeout(timer);timer=null;if(!stopped)onChange({...state});};
+  const state={text:"",previous:null,actionId:null,attemptId:null,attemptPosition:0,sequence:0,blockId:"content",note:"正在连接执行进度…",connected:false,run:null,saved:false};
+  let stopped=false,position=0,timer=null,generation=0,hydration=null,wire=null,retryTimer=null,retries=0,connectionNote="",modelReconnect=null;
+  const paint=()=>{clearTimeout(timer);timer=null;if(!stopped)onChange({...state,note:connectionNote||state.note});};
   const schedule=()=>{if(timer===null)timer=setTimeout(paint,80);};
   const sync=()=>{if(!stopped)onSync();};
   function adopt(frame){
     if(!frame.action_id||!frame.attempt_id)return false;
     if(frame.attempt_id===state.attemptId&&frame.action_id===state.actionId)return true;
     if(frame.attempt_position<=state.attemptPosition)return false;
+    const previous=frame.action_id===state.actionId?(state.text?{actionId:state.actionId,attemptId:state.attemptId,text:state.text}:state.previous):null;
     Object.assign(state,{actionId:frame.action_id,attemptId:frame.attempt_id,attemptPosition:frame.attempt_position,
-      sequence:0,blockId:frame.block_id||"content",text:"",saved:false});
+      sequence:0,blockId:frame.block_id||"content",text:"",previous,saved:false});
     return true;
   }
   function delta(frame){
     if(!adopt(frame)||state.saved||frame.sequence<=state.sequence)return;
     if(frame.sequence!==state.sequence+1){hydrate({action_id:state.actionId,attempt_id:state.attemptId});return;}
     const first=!state.text;
-    state.text+=frame.text;state.sequence=frame.sequence;state.note="正在输出…";
+    state.text+=frame.text;state.sequence=frame.sequence;state.note="正在输出…";modelReconnect=null;
     if(first)paint();else schedule();
   }
   async function hydrate(params={}){
@@ -40,7 +42,7 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
         if(!snapshot.unsaved_gap){
           state.text=text;state.sequence=snapshot.sequence??state.sequence;state.saved=snapshot.status==="saved";
         }
-        state.note=snapshot.unsaved_gap?"临时正文尚无已保存回执 · 等待原请求结算":state.saved?"正在载入已保存的结果…":"正在输出…";
+        state.note=modelReconnect|| (snapshot.unsaved_gap?"临时正文尚无已保存回执 · 等待原请求结算":state.saved?"正在载入已保存的结果…":"正在输出…");
         paint();
       }
     }catch(error){
@@ -58,12 +60,19 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
     position=value.position;
     const data=value.data||{};
     if(value.kind==="model.started"&&data.purpose!=="summary"){
-      if(adopt({...data,attempt_position:value.position})){state.note="正在准备请求…";schedule();}
+      if(adopt({...data,attempt_position:value.position})&&!state.text&&!state.saved){
+        modelReconnect=data.reconnect?"正在重连":null;
+        state.note=modelReconnect||"正在准备请求…";schedule();
+      }
     }
     const current=data.attempt_id===state.attemptId;
-    if(current&&value.kind==="model.send_started"){state.note="正在连接模型…";schedule();}
-    if(current&&value.kind==="model.response_received"){state.note="已收到响应，等待内容…";schedule();}
+    if(value.kind==="model.reconnecting"&&(!state.attemptId||current)){
+      modelReconnect="正在重连";state.note=modelReconnect;paint();
+    }
+    if(current&&value.kind==="model.send_started"&&!state.text){state.note=modelReconnect||"正在连接模型…";schedule();}
+    if(current&&value.kind==="model.response_received"&&!state.text){modelReconnect=null;state.note="已收到响应，等待内容…";schedule();}
     if(current&&(value.kind==="model.completed"||value.kind==="model.failed")){
+      modelReconnect=null;
       state.note=value.kind==="model.failed"?"本轮输出中断，正在读取已保存的结果":"正在整理执行结果…";paint();sync();
       hydrate({action_id:state.actionId,attempt_id:state.attemptId});
     }
@@ -72,12 +81,23 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
   }
   const listener=value=>receive({kind:"event",event:value});
   listeners?.add(listener);
-  const stream=source("/api/events?"+new URLSearchParams({run_id:runId,project_id:projectId}));
-  stream.onopen=()=>{
-    if(stopped)return;
-    generation++;hydration=null;state.connected=true;state.note="正在核对执行进度…";schedule();hydrate();
-  };
-  stream.onerror=()=>{if(stopped)return;generation++;hydration=null;state.connected=false;state.note="连接中断，正在重连 · 已显示内容保留";paint();};
+  function connect(){
+    const params=new URLSearchParams({run_id:runId,project_id:projectId});
+    if(position)params.set("after",position);
+    const stream=wire=source("/api/events?"+params);
+    stream.onopen=()=>{
+      if(stopped||wire!==stream)return;
+      generation++;hydration=null;retries=0;connectionNote="";state.connected=true;state.note=modelReconnect||"正在核对执行进度…";schedule();hydrate();
+    };
+    stream.onerror=()=>{if(!stopped&&wire===stream)disconnected();};
+    stream.onmessage=event=>{if(wire===stream)receive(JSON.parse(event.data));};
+  }
+  function disconnected(){
+    wire?.close();wire=null;generation++;hydration=null;state.connected=false;
+    if(retries===maxReconnects){connectionNote="重连未成功 · 可重新打开对话查看回执";paint();return;}
+    retries++;connectionNote="正在重连";paint();
+    retryTimer=setTimeout(()=>{retryTimer=null;connect();},250*2**(retries-1));
+  }
   function receive(frame){
     if(stopped)return;
     if(hydration&&(frame.kind==="model.delta"||frame.kind==="event")){
@@ -92,13 +112,15 @@ export function observeRun({runId,projectId,listeners,onChange,onSync,readRespon
     else if(frame.kind==="resync"){state.note="正在补读原响应…";schedule();hydrate();}
     else if(endings.has(frame.kind)){
       state.run=frame.run||{id:runId,state:frame.kind.slice(4)};
-      state.note=frame.kind==="run.completed"?"正在载入已保存的结果…":state.text?"本轮输出已结束 · 请在任务详情中核对回执":"";
+      connectionNote="";
+      const count=state.run.error?.details?.reconnect_attempts;
+      state.note=frame.kind==="run.completed"?"正在载入已保存的结果…":count?"重连未成功 · 请查看任务详情":state.text||state.previous?"本轮输出已结束 · 请在任务详情中核对回执":"";
       paint();sync();close();
     }else if(frame.kind==="host.closed"){
-      generation++;hydration=null;state.connected=false;state.note="宿主连接已关闭，等待恢复 · 已显示内容保留";paint();sync();
+      disconnected();
     }
   }
-  stream.onmessage=event=>receive(JSON.parse(event.data));
-  function close(){if(stopped)return;stopped=true;generation++;hydration=null;stream.close();clearTimeout(timer);listeners?.delete(listener);}
+  function close(){if(stopped)return;stopped=true;generation++;hydration=null;wire?.close();wire=null;clearTimeout(timer);clearTimeout(retryTimer);listeners?.delete(listener);}
+  connect();
   return {close};
 }

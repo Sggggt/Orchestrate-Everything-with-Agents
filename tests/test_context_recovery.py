@@ -26,11 +26,12 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.status, self.code, self.always_reject = 400, "context_length_exceeded", False
         self.transport_timeout = False
         self.first_stream = None
+        self.interrupt_stream = False
         def handle(request):
             self.requests.append(json.loads(request.content))
             if self.transport_timeout:
                 raise httpx.ReadTimeout("Synthetic timeout")
-            if len(self.requests) == 1 and self.first_stream is not None:
+            if (len(self.requests) == 1 or self.interrupt_stream) and self.first_stream is not None:
                 return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Stream(self.first_stream))
             if len(self.requests) == 1 or self.always_reject:
                 return httpx.Response(self.status, json={"error": {"code": self.code, "message": "Request exceeds context length"}})
@@ -113,6 +114,33 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             await self.host.runs.result(run.id, timeout=10)
         self.assertEqual(caught.exception.code, "MODEL_TIMEOUT")
         self.assertEqual(len(self.requests), 1)
+
+    async def test_stream_reconnect_finishes_original_action_and_retains_partial_attempt(self):
+        self.first_stream = [frame({"choices": [{"delta": {"content": "partial"}}]})]
+        run = await self.submit(history=False)
+        self.assertEqual((await self.host.runs.result(run.id, timeout=10)).text, "Done")
+        actions = (await self.host.runs.inspect(run.id))["actions"]
+        self.assertEqual(len(actions), 1)
+        archived = (await self.host.runs.attempts(actions[0]["id"], project_id="p"))["items"]
+        partial = await self.host.runs.response(run.id, action_id=actions[0]["id"], attempt_id=archived[0]["attempt_id"])
+        self.assertEqual(partial["text"], "partial")
+        facts = (await self.host.events_service.list("p", run_id=run.id))["items"]
+        self.assertEqual([item["data"]["attempt"] for item in facts if item["kind"] == "model.reconnecting"], [1])
+        budget = await self.host.budgets.get(run.budget_id)
+        self.assertEqual(budget["usage"]["model_calls"], 2)
+        self.assertEqual(budget["needs_review"]["model_calls"], 1)
+
+    async def test_stream_reconnect_stops_at_five(self):
+        self.first_stream = []
+        self.interrupt_stream = True
+        run = await self.submit(history=False)
+        with self.assertRaises(RuntimeFault) as caught:
+            await self.host.runs.result(run.id, timeout=15)
+        self.assertEqual(caught.exception.code, "MODEL_STREAM_INTERRUPTED")
+        self.assertEqual(caught.exception.details["reconnect_attempts"], 5)
+        self.assertEqual(len(self.requests), 6)
+        facts = (await self.host.events_service.list("p", run_id=run.id))["items"]
+        self.assertEqual([item["data"]["attempt"] for item in facts if item["kind"] == "model.reconnecting"], [1, 2, 3, 4, 5])
 
     async def test_stream_error_after_text_and_tool_fragments_never_retries(self):
         self.first_stream = [frame({"choices": [{"delta": {"content": "partial", "tool_calls": [{"index": 0, "id": "call", "function": {"name": "read_context", "arguments": "{}"}}]}}]}),

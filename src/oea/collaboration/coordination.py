@@ -22,7 +22,8 @@ SCHEMAS = {
     "list_members": schema({"cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, []),
     "list_boards": schema({"cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, []),
     "read_messages": schema({"board_id": STRING, "after": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, ["board_id"]),
-    "send_message": schema({"board_id": STRING, "mentions": {"type": "array", "items": STRING, "maxItems": 256}, "content": {**STRING, "maxLength": 65536},
+    "send_message": schema({"board_id": STRING, "mentions": {"type": "array", "items": STRING, "maxItems": 256, "description": "Exact recipient instance IDs."},
+        "agent_mentions": {"type": "array", "items": STRING, "maxItems": 256, "description": "Recipient Agent IDs. The host selects the sole reachable instance or, among several, the sole reachable manager."}, "content": {**STRING, "maxLength": 65536},
         "reply_to": STRING, "topic_id": STRING, "context_refs": {"type": "array", "items": STRING, "maxItems": 128},
         "artifact_ids": {"type": "array", "items": STRING, "maxItems": 32},
         "idempotency_key": {**STRING, "maxLength": 128}}, ["board_id", "content", "idempotency_key"]),
@@ -39,7 +40,7 @@ DESCRIPTIONS = {
     "list_members": "List stable identities, names, reachable inboxes and communication scope. This does not create managers or other instances.",
     "list_boards": "List shared boards and private inboxes with current explicit read access.",
     "read_messages": "Read original board entries incrementally using a durable instance cursor. Explicit after can reread history. Reading never starts work.",
-    "send_message": "Persist free-form text on a board. Optional mentions send notifications only to existing authorized readers. Check issues for undelivered mentions. New work requires assign_work.",
+    "send_message": "Save a board message. Use agent_mentions to notify an Agent, or mentions for an exact instance. Check issues for undelivered notifications. New work requires assign_work.",
     "request_cancel": "Request cancellation of a related instance in this Agent group; returns actual stop observations.",
     "report_issue": "Record a problem or evidence for the controller without triggering another model discussion.",
 }

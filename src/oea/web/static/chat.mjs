@@ -31,18 +31,22 @@ export async function renderChat(app,root){
   $(".v2-composer").onsubmit=async event=>{
     event.preventDefault();
     const button=$(".v2-composer button[type=submit]");button.disabled=true;
-    try{const spec={board_id:d.board_id,mentions:d.recipients,content:d.content,idempotency_key:d.key};if(d.reply)spec.reply_to=d.reply.id;
+    try{const spec={board_id:d.board_id,mentions:d.recipients.filter(id=>!id.startsWith("agent:")),content:d.content,idempotency_key:d.key};
+      const agents=d.recipients.filter(id=>id.startsWith("agent:")).map(id=>id.slice(6));if(agents.length)spec.agent_mentions=agents;if(d.reply)spec.reply_to=d.reply.id;
       const receipt=await rpc("messages.send",{spec});d.content="";d.reply=null;d.board_id=general?.id;d.key=crypto.randomUUID();$("#message-content").value="";updateReply();await loadLatest(app);if(receipt.issues.length)notify("留言已保存，部分提及或附件未送达，请查看回执。");
     }catch(error){notify(error.message,true);}finally{button.disabled=false;}
   };
   updateTargets();updateReply();await loadLatest(app);
-  function updateHint(){$("#purpose-hint").textContent=(d.reply?.private?"回复保留原私聊范围；":"发送到群聊；")+"@ 只发送通知。Ctrl / ⌘ + Enter 发送";}
+  function updateHint(){$("#purpose-hint").textContent=d.reply?.private?"回复沿用原私聊范围。":"按 Agent 通知时会选择唯一实例或唯一可用的 manager。";}
   function updateTargets(){
-    const options=[["all","@当前会话的所有实例"],...s.instances.map(value=>[value.id,"@"+value.name])];
-    $("#message-target").innerHTML='<option value="">@ 提及成员（可选）</option>'+options.map(([id,label])=>`<option value="${escape(id)}">${escape(label)}</option>`).join("");
+    const activeAgents=new Set(s.instances.map(instance=>instance.agent_id));
+    const options=(items,id,label)=>items.map(item=>`<option value="${escape(id(item))}">${escape(label(item))}</option>`).join("");
+    const byAgent=options(s.agents.map(row=>row.definition).filter(agent=>agent.enabled&&activeAgents.has(agent.id)),agent=>"agent:"+agent.id,agent=>agent.name);
+    const byInstance=options(s.instances,instance=>instance.id,instance=>instance.name);
+    $("#message-target").innerHTML='<option value="">@ 提及成员（可选）</option><option value="all">@ 当前会话的所有实例</option>'+`<optgroup label="按 Agent 通知">${byAgent}</optgroup><optgroup label="按实例通知">${byInstance}</optgroup>`;
     updateChips();renderMembers(app);
   }
-  function updateChips(){const label=value=>"@"+(s.instances.find(item=>item.id===value)?.name||value);
+  function updateChips(){const label=value=>value.startsWith("agent:")?"@"+(s.agents.find(row=>row.definition.id===value.slice(6))?.definition.name||value.slice(6))+"（按 Agent）":"@"+(s.instances.find(item=>item.id===value)?.name||value);
     $("#recipient-chips").innerHTML=d.recipients.map((value,index)=>`<button type="button" class="v2-purpose" data-remove-target="${index}">${escape(label(value))} ×</button>`).join("");for(const button of document.querySelectorAll("[data-remove-target]"))button.onclick=()=>{d.recipients.splice(Number(button.dataset.removeTarget),1);d.key=crypto.randomUUID();updateChips();};}
   function updateReply(){$("#reply-strip").innerHTML=d.reply?`<div class="v2-reply-strip"><span>${d.reply.private?"回复私聊":"回复"}：${escape(d.reply.excerpt)}</span><button type="button" id="cancel-reply" aria-label="取消回复">${icon("close")}</button></div>`:"";if(d.reply)$("#cancel-reply").onclick=()=>{d.reply=null;d.board_id=general?.id;d.key=crypto.randomUUID();updateReply();};updateHint();}
   active.updateTargets=updateTargets;
@@ -54,7 +58,11 @@ export function recipientLabels(message,state){
   for(const issue of message.issues||[])if(issue.field==="mentions"&&!recipients.has(issue.target))recipients.set(issue.target,{failed:true});
   if(message.board?.scope==="inbox"&&!recipients.has(message.board.owner_instance_id))recipients.set(message.board.owner_instance_id,{name:message.board.owner_name,failed:true});
   if(message.board?.scope==="inbox"&&!recipients.get(message.board.owner_instance_id).name)recipients.get(message.board.owner_instance_id).name=message.board.owner_name;
-  return [message.board?.scope==="inbox"?"私聊":"群聊",...[...recipients].map(([id,value])=>"@"+(state.instances.find(item=>item.id===id)?.name||value.name||id)+(value.failed?"（未送达）":""))];
+  const unresolved=(message.issues||[]).filter(issue=>issue.field==="agent_mentions").map(({target,reason})=>{
+    const name=state.agents?.find(row=>row.definition.id===target)?.definition.name||target;
+    return `@${name}（${reason==="RECIPIENT_AMBIGUOUS"?"请指定实例":reason==="SESSION_REQUIRED"?"需指定会话实例":"未送达"}）`;
+  });
+  return [message.board?.scope==="inbox"?"私聊":"群聊",...[...recipients].map(([id,value])=>"@"+(state.instances.find(item=>item.id===id)?.name||value.name||id)+(value.failed?"（未送达）":"")),...unresolved];
 }
 export function messageSource(message,state){
   const source=message.source,instance=state.instances.find(value=>value.id===source.instance_id);
@@ -101,4 +109,19 @@ export async function refreshChat(app){
   }
   view.updateTargets?.();const mode=$("#collaboration-mode");if(mode)mode.value=app.state.session.mode;
 }
-function addInstance(app){const s=app.state;const content=element(`<form><div class="field"><label for="instance-agent">业务能力</label><select id="instance-agent">${s.agents.filter(row=>row.definition.enabled).map(row=>`<option value="${escape(row.definition.id)}">${escape(row.definition.name)}</option>`).join("")}</select></div><div class="field"><label for="instance-name">实例名称</label><input id="instance-name" required maxlength="256" placeholder="例如：文档审阅 01"></div><p class="v2-muted">继承已保存的模型、工具、Skill 与工作环境。添加实例不会发起模型调用。</p><p><button class="btn primary">添加实例</button></p></form>`);const close=modal("添加工作实例",content);content.onsubmit=async event=>{event.preventDefault();try{await rpc("instances.create",{session_id:s.session.id,agent_id:$("#instance-agent",content).value,name:$("#instance-name",content).value});close();await app.reloadInstances();await renderChat(app,$("#page"));}catch(error){notify(error.message,true);}};}
+function addInstance(app){
+  const s=app.state,agents=s.agents.map(row=>row.definition).filter(agent=>agent.enabled);
+  const content=element(`<form><div class="field"><label for="instance-agent">Agent</label><select id="instance-agent">${agents.map(agent=>`<option value="${escape(agent.id)}">${escape(agent.name)}</option>`).join("")}</select></div><div class="field" data-instance-role hidden><label for="instance-role">角色</label><select id="instance-role"><option value="main">主 Agent</option><option value="manager">manager</option></select></div><div class="field"><label for="instance-name">实例名称</label><input id="instance-name" required maxlength="256" placeholder="例如：文档审阅 01"></div><p><button class="btn primary">添加实例</button></p></form>`);
+  const agent=$("#instance-agent",content),role=$("#instance-role",content),roleField=$("[data-instance-role]",content);
+  const updateRole=()=>{
+    roleField.hidden=s.session.mode!=="collaborative"||!agents.find(item=>item.id===agent.value)?.manager;
+    if(roleField.hidden)role.value="main";
+  };
+  agent.onchange=updateRole;updateRole();
+  const close=modal("添加工作实例",content);
+  content.onsubmit=async event=>{
+    event.preventDefault();
+    try{await rpc("instances.create",{session_id:s.session.id,agent_id:agent.value,name:$("#instance-name",content).value,role:role.value});close();await app.reloadInstances();await renderChat(app,$("#page"));}
+    catch(error){notify(error.message,true);}
+  };
+}

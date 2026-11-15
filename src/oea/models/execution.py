@@ -13,6 +13,9 @@ from oea.models.stream import ResponseStreams
 from oea.storage.persistence import encode, event, new_id, now_ms, one
 
 
+MAX_RECONNECTS = 5
+
+
 def saved_output_measurement(value):
     message = value.get("message", {})
     size = len((message.get("content") or "").encode("utf-8"))
@@ -40,6 +43,41 @@ class ModelExecutor:
         self.streams = ResponseStreams()
 
     async def complete(self, context, key, build_input, *, purpose="model", output_tokens=None, conversation=True, recovery=None, model=None):
+        reconnect = None
+        for retry in range(MAX_RECONNECTS + 1):
+            try:
+                return await self._attempt(context, key, build_input, purpose=purpose, output_tokens=output_tokens,
+                                           conversation=conversation, recovery=recovery, model=model, reconnect=reconnect)
+            except RuntimeFault as error:
+                if (purpose != "model" or context.run.get("purpose") == "model_probe" or retry == MAX_RECONNECTS
+                    or not error.retryable or error.identity.get("origin") != "transport"
+                    or error.code not in {"MODEL_CONNECTION_FAILED", "MODEL_TIMEOUT", "MODEL_STREAM_INTERRUPTED"}
+                    or not error.identity.get("attempt_id")):
+                    raise
+                reconnect = {"kind": "stream_reconnect", "attempt_id": error.identity["attempt_id"],
+                             "attempt": retry + 1, "limit": MAX_RECONNECTS}
+                if not await self._reconnect(context, error.identity["action_id"], reconnect):
+                    raise
+
+    async def _reconnect(self, context, action_id, reconnect):
+        host, run_id = self.host, context.run["id"]
+        def record(db):
+            run = one(db, "SELECT state,cancel_requested_at FROM runs WHERE id=?", (run_id,))
+            if not run or run["state"] != "running" or run["cancel_requested_at"] is not None:
+                return False
+            if one(db, "SELECT 1 FROM actions WHERE run_id=? AND side_effects!='none' AND state IN ('intent','dispatched','needs_review') LIMIT 1", (run_id,)):
+                return False
+            event(db, "model.reconnecting", run_id=run_id, instance_id=context.instance["id"], data={"action_id": action_id, **reconnect})
+            return True
+        if not await host.store.call(record, transaction=True):
+            return False
+        host.notify()
+        # Wake run SSE observers so they can read the durable reconnect event.
+        await host.emit_progress(run_id, {"kind": "model.reconnecting"})
+        await asyncio.sleep(min(0.25 * 2 ** (reconnect["attempt"] - 1), 4))
+        return True
+
+    async def _attempt(self, context, key, build_input, *, purpose, output_tokens, conversation, recovery, model, reconnect):
         host, run_id = self.host, context.run["id"]
         model = model or context.definition.model
         requested_output = model.max_output_tokens if output_tokens is None else output_tokens
@@ -63,9 +101,9 @@ class ModelExecutor:
             require(previous["state"] in {"intent", "failed"}, "MODEL_IN_FLIGHT", "The original model invocation has not settled", run_id=run_id, action_id=previous["id"])
             failure = await host.store.call(lambda db: one(db, "SELECT MAX(position) AS position FROM events WHERE run_id=? AND kind='model.failed' AND json_extract(data_json,'$.action_id')=?", (run_id, previous["id"])))
             reviewed = previous["state"] == "intent" or context.resumption and context.resumption["event_position"] > (failure["position"] or 0)
-            if not reviewed and not recovery and window_rejected(json.loads(previous["error_json"] or "{}"), json.loads(previous["result_json"] or "{}")):
+            if not reviewed and not recovery and not reconnect and window_rejected(json.loads(previous["error_json"] or "{}"), json.loads(previous["result_json"] or "{}")):
                 raise saved_fault(json.loads(previous["error_json"]))
-            require(reviewed or recovery, "MODEL_REVIEW_REQUIRED",
+            require(reviewed or recovery or reconnect, "MODEL_REVIEW_REQUIRED",
                     "Inspect the original model request before explicitly resuming this work", run_id=run_id, action_id=previous["id"])
         require(planned_output > 0, "BUDGET_EXHAUSTED", "Work output-token budget is exhausted", origin="local", stage="prepare")
         if purpose == "model":
@@ -83,7 +121,9 @@ class ModelExecutor:
                  "terminal_at": None, "send_started": None, "response_received": None, "provider_accepted": None}
         metadata = {"attempt": facts, "model": model.model_dump(mode="json"), "purpose": purpose, "budget_phase": budget_hint.get("phase"), "input_hash": fingerprint,
                     "tool_names": [tool["function"]["name"] for tool in tools], "projection": projection}
-        if recovery and not reviewed:
+        if reconnect:
+            metadata["continuation"] = reconnect
+        elif recovery and not reviewed:
             metadata["continuation"] = {"kind": "context_recovery", "attempt_id": recovery["attempt_id"]}
         elif previous and reviewed:
             metadata["continuation"] = {"kind": "explicit_resume", "resumption_id": context.resumption["id"]} if context.resumption else {"kind": "unsent_intent"}
@@ -92,7 +132,13 @@ class ModelExecutor:
             run = one(db, "SELECT * FROM runs WHERE id=?", (run_id,))
             require(run and run["state"] == "running" and run["cancel_requested_at"] is None,
                     "STALE_RUN", "Run is no longer allowed to call a model")
-            if recovery and not reviewed:
+            if reconnect:
+                require(previous and previous["state"] == "failed"
+                        and json.loads(previous["input_json"])["attempt"]["attempt_id"] == reconnect["attempt_id"],
+                        "MODEL_REVIEW_REQUIRED", "The disconnected attempt no longer matches the original receipt", action_id=action_id)
+                require(not one(db, "SELECT 1 FROM actions WHERE run_id=? AND side_effects!='none' AND state IN ('intent','dispatched','needs_review') LIMIT 1", (run_id,)),
+                        "MODEL_REVIEW_REQUIRED", "Inspect unsettled actions before reconnecting the model", action_id=action_id)
+            elif recovery and not reviewed:
                 require(not one(db, "SELECT 1 FROM actions WHERE run_id=? AND id<>? AND side_effects!='none' AND state IN ('intent','dispatched','needs_review') LIMIT 1", (run_id, action_id)),
                         "MODEL_REVIEW_REQUIRED", "Unsettled side effects must be inspected before context recovery", run_id=run_id, action_id=action_id)
                 evidence = one(db, "SELECT data_json FROM events WHERE run_id=? AND kind='context.recovered' AND json_extract(data_json,'$.action_id')=? ORDER BY position DESC LIMIT 1", (run_id, action_id))
@@ -129,7 +175,8 @@ class ModelExecutor:
                            (action_id, run_id, key, fingerprint, encode(metadata), now_ms(), now_ms()))
             position = event(db, "model.started", project_id=context.instance["project_id"], session_id=context.instance["session_id"],
                   instance_id=context.instance["id"], run_id=run_id,
-                  data={"action_id": action_id, "usage_id": usage_id, "attempt_id": usage_id, "purpose": purpose, "model_role": context.instance["role"], "projection": projection})
+                  data={"action_id": action_id, "usage_id": usage_id, "attempt_id": usage_id, "purpose": purpose, "model_role": context.instance["role"], "projection": projection,
+                        **({"reconnect": reconnect} if reconnect else {})})
             return reserve, position
 
         try:
@@ -143,8 +190,8 @@ class ModelExecutor:
                 if db.changes():
                     event(db, "budget.finalizing", run_id=run_id, data={"budget_id": context.run["budget_id"]})
             await host.store.call(finalize, transaction=True)
-            return await self.complete(context, key, build_input, purpose=purpose, output_tokens=output_tokens,
-                                       conversation=conversation, recovery=recovery, model=model)
+            return await self._attempt(context, key, build_input, purpose=purpose, output_tokens=output_tokens,
+                                       conversation=conversation, recovery=recovery, model=model, reconnect=reconnect)
         stream = self.streams.start(run_id, action_id, usage_id, position)
         host.notify()
         async def emit(frame):
@@ -181,6 +228,8 @@ class ModelExecutor:
             facts.update(fault.details.get("attempt_facts", {}))
             if not api_started or fault.details.get("request_sent") is False:
                 facts.update(send_started=False, response_received=False)
+            if reconnect:
+                fault.details["reconnect_attempts"] = reconnect["attempt"]
             facts.update(terminal_at=now_ms(), outcome="failed", generation_completed=False)
             fault.identity.update(run_id=run_id, instance_id=context.instance["id"], action_id=action_id,
                                   usage_id=usage_id, attempt_id=usage_id, purpose=purpose, model_role=context.instance["role"], evidence_ref={"action_id": action_id, "attempt_id": usage_id}, continuation="inspect_then_resume")

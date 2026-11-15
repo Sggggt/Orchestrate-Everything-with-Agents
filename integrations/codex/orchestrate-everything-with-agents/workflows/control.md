@@ -5,7 +5,7 @@
 3. `runs.get` 看状态，`runs.inspect` 看动作、预算和产物。完整结果用 runs.result；大输出通过 results.read，模型历史用 runs.attempts 和固定 attempt_id 的 runs.action。
 4. waiting 输入用 runs.resume 和原 Run；失败先看原错误、检查点与动作。修复配置后显式继续，默认在该边界刷新模型与能力。不要把未决外部动作伪装成普通失败。
 5. `runs.cancel` 表示请求取消；核对 cancellation、stopped_at 和原动作，区分已停止和 needs_review。晚到结果保留在原 action，不自动重派。
-6. events.list 按持久游标补读，SSE 只提供实时观察；丢帧后读取事实，不重新执行操作。
+6. 连接中断时，用 `events.list` 按持久游标补读原 Run。看到 `model.reconnecting` 时继续观察原 Run，宿主会有限重连。重连结束后用 `runs.get` 核对终态，需要部分正文时按原 `attempt_id` 读取回执。
 7. 独立核对产物内容、来源和实际业务效果。报告实际完成、真实调用量和未验证范围，不把配置成功或状态绿色当作业务正确。
 
 用户明确要求标记待办时，使用 `runs.mark_handled`，传项目和选中任务原页的 updated_at；每批至多 100 项。核对 items/conflicts，重复请求不增加处理事件。handled 仅结束用户待办，不改执行结果、停止事实或账目；不要用它替代 runs.confirm_action、cancel 或 resume。

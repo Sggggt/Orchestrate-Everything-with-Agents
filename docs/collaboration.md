@@ -6,6 +6,10 @@ Collaboration uses persistent boards and private inboxes. A message needs a boar
 
 Private read grants are explicit. Mentioning someone neither grants access nor widens the audience. Delivery, read cursors and completed work are separate facts. Plain messages create no Run or budget and do not wake every recipient. Directed messages are merged at existing model-input boundaries; child waits use native LangGraph interrupts and dependencies.
 
+Use `agent_mentions` with Agent IDs to let the host select a recipient in the session. A sole reachable instance receives the notification. When several are reachable, the sole enabled manager in collaborative mode receives it. An ambiguous target is reported in the receipt. Use `mentions` for exact instance IDs. An exact recipient takes precedence over an Agent mention for that Agent on the same message. For a project board, Agent runs use their own session and controllers use exact instance IDs.
+
+Authenticated control MCP clients use their host access for messages and receipts. Partner grants apply between platform Agents. The sender's grant controls delivery, and the recipient's grant controls automatic inclusion of an Agent-sent message in model input.
+
 Create work through `runs.submit` or an authorized `assign_work`. Continue a wait through its original resume operation. Use `list_members` and `list_boards` to discover reachable identities. Read complete results and artifact references before summarizing them.
 
 The optional manager uses the same capability types as any Agent. Its model and credentials are independent; tools, Skills, workspace and execution inherit the definition unless explicitly narrowed. A role name neither removes business tools nor grants administrator access. Assignment and cancellation require current communication grants and root ownership.

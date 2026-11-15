@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide explains how to use Orchestrate Everything with Agents (OEA) 3.4.2, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections if you want to configure and supervise work; use the SDK and MCP sections when you want to integrate OEA into another application or Agent client. The current browser interface uses Chinese labels, which are included alongside their English descriptions below.
+This guide covers Orchestrate Everything with Agents (OEA) 3.4.3, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections to configure and supervise work, or use the SDK and MCP sections for integrations. Chinese browser labels appear alongside their English descriptions below.
 
 ## Contents
 
@@ -142,6 +142,7 @@ Open an Agent's gear control to edit its settings. Save changes before starting 
 | **概览与画布** — Overview and canvas | Configuration availability, active version, candidate selection and the clickable canvas preview |
 | **模型与职责** — Model and responsibility | Name, instructions, provider, model, credential and common generation settings |
 | **常用能力** — Common capabilities | Local/MCP tools, Skills, environment and working input size |
+| **通信与协调** — Communication and coordination | Partner Agents, delegation and optional manager settings |
 
 The desktop settings page preserves advanced fields it does not display. Edit full configuration through source/SDK or explicit configuration export/import. Click the canvas preview to edit nodes, state, mappings and subgraphs in the full-screen workbench. Save a candidate without changing execution, then confirm **切换版本** to publish and apply it. Select another candidate to preview it; confirm deletion to remove a draft while retaining published versions. Trials use independent instances. Switching applies only to subsequently accepted tasks; existing tasks and resumptions keep their original graph. Historical attention or usage does not block the change. See [Agent architectures](agent-architectures.md).
 
@@ -216,7 +217,9 @@ Skill text, imported documents and tool output cannot grant permission or change
 
 Start with one capable Agent. Create independent instances when responsibility, context or directories need separation. Reuse an instance for follow-up work. Instances run concurrently without global, Agent, model or MCP slot quotas; budgets manage cost and time.
 
-In **协作消息**, choose a project/session board or an authorized private inbox and send free-form content. Replies, mentions and references are optional. Invalid optional recipients do not erase an accepted body; the receipt reports delivery issues. Mentions grant no read or tool permission.
+In **协作消息**, you can notify an Agent or select an exact instance. The host routes an Agent notification to its sole reachable instance or, when several are reachable, its sole reachable manager. The receipt asks for a specific instance when the target is ambiguous. Private inboxes require explicit read access.
+
+Use **通信与协调** in Agent settings to configure platform partners and an optional manager. Authenticated control MCP clients use their host access for messages. To use a manager, add a manager instance in a session with collaborative mode enabled.
 
 Plain messages create no Run or budget and do not wake models. Submit new work explicitly in a conversation, resume the original Run for an existing wait, or use an authorized assign_work. Directed messages enter existing model boundaries; child waits use persistent interrupts.
 
@@ -320,6 +323,8 @@ Waiting workflows preserve their native interrupt and child receipts. Use the or
 | `needs_review` | An action outcome requires verification | Check the real effect before recording a conclusion or continuing |
 
 Task details show elapsed time, budget accounting and diagnostics. Execution activities link to original model and tool calls. Provider-reported tokens, estimates, in-flight reservations and unresolved usage are separate values; unknown usage is shown as unknown. Token totals alone do not establish a billing amount.
+
+The conversation shows “Reconnecting” while restoring a model or progress connection, with up to five attempts. Model reconnects use the original Run and budget. Partial output is available from the original attempt receipt. Browser reconnects resume from the last observed event.
 
 Root and child work, summaries and recovery share the original budget. The UI distinguishes this Run, root work and the shared ledger. Cache remains in total input and is priced separately. Total/uncached input ceilings are optional; finalization and recovery reserves are part of the original budget. Missing provider fields remain unknown, and one generation limit is separate from cumulative output.
 

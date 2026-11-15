@@ -5,20 +5,20 @@ OEA uses the `oea` entry point and Python 3.12+. Native local execution is avail
 <a id="quick-install"></a>
 ## Install a platform wheel
 
-Download the wheel matching your operating system from [OEA 3.4.2](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.2):
+Download the wheel matching your operating system from [OEA 3.4.3](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.3):
 
 | System | Download |
 | --- | --- |
-| Windows x64 | [Windows wheel](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.2/orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl) |
-| Linux x64 | [Linux wheel](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.2/orchestrate_everything_with_agents-3.4.2-py3-none-linux_x86_64.whl) |
-| Integrity check | [SHA256SUMS](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.2/SHA256SUMS) |
+| Windows x64 | [Windows wheel](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.3/orchestrate_everything_with_agents-3.4.3-py3-none-win_amd64.whl) |
+| Linux x64 | [Linux wheel](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.3/orchestrate_everything_with_agents-3.4.3-py3-none-linux_x86_64.whl) |
+| Integrity check | [SHA256SUMS](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/download/v3.4.3/SHA256SUMS) |
 
 Run the installation command from the directory containing the downloaded file. Windows uses `win_amd64`; Linux uses `linux_x86_64`. The Linux wheel is built on Ubuntu 22.04, requires a compatible C runtime, and is not a manylinux wheel. Native Linux tools also require host policy to permit unprivileged user and network namespaces.
 
 Windows users should complete the [Visual C++ runtime prerequisite](#windows-runtime) before starting native tools.
 
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.3-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea --version
 oea serve --allow-commands
 ```
@@ -66,7 +66,7 @@ Keep the environment outside the checkout, and use its Python for SDK scripts.
 
 ```powershell
 python -m venv "$env:USERPROFILE\.venvs\oea"
-& "$env:USERPROFILE\.venvs\oea\Scripts\python.exe" -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl[web,mcp,workbench]"
+& "$env:USERPROFILE\.venvs\oea\Scripts\python.exe" -m pip install "./orchestrate_everything_with_agents-3.4.3-py3-none-win_amd64.whl[web,mcp,workbench]"
 & "$env:USERPROFILE\.venvs\oea\Scripts\oea.exe" serve --allow-commands
 ```
 
@@ -75,7 +75,7 @@ python -m venv "$env:USERPROFILE\.venvs\oea"
 
 ```bat
 python -m venv "%USERPROFILE%\.venvs\oea"
-"%USERPROFILE%\.venvs\oea\Scripts\python.exe" -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl[web,mcp,workbench]"
+"%USERPROFILE%\.venvs\oea\Scripts\python.exe" -m pip install "./orchestrate_everything_with_agents-3.4.3-py3-none-win_amd64.whl[web,mcp,workbench]"
 "%USERPROFILE%\.venvs\oea\Scripts\oea.exe" serve --allow-commands
 ```
 
@@ -84,7 +84,7 @@ python -m venv "%USERPROFILE%\.venvs\oea"
 
 ```sh
 python3 -m venv "$HOME/.venvs/oea"
-"$HOME/.venvs/oea/bin/python" -m pip install "./orchestrate_everything_with_agents-3.4.2-py3-none-linux_x86_64.whl[web,mcp,workbench]"
+"$HOME/.venvs/oea/bin/python" -m pip install "./orchestrate_everything_with_agents-3.4.3-py3-none-linux_x86_64.whl[web,mcp,workbench]"
 "$HOME/.venvs/oea/bin/oea" serve --allow-commands
 ```
 
@@ -121,7 +121,7 @@ Refresh the browser after static frontend changes and restart an idle host after
 ## Windows convenience scripts
 
 ```powershell
-.\Install-OEA.ps1 -Wheel .\orchestrate_everything_with_agents-3.4.2-py3-none-win_amd64.whl
+.\Install-OEA.ps1 -Wheel .\orchestrate_everything_with_agents-3.4.3-py3-none-win_amd64.whl
 .\Start-Workspace.ps1
 ```
 

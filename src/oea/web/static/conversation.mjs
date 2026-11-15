@@ -108,13 +108,14 @@ export async function renderConversation(app,root){
   function drawLive(){
     if(!liveValue)return;
     const value=liveValue,saved=value.actionId&&entries.some(entry=>entry.action_id===value.actionId);
+    const output=value.text?value:value.previous;
     if(!live.querySelector(".live-response")){
       live.innerHTML='<div class="message-text live-response"></div><div class="stream-label" role="status"></div>';
       live.renderText=streamMarkdown(live.querySelector(".live-response"));
     }
     const body=live.querySelector(".live-response"),label=live.querySelector(".stream-label");
-    body.hidden=!value.text||saved;
-    if(!body.hidden)live.renderText(value.text,value.actionId+":"+value.attemptId);
+    body.hidden=!output||saved;
+    if(!body.hidden)live.renderText(output.text,output.actionId+":"+output.attemptId);
     const note=value.note?`${value.connected&&(!value.run||liveStates.has(value.run.state))?'<span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>':icon("activity")}<span>${escape(value.note)}</span>`:"";
     if(label.innerHTML!==note)label.innerHTML=note;
   }

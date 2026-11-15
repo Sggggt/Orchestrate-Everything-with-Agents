@@ -106,6 +106,8 @@ Use `arun`, `astream`, and `aclose` inside an async application. Synchronous met
 
 `stream` and `astream` yield progress frames and a final durable result or visible waiting/error state. Progress frames may be lost; read the original run receipt to recover its result. The final `RunResult.text`, structured data, artifacts, and usage remain available independently of streamed tokens.
 
+During a normal model call, a failed connection establishment or interrupted response stream can trigger up to five reconnect attempts on the same action and Run budget. Each attempt has its own usage and receipt. Subscribe to durable `model.reconnecting` events for the count and use the original attempt receipt for partial output.
+
 Supply a stable `idempotency_key` for a logical work submission. A response loss does not authorize another work intent. `instance.last_run_id` identifies the original run, and `host.runs.inspect` reads its errors, actions, partial artifacts, and budget. `host.runs.result` reads or waits for its delivery.
 
 An interrupted or failed graph resumes through `host.runs.resume(run_id, idempotency_key, input=...)`, or `instance.resume` / `instance.aresume`. Resume retains the run, root budget, directory, and action keys. At this explicit boundary it refreshes the model and capability configuration by default; the run service accepts `refresh_model=False` and `refresh_capabilities=False`. Changing the default workspace does not move an existing instance. A completed original model or tool response is read from its receipt. Unknown side effects require inspection before resumption. Ordinary tool parameter errors remain within the existing graph and can be repaired locally.
@@ -164,7 +166,7 @@ receipt = await host.messages.send(MessageSpec(
 ))
 ```
 
-The host derives the actual sender. A valid body remains saved when an optional mention or business reference cannot be resolved; inspect receipt issues and delivery results. Private inboxes use explicit reader grants. Mentions do not widen an audience or grant permissions.
+Use `mentions` for exact instance IDs or `agent_mentions=(agent_id,)` to route within a session to a sole reachable instance or sole reachable manager. The host derives the actual sender. A valid body remains saved when an optional mention or business reference cannot be resolved. Inspect receipt issues and delivery results. Private inboxes use explicit reader grants. See [recipient routing and permissions](collaboration.md).
 
 Ordinary messages create no Run, budget or automatic model wakeup. Use `runs.submit` or an authorized `assign_work` for new work and the original resume operation for an existing wait. Directed messages enter existing model-input boundaries. `list_members` and `list_boards` expose reachable identities.
 
@@ -182,7 +184,7 @@ A bound `view_image` tool accepts either a workspace `path` or an assigned `arti
 
 ## Retained model attempts
 
-An explicit retry keeps the original model action identity and records another usage entry. Before replacing a failed response, the host moves its partial response and error into immutable attempt history in the same transaction. It retains one owner for each complete response.
+An automatic reconnect or explicit retry keeps the original model action identity and records another usage entry. Before replacing a failed response, the host moves its partial response and error into immutable attempt history in the same transaction. It retains one owner for each complete response.
 
 `runs.attempts(action_id, project_id)` lists those attempts. `runs.action(action_id, attempt_id=..., offset=..., limit=...)` reads a bounded page of the selected original response. The attempt ID is its usage ID. Returned pages identify their version so subsequent reads remain stable through recovery. Reading an attempt never calls the model again.
 

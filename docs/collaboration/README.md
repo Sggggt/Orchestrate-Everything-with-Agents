@@ -9,6 +9,10 @@
 
 `MessageSpec` 必需项只有 `board_id`、`content`、`idempotency_key`。有效外壳先保留正文；错误的可选成员或业务引用进入 issues，不伪造送达，也不扩大读者。普通留言不创建 Run、预算或模型调用。
 
+`mentions` 接收精确实例 ID，`agent_mentions` 接收 Agent 定义 ID。宿主在会话内选唯一可达实例，存在多个时选唯一可达的 manager。同一条消息已有该 Agent 的有效精确目标时优先使用精确目标。目标有歧义时，`issues` 返回 `RECIPIENT_AMBIGUOUS`，调用方可改为指定实例。项目板块的 Agent 发送方沿用自己的会话，控制端可用实例 ID 明确收件人。
+
+已认证的控制 MCP 通过宿主权限收发消息。伙伴配置用于平台内 Agent 之间的协作，发送方的有效授权约束投递，收件方的有效授权约束通知自动进入模型输入。私有板块继续核验读权。
+
 角色复用相同能力类型。manager 可选；创建和派发取决于当前与快照的通信授权、项目/会话与根归属。收件、阅读和业务完成是不同事实。来源资料与消息不授予工具执行权。
 
 公开操作为 `boards.create/get/list/set_reader`、`messages.send/get/list/mark_read/unread` 及注册的 coordination 能力。精确参数按单个操作发现，不在本文复制完整 Schema。

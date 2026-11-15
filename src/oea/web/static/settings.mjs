@@ -14,9 +14,40 @@ export async function removeAgent(app,id,revision){
 const groups=[
   ["概览与画布","配置、草稿与生效版本。",[]],
   ["模型与职责","定义清楚的职责，选择实际使用的模型。",[["model","base_url"],["model","model"],["model","reasoning_effort"],["model","max_output_tokens"],["instructions","system"]]],
-  ["常用能力","工具、Skills 与工作环境。",[["tools","local"],["tools","mcp"],["skills"],["workspace","inherit_project"],["workspace","sandbox"],["workspace","network"],["workspace","project"],["workspace","references"],["context","input_tokens"]]]
+  ["常用能力","工具、Skills 与工作环境。",[["tools","local"],["tools","mcp"],["skills"],["workspace","inherit_project"],["workspace","sandbox"],["workspace","network"],["workspace","project"],["workspace","references"],["context","input_tokens"]]],
+  ["通信与协调","",[]]
 ];
-const basic={model:["base_url","model","credential_ref"],workspace:["inherit_project","project","work","references","writable_project_paths","writable_directories","sandbox","network"],execution:["graph","graph_version","delivery","budget"],manager:["model","instructions","communication"]};
+const basic={model:["base_url","model","credential_ref"],workspace:["inherit_project","project","work","references","writable_project_paths","writable_directories","sandbox","network"],execution:["graph","graph_version","delivery","budget"]};
+
+function partnerFields(owner, agents, role, changed) {
+  const prefix=`partners-${role}`;
+  const section=element(`<div class="partner-fields"><div class="field"><label for="${prefix}">允许联系的伙伴</label><div class="input-actions"><input id="${prefix}" list="${prefix}-options" placeholder="选择伙伴或输入 Agent ID"><datalist id="${prefix}-options"></datalist><button type="button" class="btn btn-small">添加</button></div><div class="partner-list"></div></div><label class="permission-toggle"><input type="checkbox">允许向伙伴派发工作</label></div>`);
+  const input=$("input[list]",section),list=$(".partner-list",section),toggle=$("input[type=checkbox]",section);
+  const partners=agents.map(row=>row.definition).filter(agent=>agent.id!==owner.id);
+  const names=new Map(partners.map(agent=>[agent.id,agent.name]));
+  $("datalist",section).innerHTML=partners.map(agent=>`<option value="${escape(agent.id)}" label="${escape(agent.name)}"></option>`).join("");
+  const render=()=>{
+    list.replaceChildren();
+    for(const id of owner.communication?.departments||[]){
+      const row=element(`<span class="partner-entry"><span title="${escape(id)}">${escape(names.get(id)||id)}</span>${iconButton("close",`移除 ${names.get(id)||id}`)}</span>`);
+      $("button",row).onclick=()=>{owner.communication.departments=owner.communication.departments.filter(item=>item!==id);changed();render();};
+      list.append(row);
+    }
+  };
+  const add=()=>{
+    const id=input.value.trim();
+    if(!id)return;
+    if(!/^[a-z][a-z0-9_-]{0,63}$/.test(id)){notify("请输入有效的 Agent ID。",true);return;}
+    const permission=owner.communication??={};
+    permission.departments=[...new Set([...(permission.departments||[]),id])];
+    input.value="";changed();render();
+  };
+  $(".input-actions button",section).onclick=add;
+  input.onkeydown=event=>{if(event.key==="Enter"){event.preventDefault();add();}};
+  toggle.checked=!!owner.communication?.can_request;
+  toggle.onchange=()=>{(owner.communication??={}).can_request=toggle.checked;changed();};
+  render();return section;
+}
 export function configurationCheck(check){
   const labels={base_url:"API 地址",model:"模型名称",credential:"密钥来源"};
   const model=value=>value.state==="configured"?`参数已配置 · ${value.has_credential?"密钥引用可用":"未绑定密钥引用"}`:"缺少："+escape(value.missing.map(key=>labels[key]||key).join("、"));
@@ -44,18 +75,43 @@ export async function renderSettings(app,root){
       <div class="settings-extra settings-management"><span class="v2-muted">${escape(definition.id)}</span></div>
       <footer class="v2-savebar"><span id="save-status" class="v2-muted"></span><div class="v2-actions">${iconButton("shield","检查配置",{id:"check-agent"})}</div></footer></form>`);body.replaceChildren(form);
     const changed=()=>{draft.dirty=true;$("#save-status",form).innerHTML=signal("pending","有未保存的修改");for(const input of form.querySelectorAll("[data-secret-role=manager]"))input.disabled=draft.definition.manager==null;};
-    const add=(path,schema)=>{const name=path.at(-1);$("#config-fields",form).append(formField({schema:schema||schemaAt(s.schema,path),root:s.schema,get:()=>getAt(draft.definition,path),set:value=>setAt(draft.definition,path,value),name,path,changed,basic:basic[name]}));};
+    const fields=$("#config-fields",form);
+    const add=(path,schema,target=fields)=>{const name=path.at(-1);target.append(formField({schema:schema||schemaAt(s.schema,path),root:s.schema,get:()=>getAt(draft.definition,path),set:value=>setAt(draft.definition,path,value),name,path,changed,basic:basic[name]}));};
     if(tab===1){const metadata=element('<section class="schema-object"><h3>基本信息</h3><div class="form-grid"></div></section>');$("#config-fields",form).append(metadata);for(const key of ["name","description","enabled"]){const field=formField({schema:s.schema.properties[key],root:s.schema,get:()=>draft.definition[key],set:value=>draft.definition[key]=value,name:key,path:[key],changed});$(".form-grid",metadata).append(field);}}
     for(const path of paths)add(path);
-    if(tab===1){
-      const role="main",owner=draft.definition;
+    const renderCredential=(role,target)=>{
+      const owner=role==="main"?draft.definition:draft.definition.manager;
       for(const purpose of ["main"]){
         const model=purpose==="summary"?owner?.summary_model:owner?.model;if(purpose==="summary"&&!model)continue;
         const key=role+":"+purpose,identity="secret-"+role+"-"+purpose,label=(role==="manager"?"协调角色 · ":"")+(purpose==="summary"?"摘要模型":"主模型");
         const secret=element(`<section class="v2-secret"><label for="${identity}">${label}密钥 ${signal(model?.credential_ref?"configured":"muted",model?.credential_ref?"已绑定密钥":"尚未绑定密钥")}</label><div class="input-actions"><input id="${identity}" type="password" autocomplete="new-password" data-secret-role="${role}" placeholder="留空保留当前密钥">${iconButton("unlink","解除当前密钥绑定",{className:"detach-secret"})}</div></section>`);
         $("input",secret).value=draft.secrets[key]||"";$("input",secret).disabled=!owner;
-        $("input",secret).oninput=event=>{draft.secrets[key]=event.target.value;changed();};$(".detach-secret",secret).onclick=()=>{if(model){model.credential_ref=null;draft.secrets[key]="";changed();renderBody();}};$("#credential-fields",form).append(secret);
+        $("input",secret).oninput=event=>{draft.secrets[key]=event.target.value;changed();};$(".detach-secret",secret).onclick=()=>{if(model){model.credential_ref=null;draft.secrets[key]="";changed();renderBody();}};target.append(secret);
       }
+    };
+    if(tab===1)renderCredential("main",$("#credential-fields",form));
+    if(tab===3){
+      const section=element(`<section class="communication-settings"><p class="v2-muted">已连接的控制 MCP 可直接与会话实例通信。以下权限用于 Agent 之间的协作。</p><fieldset><legend>主 Agent</legend><div data-main-partners></div></fieldset><fieldset><legend>manager</legend><label class="permission-toggle"><input type="checkbox" id="enable-manager">配置协调角色</label><p class="v2-muted">多实例可由 manager 统一接收定向通知。启用后可在协作模式下创建 manager 实例。</p><div data-manager-fields></div></fieldset></section>`);
+      fields.append(section);
+      $("[data-main-partners]",section).append(partnerFields(definition,s.agents,"main",changed));
+      const managerFields=$("[data-manager-fields]",section),toggle=$("#enable-manager",section);
+      let previousManager=definition.manager;
+      const renderManager=()=>{
+        managerFields.replaceChildren();
+        if(!definition.manager)return;
+        const model=element('<div class="form-grid"></div>');managerFields.append(model);
+        for(const key of ["base_url","model"])add(["manager","model",key],null,model);
+        renderCredential("manager",managerFields);
+        add(["manager","instructions","system"],null,managerFields);
+        managerFields.append(partnerFields(definition.manager,s.agents.filter(row=>row.definition.id!==definition.id),"manager",changed));
+      };
+      toggle.checked=!!definition.manager;
+      toggle.onchange=()=>{
+        if(toggle.checked)definition.manager=previousManager??defaults(s.schema.$defs.Manager,s.schema);
+        else {previousManager=definition.manager;definition.manager=null;}
+        changed();renderManager();
+      };
+      renderManager();
     }
     $("#save-status",form).innerHTML=draft.dirty?signal("pending","有未保存的修改"):`${signal("online","配置已保存")}<span>配置 r${draft.revision}</span>`;
     const availability=check=>{if(!form.isConnected)return;const enabled=definition.enabled,ready=(!!definition.execution.program?.length&&!definition.execution.program_uses_model||check.model.state==="configured")&&!check.tools.unavailable.length&&check.workspace_check.state==="resolved";const label=!enabled?"已停用":ready?"配置可用":"需要配置";$("[data-availability]",form).innerHTML=signal(!enabled?"muted":ready?"online":"pending",label)+`<span class="signal-label" title="配置检查不代表模型连接已验证">${label}</span>`;};

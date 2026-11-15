@@ -43,6 +43,26 @@ class Messages:
     def visible(db, board, source=None):
         return Boards.check(db, board["id"], project_id=board["project_id"], instance=source[1] if source else None)
 
+    @staticmethod
+    def _agent_recipient(db, board, agent_id, source):
+        session_id = board["session_id"] or (source[1]["session_id"] if source else None)
+        if session_id is None:
+            return None, "SESSION_REQUIRED"
+        if source and agent_id not in source[2]:
+            return None, "NOT_DELIVERED"
+        candidates = rows(db, """SELECT i.id,i.role FROM instances i
+            JOIN sessions s ON s.id=i.session_id JOIN agent_definitions a ON a.id=i.agent_id
+            WHERE i.session_id=? AND i.agent_id=? AND s.source='platform'
+            AND json_extract(a.config_json,'$.enabled')=1
+            AND (i.role='main' OR (s.mode='collaborative' AND json_type(a.config_json,'$.manager')='object'))
+            AND (? != 'inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=? AND r.instance_id=i.id))
+            ORDER BY (i.role='manager') DESC LIMIT 2""", (session_id, agent_id, board["scope"], board["id"]))
+        if not candidates:
+            return None, "NOT_DELIVERED"
+        if len(candidates) == 1 or (candidates[0]["role"] == "manager" and candidates[1]["role"] != "manager"):
+            return candidates[0]["id"], None
+        return None, "RECIPIENT_AMBIGUOUS"
+
     def _send(self, db, spec, *, source_run_id=None, unavailable_refs=()):
         board = need(db, "boards", spec.board_id)
         source = None
@@ -95,8 +115,9 @@ class Messages:
                 accepted_artifacts.append(artifact_id)
             else:
                 issues.append({"field": "artifact_ids", "target": artifact_id, "reason": "REFERENCE_UNAVAILABLE"})
-        targets = list(dict.fromkeys(([board["owner_instance_id"]] if board["scope"] == "inbox" else []) + list(spec.mentions)))
-        for target in targets:
+        targets, exact_agents = {}, set()
+        exact = ([board["owner_instance_id"]] if board["scope"] == "inbox" else []) + list(spec.mentions)
+        for target in dict.fromkeys(exact):
             recipient = one(db, "SELECT * FROM instances WHERE id=?", (target,))
             available = recipient and Boards.can_read(db, board, recipient)
             if source and available:
@@ -107,11 +128,22 @@ class Messages:
             if not available:
                 issues.append({"field": "mentions", "target": target, "reason": "NOT_DELIVERED"})
                 continue
+            targets[target] = None
+            exact_agents.add(recipient["agent_id"])
+        for agent_id in dict.fromkeys(spec.agent_mentions):
+            if agent_id in exact_agents:
+                continue
+            target, reason = self._agent_recipient(db, board, agent_id, source)
+            if reason:
+                issues.append({"field": "agent_mentions", "target": agent_id, "reason": reason})
+            else:
+                targets[target] = None
+        for target in targets:
             db.execute("INSERT INTO deliveries(message_id,instance_id,delivered_at) VALUES(?,?,?)", (identity, target, now_ms()))
             for reference in accepted_refs:
                 db.execute("INSERT OR IGNORE INTO context_grants VALUES(?,?,?)", (reference, target, identity))
         db.execute("UPDATE messages SET issues_json=? WHERE id=?", (encode(issues), identity))
-        event(db, "message.accepted", project_id=board["project_id"], session_id=board["session_id"], data={"message_id": identity, "board_id": board["id"], "notification_count": len(targets) - sum(issue["field"] == "mentions" for issue in issues)})
+        event(db, "message.accepted", project_id=board["project_id"], session_id=board["session_id"], data={"message_id": identity, "board_id": board["id"], "notification_count": len(targets)})
         return need(db, "messages", identity), False
 
     @staticmethod

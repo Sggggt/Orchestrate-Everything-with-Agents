@@ -205,14 +205,22 @@ class ModelAPI:
                             except (TimeoutError, httpx.HTTPError, ValueError, RuntimeFault):
                                 pass
                             break
-                    require(finished, "MODEL_STREAM_INTERRUPTED", "Model stream ended before a completion boundary",
+                    require(finished, "MODEL_STREAM_INTERRUPTED", "Model stream ended before a completion boundary", retryable=True, origin="transport",
                             details={"partial_text_preview": self.redact("".join(text))[-1600:]})
         except asyncio.CancelledError:
             raise ModelCancelled(partial()) from None
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:
+            facts.update(send_started=False, send_started_at=None)
+            code = "MODEL_TIMEOUT" if isinstance(error, httpx.TimeoutException) else "MODEL_CONNECTION_FAILED"
+            raise ModelFailure(code, "Model connection could not be established", partial(), retryable=True,
+                               origin="transport", stage="connect", details={"attempt_facts": dict(facts)}) from None
         except (httpx.TimeoutException, TimeoutError):
-            raise ModelFailure("MODEL_TIMEOUT", "Model request timed out", partial(), origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
-        except httpx.HTTPError:
-            raise ModelFailure("MODEL_CONNECTION_FAILED", "Model connection failed", partial(), origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
+            raise ModelFailure("MODEL_TIMEOUT", "Model request timed out", partial(), retryable=facts["response_received"],
+                               origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
+        except httpx.HTTPError as error:
+            retryable = facts["response_received"] and isinstance(error, (httpx.ReadError, httpx.RemoteProtocolError))
+            raise ModelFailure("MODEL_CONNECTION_FAILED", "Model connection failed", partial(), retryable=retryable,
+                               origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
         except (ValueError, TypeError, KeyError):
             raise ModelFailure("MODEL_PROTOCOL_ERROR", "Model stream contains invalid structured data", partial(), origin="transport", stage="stream", details={"attempt_facts": dict(facts)}) from None
         except RuntimeFault as error:
