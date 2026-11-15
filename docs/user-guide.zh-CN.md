@@ -2,7 +2,7 @@
 
 [English](user-guide.md) · 简体中文 · [文档目录](README.md)
 
-本指南适用于 Orchestrate Everything with Agents（OEA）3.4.3，介绍本机对话、工具、协作和可复用工作流。配置和监督任务可查看浏览器操作章节，开发或接入 Agent 客户端可查看 SDK 和 MCP 章节。
+本指南适用于 Orchestrate Everything with Agents（OEA）3.4.4，介绍本机对话、工具、协作和可复用工作流。配置和监督任务可查看浏览器操作章节，开发或接入 Agent 客户端可查看 SDK 和 MCP 章节。
 
 ## 目录
 

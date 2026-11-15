@@ -56,6 +56,37 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
                            (prefix + "-" + str(index), run_id, message["role"], encode(message)))
         await self.store.call(save, transaction=True)
 
+    async def append_resume(self, identity, guidance):
+        await self.store.call(lambda db: db.execute(
+            "INSERT INTO run_resumptions(id,run_id,idempotency_key,input_hash,input_json,created_at,event_position) VALUES(?,'r',?,'hash',?,1,1)",
+            (identity, identity, encode(guidance))), transaction=True)
+        await self.contexts.reply(self.run, self.instance, identity)
+        return {"role": "user", "content": "Previous boundary: none\nGuidance for this run:\n" + guidance}
+
+    async def test_resume_guidance_projects_after_tool_results_without_rewriting_history(self):
+        calls = [{"id": identity, "function": {"name": "read_source", "arguments": "{}"}} for identity in ("one", "two")]
+        request = {"role": "assistant", "tool_calls": calls}
+        first = {"role": "tool", "tool_call_id": "one", "content": "First result"}
+        second = {"role": "tool", "tool_call_id": "two", "content": "Second result"}
+        await self.append_messages([request, first])
+        guidance = await self.append_resume("resume-one", "Use both original results")
+        await self.append_messages([second], prefix="second-result")
+        later = await self.append_resume("resume-two", "Continue after the completed tools")
+        before = (await self.contexts.history(self.instance["id"]))["items"]
+        self.assertEqual([item["message"] for item in before], [request, first, guidance, second, later])
+
+        async def unexpected(messages, limit):
+            raise AssertionError("Small input needs no summary")
+
+        view, _ = await self.contexts.project(self.run, self.instance, self.definition, "Review", [], summarize=unexpected)
+        self.assertEqual(view[2:], [request, first, second, guidance, later])
+        fallback, _ = await self.contexts.fallback(self.run, self.instance, self.definition, "Review", [], None, None,
+            RuntimeFault("CONTEXT_SUMMARY_FAILED", "Synthetic summary failure"))
+        self.assertIn("Use both original results", fallback[-2]["content"])
+        self.assertEqual(fallback[-1], later)
+        message_groups(fallback)
+        self.assertEqual(before, (await self.contexts.history(self.instance["id"]))["items"])
+
     async def test_followup_input_follows_previous_work_and_precedes_current_tool_continuation(self):
         await self.store.call(lambda db: db.execute(
             "INSERT INTO runs(id,instance_id,root_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at) "
@@ -186,13 +217,14 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         calls = [{"id": "call-" + str(index), "function": {"name": "read_source", "arguments": "{}"}} for index in range(600)]
         region = [{"role": "assistant", "content": None, "tool_calls": calls},
                   *({"role": "tool", "tool_call_id": call["id"], "content": "Evidence " + str(index)} for index, call in enumerate(calls))]
-        await self.append_messages([*region, {"role": "user", "content": "Use the complete evidence"}])
+        await self.append_messages(region[:250])
+        guidance = await self.append_resume("cross-page-resume", "Preserve this guidance across the row page")
+        await self.append_messages([*region[250:], {"role": "user", "content": "Use the complete evidence"}], prefix="remaining")
         requests = []
 
         async def summarize(messages, limit):
             delta = json.loads(messages[1]["content"])["new_history"]
-            self.assertEqual(delta, region)
-            self.assertEqual(len(message_groups(delta)), 1)
+            self.assertEqual(delta, [*region, guidance])
             requests.append(delta)
             return "All completed calls are available in original history"
 
@@ -200,13 +232,13 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(view[3:], [{"role": "user", "content": "Use the complete evidence"}])
         memory = await self.store.call(lambda db: one(db, "SELECT * FROM memories"))
-        self.assertEqual(memory["through_position"], len(region))
+        self.assertEqual(memory["through_position"], len(region) + 1)
         original, cursor = [], 0
         while cursor is not None:
             page = await self.contexts.history("i", after=cursor, limit=100)
             original.extend(item["message"] for item in page["items"])
             cursor = page["cursor"]
-        self.assertEqual(original, [*region, view[-1]])
+        self.assertEqual(original, [*region[:250], guidance, *region[250:], view[-1]])
 
     async def test_projection_uses_current_secret_filter_before_shared_estimation(self):
         await self.append_messages([{"role": "user", "content": "A later-secret value was recorded"}])

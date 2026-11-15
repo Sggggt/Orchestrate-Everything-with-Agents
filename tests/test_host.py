@@ -8,9 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from apsw import CantOpenError
+
 from oea.contracts.configuration import AgentDefinition, Budget, CapabilityUse, Execution, Manager, Model, SkillBinding, UsePolicy, Workspace
 from oea.contracts.domain import Completion, RunSpec
 from oea.contracts.errors import RuntimeFault
+from oea.context.store import message_groups
 from oea.tools.functions import tool
 from oea.runtime.host import Host
 from oea.storage.persistence import one, rows
@@ -91,6 +94,22 @@ class ToolModel:
 class CommandModel:
     async def complete(self, model, messages, **options):
         return Completion(tool_calls=(call("command", "exec_command", {"argv": [sys.executable, "-B", "-c", "import time; print('started',flush=True); time.sleep(30)"]}),),
+                          finish_reason="tool_calls", usage={"prompt_tokens": 40, "completion_tokens": 5})
+
+
+class CommandReceiptModel:
+    def __init__(self, exit_code=0):
+        self.exit_code = exit_code
+        self.receipts = []
+
+    async def complete(self, model, messages, **options):
+        message_groups(messages)
+        results = [message for message in messages if message["role"] == "tool"]
+        if results:
+            self.receipts.append(json.loads(results[-1]["content"]))
+            return Completion(text="Observed command receipt", usage={"prompt_tokens": 30, "completion_tokens": 2})
+        script = "from pathlib import Path; import sys; p=Path('executions.txt'); p.open('a').write('ran\\n'); print('saved output'); sys.exit(int(sys.argv[1]))"
+        return Completion(tool_calls=(call("command", "exec_command", {"argv": [sys.executable, "-B", "-c", script, str(self.exit_code)], "yield_time_ms": 10000}),),
                           finish_reason="tool_calls", usage={"prompt_tokens": 40, "completion_tokens": 5})
 
 
@@ -406,6 +425,58 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "Submitted once")
         self.assertEqual(calls, [37])
         self.assertEqual(model.calls, 2)
+
+    async def test_command_receipt_write_recovers_once_without_reexecuting_the_command(self):
+        model = CommandReceiptModel()
+        await self.open(model, tools=ToolKit.local(commands=True))
+        commit = self.host.tools._commit
+        attempts = []
+
+        def fail_first_commit(db, receipt, result):
+            attempts.append(receipt["id"])
+            value = commit(db, receipt, result)
+            if len(attempts) == 1:
+                raise CantOpenError("Synthetic write failure after command exit")
+            return value
+
+        with patch.object(self.host.tools, "_commit", fail_first_commit):
+            run = await self.submit()
+            await self.host.runs.result(run.id, timeout=10)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertEqual(model.receipts[0]["stdout"].strip(), "saved output")
+        work_dir = Path((await self.host.instances.get(run.instance_id))["workspace"]["work_dir"])
+        self.assertEqual((work_dir / "executions.txt").read_text().splitlines(), ["ran"])
+        events = (await self.host.events_service.list("p", run_id=run.id))["items"]
+        self.assertEqual(sum(event["kind"] == "action.completed" and event["data"]["action_id"] == attempts[0] for event in events), 1)
+
+    async def test_restart_recovers_saved_exit_and_keeps_original_nonzero_result(self):
+        model = CommandReceiptModel(exit_code=7)
+        await self.open(model, tools=ToolKit.local(commands=True))
+        with patch.object(self.host.tools, "_commit", side_effect=CantOpenError("Synthetic persistent receipt write failure")):
+            run = await self.submit()
+            await self.until(run.id, "needs_review", allow_review=True)
+        saved = await self.host.runs.inspect(run.id)
+        action = next(item for item in saved["actions"] if item["name"] == "exec_command")
+        self.assertEqual(action["state"], "needs_review")
+        # The older host can also fail before saving the review state of the action.
+        await self.host.store.call(lambda db: db.execute("UPDATE actions SET state='dispatched',error_json=NULL WHERE id=?", (action["id"],)), transaction=True)
+        await self.host.aclose()
+        self.host = await Host(self.root / "state", model_api=model, allow_commands=True).__aenter__()
+        recovered = await self.host.runs.get(run.id)
+        self.assertEqual(recovered["state"], "waiting")
+        self.assertEqual(model.receipts, [])
+        receipt = await self.host.runs.action(action["id"])
+        result = json.loads(receipt["text"])
+        self.assertEqual(receipt["state"], "completed")
+        self.assertEqual(result["exit_code"], 7)
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["stdout"].strip(), "saved output")
+        await self.host.runs.resume(run.id, "observe-original-command", input="Use the original command output")
+        await self.host.runs.result(run.id, timeout=10)
+        self.assertEqual(model.receipts[0]["exit_code"], 7)
+        work_dir = Path((await self.host.instances.get(run.instance_id))["workspace"]["work_dir"])
+        self.assertEqual((work_dir / "executions.txt").read_text().splitlines(), ["ran"])
 
     async def test_second_host_cannot_open_the_same_state_directory(self):
         await self.open(WaitModel())

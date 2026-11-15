@@ -632,10 +632,17 @@ class Host:
 
     async def _recover(self):
         commands = await self.store.call(lambda db: rows(db,
-            "SELECT a.id,a.run_id FROM actions a JOIN runs r ON r.id=a.run_id WHERE a.name='exec_command' AND a.state='completed' "
-            "AND json_extract(a.result_json,'$.state') IN ('starting','running') AND r.state IN ('running','waiting','needs_review')"))
-        unknown_commands = []
+            "SELECT a.id,a.run_id,a.state FROM actions a JOIN runs r ON r.id=a.run_id "
+            "WHERE a.name='exec_command' AND r.state IN ('running','waiting','needs_review') AND ("
+            "(a.state='completed' AND json_extract(a.result_json,'$.state') IN ('starting','running')) OR "
+            "(a.state IN ('dispatched','needs_review') AND a.result_json IS NULL AND r.execution_version=?))", (PROTOCOL_VERSION,)))
+        unknown_commands, exited_commands = [], []
         for command in commands:
+            if command["state"] != "completed":
+                result = self.command_sessions.exited_result(command["id"], command["run_id"])
+                if result is not None:
+                    exited_commands.append((command, result))
+                continue
             try:
                 saved = self.command_sessions.load(command["id"], command["run_id"])
             except RuntimeFault as error:
@@ -645,6 +652,8 @@ class Host:
             if saved["state"] == "unknown":
                 unknown_commands.append(command)
         def recover(db):
+            for command, result in exited_commands:
+                self.tools.commit_owned(db, command["id"], command["run_id"], result)
             for command in unknown_commands:
                 error = {"code": "OUTCOME_UNCERTAIN", "safe_message": "Command ownership was lost; inspect its saved output before continuing",
                          "action_id": command["id"], "command_session_id": command["id"]}

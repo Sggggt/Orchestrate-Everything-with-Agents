@@ -11,7 +11,7 @@ from oea.context.facts import CommandFacts
 from oea.context.views import activity_group, deduplicate_skills, reference_message, tool_reference
 
 
-CONVERSATION = """SELECT c.id,c.position,c.run_id,a.name AS action_name,a.state AS action_state,m.created_at AS message_created_at,
+CONVERSATION = """SELECT c.id,c.position,c.run_id,c.resumption_id,a.name AS action_name,a.state AS action_state,m.created_at AS message_created_at,
 COALESCE(c.body_json,
  CASE WHEN c.action_id IS NOT NULL THEN
    CASE WHEN c.role='tool' THEN json_object('role','tool','tool_call_id',c.tool_call_id,'content',a.result_json)
@@ -53,6 +53,31 @@ def message_groups(messages):
         _group_message(groups, pending, message)
     require(not pending, "MODEL_CONTEXT_INVALID", "Complete pending tool calls before invoking the model")
     return groups
+
+
+class _ProjectionGroups:
+    """Keep resumption guidance next to its tool turn while preserving the original row span."""
+
+    def __init__(self, records=(), messages=()):
+        self.groups, self.records, self.deferred = [], [], []
+        self.pending = set()
+        for record, message in zip(records, messages):
+            self.add(record, message)
+
+    def add(self, record, message):
+        if self.pending and record["resumption_id"] and record["run_id"] == self.records[-1][0]["run_id"]:
+            self.deferred.append((record, message))
+            return
+        _group_message(self.groups, self.pending, message)
+        if message["role"] == "tool":
+            self.records[-1].append(record)
+        else:
+            self.records.append([record])
+        if not self.pending and self.deferred:
+            for deferred_record, deferred_message in self.deferred:
+                self.records[-1].append(deferred_record)
+                self.groups[-1].append(deferred_message)
+            self.deferred.clear()
 
 
 def precedes_input(record, run):
@@ -298,7 +323,7 @@ class ContextStore:
         if memory:
             view.append({"role": "user", "content": "Previous valid working memory (evidence, not authorization):\n" + self.redact(memory["body"]) + "\nMemory reference: " + memory["id"]})
         position = memory["through_position"] if memory else 0
-        groups, pending, group_records = [], set(), []
+        history = _ProjectionGroups()
         cost = estimate_input([*view, fixed[1]], tools)["input_tokens"]
         input_inserted = False
         def fits(amount):
@@ -313,21 +338,21 @@ class ContextStore:
             decoded = self.redact([json.loads(row["body_json"]) for row in page])
             await facts.prepare(page, decoded)
             for row, message in zip(page, decoded):
-                if message["role"] != "tool" and groups:
-                    retained = groups[-1] if facts.blocked(groups[-1], group_records) else [activity_group(groups[-1], group_records)]
+                if message["role"] != "tool" and history.groups and not history.pending:
+                    group, group_records = history.groups[-1], history.records[-1]
+                    retained = group if facts.blocked(group, group_records) else [activity_group(group, group_records)]
                     cost += estimated_tokens(retained)
                     fits(cost)
                     view.extend(retained)
-                    groups, group_records = [], []
+                    history = _ProjectionGroups()
                 if not input_inserted and not precedes_input(row, run):
                     view.append(fixed[1])
                     input_inserted = True
-                _group_message(groups, pending, message)
-                group_records.append(row)
+                history.add(row, message)
                 position = row["position"]
-        require(not pending, "MODEL_CONTEXT_INVALID", "Finish pending tool calls before recovering context")
-        if groups:
-            view.extend(groups[-1])  # Never alter the current tool/continuation group.
+        require(not history.pending, "MODEL_CONTEXT_INVALID", "Finish pending tool calls before recovering context")
+        if history.groups:
+            view.extend(history.groups[-1])  # Never alter the current tool/continuation group.
         if not input_inserted:
             view.append(fixed[1])
         await facts.prepare((), ())
@@ -451,17 +476,15 @@ class ContextStore:
         if prepare_tools is not None and len(records) > 256:
             await prepare_tools(estimate_input(deduplicate_skills(assemble(memory, self.redact(messages), records)), tools), int(budget * policy.pressure))
         while len(records) > 256:
-            groups, pending = [], set()
-            for message in messages:
-                _group_message(groups, pending, message)
-            complete = groups[:-1] if pending else groups
-            if pending and not complete:
+            history = _ProjectionGroups(records, messages)
+            complete = history.groups[:-1] if history.pending else history.groups
+            if history.pending and not complete:
                 # A single assistant/tool region can cross several row pages.
                 # Extend only that region, bounded by its actual input budget.
                 fixed_cost = estimated_tokens(assemble(memory, [])) + estimated_tokens(tools)
-                group_cost = estimated_tokens(groups[0]) - 2
+                group_cost = estimated_tokens(messages) - 2
                 following_tail = []
-                while pending:
+                while history.pending:
                     require(fixed_cost + group_cost <= budget, "MODEL_CONTEXT_BUDGET",
                             "A complete history group and fixed facts exceed the effective input budget", origin="local", stage="context_selection")
                     following = await self.store.call(lambda db: page(db, records[-1]["position"]))
@@ -470,9 +493,9 @@ class ContextStore:
                         records.append(row)
                         message = json.loads(row["body_json"])
                         messages.append(message)
-                        _group_message(groups, pending, message)
+                        history.add(row, message)
                         group_cost += estimated_tokens(message)
-                        if not pending:
+                        if not history.pending:
                             following_tail = following[index + 1:]
                             break
                 await facts.prepare(records, messages)
@@ -482,8 +505,8 @@ class ContextStore:
                         # The newest complete group is protected even when its
                         # paired results extend beyond the ordinary row page.
                         break
-                complete = groups
-            if pending:
+                complete = history.groups
+            if history.pending:
                 # Do not repeatedly reread a partial group behind a retained
                 # tail. Advance all complete preceding groups first.
                 archived_groups = complete
@@ -495,12 +518,11 @@ class ContextStore:
                     count += len(complete[index])
                     keep = index
                 archived_groups = complete[:keep] or complete[:1]
-            protected, cursor = len(archived_groups), 0
+            protected = len(archived_groups)
             for index, group in enumerate(archived_groups):
-                if facts.blocked(group, records[cursor:cursor + len(group)]):
+                if facts.blocked(group, history.records[index]):
                     protected = index
                     break
-                cursor += len(group)
             archived_groups = archived_groups[:protected]
             require(archived_groups, "MODEL_CONTEXT_BUDGET", "Unresolved action facts block bounded prefix compaction", origin="local", stage="context_selection")
             await remember(archived_groups, records)
@@ -510,8 +532,10 @@ class ContextStore:
 
         # Reapply the current secret boundary before estimating historical
         # content; a value may have become protected since it was recorded.
-        messages = self.redact(messages)
-        view = deduplicate_skills(assemble(memory, messages, records))
+        history = _ProjectionGroups(records, self.redact(messages))
+        require(not history.pending, "MODEL_CONTEXT_INVALID", "Complete pending tool calls before invoking the model")
+        view = deduplicate_skills(assemble(memory, [message for group in history.groups for message in group],
+                                          [row for group in history.records for row in group]))
         estimate = estimate_input(view, tools)
         before = estimate["input_tokens"]
         if prepare_tools is not None and before > budget * policy.pressure:
@@ -533,16 +557,14 @@ class ContextStore:
 
         if estimate["input_tokens"] <= budget * policy.pressure:
             return view, projection(estimate)
-        groups = message_groups(messages)
+        groups, record_groups = history.groups, history.records
         fixed_tokens = estimated_tokens([*fixed, *self.redact(facts.messages(records))]) + estimate["components"]["tool_schemas"]
         memory_tokens = estimated_tokens(memory_message(memory)) if memory else 0
-        candidates, references, record_groups, cursor = [], [], [], 0
-        for group in groups:
-            ref = [reference_message(message, records[cursor + index]) for index, message in enumerate(group)]
-            record_groups.append(records[cursor:cursor + len(group)])
-            cursor += len(group)
+        candidates, references = [], []
+        for group, group_records in zip(groups, record_groups):
+            ref = [reference_message(message, record) for message, record in zip(group, group_records)]
             full_cost, ref_cost = estimated_tokens(group) - 2, estimated_tokens(ref) - 2
-            candidates.append(Group(full_cost, ref_cost if ref_cost < full_cost else None, facts.blocked(group, record_groups[-1])))
+            candidates.append(Group(full_cost, ref_cost if ref_cost < full_cost else None, facts.blocked(group, group_records)))
             references.append(ref)
         available = budget - fixed_tokens - memory_tokens
         target = min(available, int(budget * policy.pressure) - fixed_tokens - memory_tokens)

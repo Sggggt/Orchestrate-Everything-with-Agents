@@ -62,6 +62,25 @@ class CommandSessions:
                 result[identity]["error"] = {"code": record["error"]["code"]}
         return result
 
+    def exited_result(self, identity, run_id):
+        """Read a confirmed exit to settle a missing action receipt."""
+        try:
+            record = self.load(identity, run_id)
+            if (record.get("action_id") != identity or record.get("command_session_id") != identity
+                    or record.get("state") != "exited" or record.get("process_stopped") is not True
+                    or record.get("stopped_at") is None or type(record.get("exit_code")) is not int):
+                return None
+            result = self.result(record, {})
+        except RuntimeFault as error:
+            if error.code not in {"COMMAND_NOT_FOUND", "PERMISSION_DENIED"}:
+                raise
+            return None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if any(item["saved_bytes"] != min(item["observed_bytes"], record["retention_bytes"]) for item in result["output_refs"]):
+            return None
+        return result
+
     async def start(self, request, environment):
         args, identity = request["arguments"], request["action_id"]
         require(bool(args.get("argv")) != bool(args.get("command")), "INVALID_REQUEST", "Choose argv or command")

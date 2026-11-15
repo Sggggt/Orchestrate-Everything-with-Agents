@@ -135,6 +135,9 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empty["stdout"], "")
         with self.assertRaises(RuntimeFault):
             await restarted.observe("another-run", {"command_session_id": identity})
+        self.assertIsNone(restarted.exited_result(identity, "another-run"))
+        (restarted.directory(identity) / "stdout.bin").unlink()
+        self.assertIsNone(restarted.exited_result(identity, "run-one"))
 
     async def test_unknown_identity_is_not_replayed_and_output_is_readable(self):
         result = await self.invoke("exec_command", {"argv": [sys.executable, "-B", "-u", "-c",
@@ -145,6 +148,7 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(saved["process_stopped"])
         self.assertIn("retained", saved["stdout"])
         self.assertFalse(restarted.live)
+        self.assertIsNone(restarted.exited_result(result["command_session_id"], "run-one"))
         stopped = await self.invoke("write_stdin", {"command_session_id": result["command_session_id"], "terminate": True})
         self.assertTrue(stopped["process_stopped"])
         self.assertEqual(stopped["termination"], "cancelled")

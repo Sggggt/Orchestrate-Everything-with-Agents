@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide covers Orchestrate Everything with Agents (OEA) 3.4.3, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections to configure and supervise work, or use the SDK and MCP sections for integrations. Chinese browser labels appear alongside their English descriptions below.
+This guide covers Orchestrate Everything with Agents (OEA) 3.4.4, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections to configure and supervise work, or use the SDK and MCP sections for integrations. Chinese browser labels appear alongside their English descriptions below.
 
 ## Contents
 

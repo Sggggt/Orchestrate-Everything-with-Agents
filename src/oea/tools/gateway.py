@@ -5,6 +5,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from apsw import CantOpenError
 from jsonschema import ValidationError
 
 from oea.contracts.errors import RuntimeFault, require
@@ -251,7 +252,14 @@ class ToolGateway:
                     raise
             # Function providers normalize typed objects. Generic providers must
             # honor the same JSON boundary before their receipt is committed.
-            return await self.store.call(lambda db: self._commit(db, receipt, result), transaction=True)
+            def commit(db):
+                return self._commit(db, receipt, result)
+            try:
+                return await self.store.call(commit, transaction=True)
+            except CantOpenError:
+                if spec.name != "exec_command" or result.get("state") != "exited" or result.get("process_stopped") is not True:
+                    raise
+                return await self.store.call(commit, transaction=True)
         except BaseException as error:
             previous = await self.store.call(lambda db: one(db, "SELECT state,result_json,error_json FROM actions WHERE id=?", (identity,)))
             if previous is None:
