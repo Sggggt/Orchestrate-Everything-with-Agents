@@ -2,7 +2,7 @@
 
 English · [简体中文](user-guide.zh-CN.md) · [Documentation](README.md)
 
-This guide covers Orchestrate Everything with Agents (OEA) 3.4.4, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections to configure and supervise work, or use the SDK and MCP sections for integrations. Chinese browser labels appear alongside their English descriptions below.
+This guide covers Orchestrate Everything with Agents (OEA) 3.4.5, from your first local conversation to tools, collaboration and reusable workflows. Start with the browser sections to configure and supervise work, or use the SDK and MCP sections for integrations. Chinese browser labels appear alongside their English descriptions below.
 
 ## Contents
 
@@ -128,7 +128,7 @@ Select the project and session before acting on their work. The main navigation 
 
 An Agent with one instance opens directly; an Agent with several instances opens a selector. Use **添加实例** in collaboration or **新建独立对话** in the instance selector to start separate work. Closing a conversation tab does not delete its instance or cancel its Run.
 
-Unread markers track new conversation or collaboration content. Reading the latest content in a visible window advances the corresponding read position. Older pages and long responses remain available through their history and original-content controls.
+Unread markers track new conversation or collaboration content. Reading the latest content in a visible window advances the corresponding read position. An instance conversation loads up to 100 visible messages per page, with collapsed execution activity outside that count. Long replies display their full saved text automatically. The collaboration feed loads up to 250 older messages at a time.
 
 Use the arrow next to **最近任务** to page through all task history, including archived sessions. The arrow next to **需要我处理** opens all outstanding attention items. Both dialogs default to the current project and can filter to the current session. Select one or more rows and choose **标记已处理** to acknowledge them. They disappear from attention lists but remain in all history as **已处理**, with their original execution outcome and accounting. This does not cancel a waiting task, confirm an external effect or settle usage. Explicit resumption or a new execution state can require attention again.
 
@@ -326,7 +326,7 @@ Task details show elapsed time, budget accounting and diagnostics. Execution act
 
 The conversation shows “Reconnecting” while restoring a model or progress connection, with up to five attempts. Model reconnects use the original Run and budget. Partial output is available from the original attempt receipt. Browser reconnects resume from the last observed event.
 
-Root and child work, summaries and recovery share the original budget. The UI distinguishes this Run, root work and the shared ledger. Cache remains in total input and is priced separately. Total/uncached input ceilings are optional; finalization and recovery reserves are part of the original budget. Missing provider fields remain unknown, and one generation limit is separate from cumulative output.
+Root and child work, summaries and recovery share the original budget. The UI distinguishes this Run, root work and the shared ledger. To set cumulative input and output limits, open **常用能力** and find **运行预算** in Agent settings. The input budget deducts confirmed cache hits at settlement. Pricing and the optional advanced total-input ceiling still include cached usage. Finalization and recovery draw from the original budget. Per-request generation limits and cumulative output limits are separate.
 
 ### Continue safely
 

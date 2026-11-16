@@ -14,10 +14,10 @@ export async function removeAgent(app,id,revision){
 const groups=[
   ["概览与画布","配置、草稿与生效版本。",[]],
   ["模型与职责","定义清楚的职责，选择实际使用的模型。",[["model","base_url"],["model","model"],["model","reasoning_effort"],["model","max_output_tokens"],["instructions","system"]]],
-  ["常用能力","工具、Skills 与工作环境。",[["tools","local"],["tools","mcp"],["skills"],["workspace","inherit_project"],["workspace","sandbox"],["workspace","network"],["workspace","project"],["workspace","references"],["context","input_tokens"]]],
+  ["常用能力","工具、Skills 与工作环境。",[["tools","local"],["tools","mcp"],["skills"],["workspace","inherit_project"],["workspace","sandbox"],["workspace","network"],["workspace","project"],["workspace","references"],["context","input_tokens"],["execution","budget"]]],
   ["通信与协调","",[]]
 ];
-const basic={model:["base_url","model","credential_ref"],workspace:["inherit_project","project","work","references","writable_project_paths","writable_directories","sandbox","network"],execution:["graph","graph_version","delivery","budget"]};
+const basic={model:["base_url","model","credential_ref"],workspace:["inherit_project","project","work","references","writable_project_paths","writable_directories","sandbox","network"],budget:["max_uncached_input_tokens","max_output_tokens","max_cost","currency","max_elapsed_seconds"]};
 
 function partnerFields(owner, agents, role, changed) {
   const prefix=`partners-${role}`;

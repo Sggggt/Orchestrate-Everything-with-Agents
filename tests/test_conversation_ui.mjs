@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { observeRun } from "../src/oea/web/static/run-stream.mjs";
 import { MarkdownBlocks } from "../src/oea/web/static/stream-markdown.mjs";
 import { markdown } from "../src/oea/web/static/markdown.mjs";
-import { mergeEntries,conversationItems,conversationItemHTML } from "../src/oea/web/static/conversation.mjs";
+import { mergeEntries,conversationItems,conversationItemHTML,completeMessageText } from "../src/oea/web/static/conversation.mjs";
 import { overview,shell,agentCards } from "../src/oea/web/static/workbench-shell.mjs";
 
 test("history reconciliation preserves older pages, updates receipts and never duplicates entries",()=>{
@@ -18,7 +18,15 @@ test("tool-only turns collapse without hiding prose or crossing Run boundaries",
   assert.match(conversationItemHTML(items[1]),/<strong>Ready<\/strong>/);
   assert.doesNotMatch(conversationItemHTML(items[1]),/<script>/);
   assert.doesNotMatch(conversationItemHTML(items[1]),/data-original-action/);
-  assert.match(conversationItemHTML({kind:"assistant",entry:{...entries[2],action_id:"m4",characters:9000}}),/读取完整内容/);
+});
+test("saved text ranges render together as one message, including Markdown across range boundaries",async()=>{
+  const ranges=new Map([[3,{text:"𐐷",next_offset:4}],[4,{text:"** end",next_offset:null}]]);
+  const entry=await completeMessageText({id:"entry",text:"**A",next_offset:3},async(id,offset)=>{
+    assert.equal(id,"entry");
+    return ranges.get(offset);
+  });
+  const html=conversationItemHTML({kind:"assistant",entry});
+  assert.match(html,/<strong>A𐐷<\/strong> end/);
 });
 test("run stream batches long output, deduplicates facts, retains interrupted text and closes cleanly",async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});

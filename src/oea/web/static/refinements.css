@@ -119,6 +119,38 @@
 .connection { gap:0; }.connection-text { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
 .top-actions .connection { width:24px; height:24px; justify-content:center; }
 .connection .dot.offline { background:#c05769; }.connection .dot.connecting { background:#bb8a30; }
+
+:root {
+  --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2368758b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+select:not([multiple],[size]:not([size="1"])) {
+  appearance:none;
+  background-image:var(--select-chevron);
+  background-repeat:no-repeat;
+  background-position:right 9px center;
+  background-size:16px;
+  padding-inline-end:32px;
+}
+input[list]::-webkit-calendar-picker-indicator {
+  appearance:none;
+  background:var(--select-chevron) center/16px no-repeat;
+}
+details>summary { list-style:none; }
+details>summary::-webkit-details-marker { display:none; }
+details:not(.conversation-activity,.context-menu)>summary::before {
+  content:"";
+  display:inline-block;
+  box-sizing:border-box;
+  width:.48em;
+  height:.48em;
+  margin-inline:.14em .55em;
+  border:solid currentColor;
+  border-width:0 1.5px 1.5px 0;
+  vertical-align:.13em;
+  transform:rotate(-45deg);
+}
+details[open]:not(.conversation-activity,.context-menu)>summary::before { transform:rotate(45deg); }
+
 @media(prefers-reduced-motion:reduce){
   ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*) { animation:none!important; }
   .inline-status>.icon { animation:none; }

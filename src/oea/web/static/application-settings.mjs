@@ -67,7 +67,7 @@ export async function manageApplications(app,root){
       const field=grantSchema.properties[name];
       let visible=field;
       if(name==="workspace")visible={...schema.$defs.Workspace,properties:Object.fromEntries(Object.entries(schema.$defs.Workspace.properties).filter(([key])=>!["project","work","inherit_project","sandbox","writable_project_paths"].includes(key)))};
-      const basic={tools:["local","mcp"],workspace:["references","writable_directories","network"],budget:["max_cost","currency","max_total_input_tokens","max_output_tokens","max_elapsed_seconds"]}[name];
+      const basic={tools:["local","mcp"],workspace:["references","writable_directories","network"],budget:["max_uncached_input_tokens","max_output_tokens","max_cost","currency","max_elapsed_seconds"]}[name];
       container.append(formField({schema:visible,root:schema,name:name==="agent_md"?"application_agent_md":name==="model"?"application_model":name,path:[name],basic,get:()=>definition.grant[name],set:value=>{definition.grant[name]=value;}}));
     }
     const close=modal(saved?"调整 Agent 授权":"添加 Agent 授权",content,{size:"wide"});

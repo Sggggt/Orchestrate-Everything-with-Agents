@@ -151,9 +151,11 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         private = await self.host.store.call(lambda db: rows(db, "SELECT position FROM events WHERE source='application'"))
         public = await self.platform.call("events.list", {"project_id": "p", "limit": 250})
         self.assertFalse({row["position"] for row in private} & {row["position"] for row in public["items"]})
+        history = await self.host.instances.history(run["instance_id"], "p")
         checks = [("runs.get", {"run_id": run["id"]}), ("runs.result", {"run_id": run["id"]}),
                   ("instances.get", {"instance_id": run["instance_id"]}), ("sessions.get", {"session_id": session_id}),
                   ("instances.history", {"instance_id": run["instance_id"], "project_id": "p"}),
+                  ("instances.message", {"instance_id": run["instance_id"], "project_id": "p", "entry_id": history["items"][0]["id"]}),
                   ("sessions.unread", {"session_id": session_id, "project_id": "p"}),
                   ("budgets.get", {"budget_id": run["budget_id"]}),
                   ("runs.submit", {"spec": {"instance_id": run["instance_id"], "input": "forged", "idempotency_key": "forged"}})]
@@ -167,7 +169,6 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403)
         command = await self.platform.client.get("/api/commands/unknown/stdout", params={"project_id": "p", "run_id": run["id"]})
         self.assertEqual(command.status_code, 403)
-        history = await self.host.instances.history(run["instance_id"], "p")
         reference = await self.host.results.issue("instances.history", {"instance_id": run["instance_id"], "project_id": "p"}, history, self.platform.consumer_id, characters=len(json.dumps(history)))
         with self.assertRaises(RuntimeFault) as denied:
             await self.platform.call("results.read", {"result_ref": reference["result_ref"], "project_id": "p"})

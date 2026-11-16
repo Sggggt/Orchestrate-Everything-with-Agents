@@ -200,7 +200,8 @@ class Messages:
         return None
 
     def page(self, db, board_id, *, project_id, after=0, limit=25, topic_id=None, order="asc", before=None, instance=None, session_id=None):
-        require(type(after) is int and 0 <= after < 2**63 and (before is None or type(before) is int and 0 <= before < 2**63) and 1 <= limit <= 100 and order in {"asc", "desc"}, "INVALID_REQUEST", "Read a bounded message page")
+        max_limit = 250 if session_id is not None else 100
+        require(type(after) is int and 0 <= after < 2**63 and (before is None or type(before) is int and 0 <= before < 2**63) and 1 <= limit <= max_limit and order in {"asc", "desc"}, "INVALID_REQUEST", "Read a bounded message page")
         self.scope(db, board_id, project_id, session_id, instance)
         query = "SELECT m.*,b.scope AS board_scope,b.name AS board_name,b.owner_instance_id AS inbox_owner_id,i.name AS inbox_owner_name FROM messages m JOIN boards b ON b.id=m.board_id LEFT JOIN instances i ON i.id=b.owner_instance_id WHERE "
         query += "m.board_id=?" if board_id is not None else "m.session_id=?"

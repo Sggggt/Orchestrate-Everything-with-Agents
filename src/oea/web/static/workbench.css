@@ -185,14 +185,12 @@ body,.layout { min-width:0; }.mobile-nav-toggle,.nav-scrim { display:none; }
 .from-user .message-text { border:1px solid #eae5f6; background:#f5f2fc; border-radius:16px 16px 4px 16px; padding:13px 18px; }
 .conversation-activity { margin:4px 0 23px; color:var(--muted); font-size:12px; }
 .conversation-activity>summary { display:flex; align-items:center; width:fit-content; gap:8px; cursor:pointer; list-style:none; padding:4px 0; }
-.conversation-activity>summary::-webkit-details-marker { display:none; }
 .conversation-activity>summary>.icon { width:15px; height:15px; }.conversation-activity>summary>.icon:last-child { width:12px; transition:transform .16s; }
 .conversation-activity[open]>summary>.icon:last-child { transform:rotate(90deg); }
 .activity-receipts { margin:7px 0 0 7px; padding:2px 0 2px 16px; border-left:1px solid #e6e1ef; }
 .activity-receipt { margin:5px 0 10px; }.activity-receipt .text-link { font-size:11px; color:var(--muted); }
 .tool-call-list>div { display:flex; gap:8px; align-items:center; padding:5px 0; }.tool-call-list .icon { width:14px; height:14px; }
 .tool-call-list span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.full-response { margin-top:9px; font-size:12px; }.full-response .icon { width:13px; }
 .conversation-run-footer { display:flex; gap:16px; align-items:center; padding:8px 0 16px; font-size:12px; }.conversation-run-footer .text-link { color:var(--muted); font-size:12px; }
 .conversation-run-footer .icon { width:13px; }
 .conversation-empty { padding:12vh 0 8vh; text-align:center; color:var(--muted); }.conversation-empty>.icon { width:34px; height:34px; color:var(--accent); }

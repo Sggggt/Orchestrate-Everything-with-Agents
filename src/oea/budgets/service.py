@@ -11,6 +11,12 @@ from oea.storage.persistence import encode, event, new_id, now_ms, one, rows
 from oea.budgets.measurement import normalize, charge, micros, upper_input_rate
 
 
+# Until usage settles, use the full input estimate. Only confirmed cache reads
+# reduce the token budget; new cache writes are part of the input.
+ACCOUNTED_INPUT = """CASE WHEN state='settled' AND cached_input_tokens BETWEEN 0 AND input_tokens
+    THEN input_tokens-cached_input_tokens ELSE input_tokens END"""
+
+
 class Budgets:
     def __init__(self, store):
         self.store = store
@@ -61,9 +67,9 @@ class Budgets:
 
     @staticmethod
     def totals(db, budget_id):
-        return one(db, """SELECT COUNT(*) AS calls,COALESCE(SUM(u.input_tokens),0) AS input,
+        return one(db, f"""SELECT COUNT(*) AS calls,COALESCE(SUM(u.input_tokens),0) AS input,
             COALESCE(SUM(u.output_tokens),0) AS output,
-            COALESCE(SUM(COALESCE(json_extract(m.normalized_json,'$.input_uncached'),u.input_tokens)),0) AS uncached,
+            COALESCE(SUM({ACCOUNTED_INPUT}),0) AS uncached,
             COALESCE(SUM(m.cost_micros),0) AS cost,
             COALESCE(SUM(CASE WHEN m.budget_phase='finalizing' THEN u.output_tokens ELSE 0 END),0) AS finalization_output,
             COALESCE(SUM(CASE WHEN m.budget_phase='recovery' THEN u.output_tokens ELSE 0 END),0) AS recovery_output,
@@ -285,7 +291,7 @@ class Budgets:
             SUM(CASE WHEN state='settled' AND cost_state='estimated' THEN cost_micros ELSE 0 END) AS estimated_cost_micros,
             MAX(measurement_revision) AS measurement_revision,MAX(measured_at) AS measured_at,
             SUM(json_extract(normalized_json,'$.input_uncached')) AS uncached_tokens,
-            SUM(COALESCE(json_extract(normalized_json,'$.input_uncached'),input_tokens)) AS accounted_uncached_tokens,
+            SUM({ACCOUNTED_INPUT}) AS accounted_uncached_tokens,
             COUNT(json_extract(normalized_json,'$.input_uncached')) AS uncached_reports,
             SUM(json_extract(normalized_json,'$.cache_write')) AS cache_write_tokens,
             COUNT(json_extract(normalized_json,'$.cache_write')) AS cache_write_reports,

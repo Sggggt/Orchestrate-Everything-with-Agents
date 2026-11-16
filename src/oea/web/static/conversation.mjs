@@ -8,9 +8,21 @@ import { observeRun,liveStates } from "./run-stream.mjs";
 import { streamMarkdown } from "./stream-markdown.mjs";
 
 const drafts=new Map(),attachments=new Map();
+const historyPageSize=100;
 let active=null;
 export const nearBottom=feed=>feed.scrollHeight-feed.scrollTop-feed.clientHeight<90;
 export function mergeEntries(current,incoming){return [...new Map([...current,...incoming].map(entry=>[entry.id,entry])).values()].sort((a,b)=>a.position-b.position);}
+
+export async function completeMessageText(entry,read){
+  const parts=[entry.text];
+  let offset=entry.next_offset;
+  while(offset!=null){
+    const page=await read(entry.id,offset);
+    parts.push(page.text);
+    offset=page.next_offset;
+  }
+  return {...entry,text:parts.join(""),next_offset:null};
+}
 
 export function conversationItems(entries){
   const items=[];
@@ -26,7 +38,7 @@ export function conversationItems(entries){
 export function conversationItemHTML(item){
   if(item.kind==="activity")return `<details class="conversation-activity"><summary>${icon("terminal")}<span>执行活动${item.entries.length>1?` · ${item.entries.length} 轮`:""}</span>${icon("chevron")}</summary><div class="activity-receipts">${item.entries.filter(entry=>entry.action_id).map(entry=>`<div class="activity-receipt" data-activity="${escape(entry.action_id)}"><button class="text-link" data-original-action="${escape(entry.action_id)}">查看调用记录</button></div>`).join("")}</div></details>`;
   const entry=item.entry;
-  return `<article class="conversation-message ${item.kind==="user"?"from-user":"from-agent"}">${item.kind==="user"?`<div class="conversation-time">你 · ${date(entry.created_at)}</div>`:""}<div class="message-text">${markdown(entry.text)}</div>${integrityLabel(entry.integrity)?`<small class="content-integrity">${integrityLabel(entry.integrity)}</small>`:""}${entry.action_id&&entry.characters>entry.text.length?`<button class="text-link full-response" data-original-action="${escape(entry.action_id)}">读取完整内容 ${icon("external")}</button>`:""}</article>`;
+  return `<article class="conversation-message ${item.kind==="user"?"from-user":"from-agent"}">${item.kind==="user"?`<div class="conversation-time">你 · ${date(entry.created_at)}</div>`:""}<div class="message-text">${markdown(entry.text)}</div>${integrityLabel(entry.integrity)?`<small class="content-integrity">${integrityLabel(entry.integrity)}</small>`:""}</article>`;
 }
 
 export function disposeConversation(){active?.close();active=null;}
@@ -53,7 +65,7 @@ export async function renderConversation(app,root){
     else if(prepend)feed.scrollTop+=feed.scrollHeight-oldHeight;
     jump.hidden=nearBottom(feed);
   }
-  function draw(prepend=false,force=false){
+  function draw({prepend=false,force=false,updateRun=false}={}){
     preserveScroll(()=>{
       const items=conversationItems(entries),keys=new Set();let cursor=container.firstElementChild;
       for(const item of items){
@@ -68,6 +80,7 @@ export async function renderConversation(app,root){
       if(!items.length&&!container.querySelector(".conversation-empty"))container.innerHTML=`<div class="conversation-empty">${icon("spark")}<h2>从一个目标开始</h2><p>告诉 ${escape(definition?.name||instance.name)} 你想完成什么。</p></div>`;
       if(items.length)container.querySelector(".conversation-empty")?.remove();
       $("#older-conversation",root).hidden=before==null;
+      if(updateRun){drawState();drawLive();}
     },prepend,force);
     bindReceipts();
   }
@@ -119,14 +132,42 @@ export async function renderConversation(app,root){
     const note=value.note?`${value.connected&&(!value.run||liveStates.has(value.run.state))?'<span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>':icon("activity")}<span>${escape(value.note)}</span>`:"";
     if(label.innerHTML!==note)label.innerHTML=note;
   }
+  async function readHistory(bounds={}){
+    const scope={instance_id:instance.id,project_id:projectId};
+    const page=await rpc("instances.history",{...scope,...bounds,limit:historyPageSize,message_page:true});
+    const pending=page.items.filter(entry=>entry.next_offset!=null);
+    if(!pending.length||!current())return page;
+    const bodies=new Map();
+    const read=(entry_id,offset)=>rpc("instances.message",{...scope,entry_id,offset});
+    let next=0;
+    await Promise.all(Array.from({length:Math.min(pending.length,4)},async()=>{
+      while(next<pending.length&&current()){
+        const entry=await completeMessageText(pending[next++],read);
+        bodies.set(entry.id,entry);
+      }
+    }));
+    return {...page,items:page.items.map(entry=>bodies.get(entry.id)||entry)};
+  }
+  async function readNewHistory(after){
+    const page=await readHistory(after==null?{}:{after});
+    if(after==null)return page;
+    const items=[...page.items];
+    let cursor=page.cursor;
+    while(cursor!=null&&current()){
+      const earlier=await readHistory({after,before:cursor});
+      items.push(...earlier.items);
+      cursor=earlier.cursor;
+    }
+    return {items,cursor:null};
+  }
   function queueRefresh(){if(!closed&&refreshTimer===null)refreshTimer=setTimeout(()=>{refreshTimer=null;refresh().catch(error=>notify(error.message,true));},100);}
   async function refresh(){
-    if(!current())return;if(instance.draft){draw();drawState();return;}if(loading){again=true;return;}loading=true;
-    try{do{again=false;const [page,recent]=await Promise.all([rpc("instances.history",{instance_id:instance.id,project_id:projectId,limit:25}),rpc("runs.list",{session_id:sessionId,project_id:projectId,instance_id:instance.id,limit:25})]);if(!current())return;
-      const changed=page.items.some(value=>!entries.some(old=>old.id===value.id&&old.text===value.text));
+    if(!current())return;if(instance.draft){draw({updateRun:true});return;}if(loading){again=true;return;}loading=true;
+    try{do{again=false;const [page,recent]=await Promise.all([readNewHistory(entries.at(-1)?.position),rpc("runs.list",{session_id:sessionId,project_id:projectId,instance_id:instance.id,limit:25})]);if(!current())return;
+      const changed=page.items.length>0;
       if(!entries.length)before=page.cursor;entries=mergeEntries(entries,page.items);
       if(!runs.length)runCursor=recent.cursor;runs=[...new Map([...runs,...recent.items].map(run=>[run.id,run])).values()].sort((a,b)=>b.position-a.position);
-      draw(false,changed);drawState();drawLive();await markRead();
+      draw({force:changed,updateRun:true});await markRead();
     }while(again);}finally{loading=false;}
   }
   async function markRead(){
@@ -138,7 +179,7 @@ export async function renderConversation(app,root){
   const visible=()=>{if(document.visibilityState==="visible")markRead();};
   document.addEventListener("visibilitychange",visible);document.addEventListener("oea-modal-close",visible);
   active={root,instanceId:instance.id,refresh,close(){closed=true;clearTimeout(refreshTimer);stream?.close();document.removeEventListener("visibilitychange",visible);document.removeEventListener("oea-modal-close",visible);}};
-  $("#older-conversation",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const older=await rpc("instances.history",{instance_id:instance.id,project_id:projectId,before,limit:25});if(!current())return;entries=mergeEntries(entries,older.items);before=older.cursor;draw(true);}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
+  $("#older-conversation",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const older=await readHistory({before});if(!current())return;entries=mergeEntries(entries,older.items);before=older.cursor;draw({prepend:true});}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   $("#older-runs",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const page=await rpc("runs.list",{session_id:sessionId,project_id:projectId,instance_id:instance.id,cursor:runCursor,limit:25});if(!current())return;runs.push(...page.items);runCursor=page.cursor;drawState();}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   $("#conversation-settings",root).onclick=()=>app.openSettings(instance.agent_id);
   $("#instance-inspector",root).onclick=event=>{const expanded=$(".chat-layout",root).classList.toggle("show-inspector");event.currentTarget.setAttribute("aria-expanded",String(expanded));};

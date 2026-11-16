@@ -96,14 +96,14 @@ class Host:
         for area, service, names in (("projects", self.projects, ("create", "get", "list", "update", "delete")),
                                      ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
-                                     ("instances", self.instances, ("create", "get", "list", "history", "mark_read")),
+                                     ("instances", self.instances, ("create", "get", "list", "history", "message", "mark_read")),
                                      ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action", "mark_handled")),
                                      ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "candidates", "candidate", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),
                                      ("boards", self.boards, ("create", "get", "list", "set_reader")),
                                      ("budgets", self.budgets, ("create", "get"))):
             for name in names:
-                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "command", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "validate", "activity", "get_upload", "unread", "candidates", "candidate"})
+                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "schema", "check", "inspect", "action", "command", "attempts", "response", "result", "for_run", "read", "node_types", "get_run", "list_runs", "node_result", "members", "summary", "history", "message", "validate", "activity", "get_upload", "unread", "candidates", "candidate"})
         for name in ("send", "get", "list", "mark_read", "unread"):
             self.registry.register("messages." + name, getattr(self.messages, name), read_only=name in {"get", "list", "unread"})
         for name in ("create", "get", "list", "rotate_credential", "set_enabled", "remove", "bind", "bindings"):

@@ -26,12 +26,12 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-OEA 需要 Python 3.12+。从 [OEA 3.4.4 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.4)下载与你的系统匹配的 wheel：Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。下载 Windows 安装包后运行：
+OEA 需要 Python 3.12+。从 [OEA 3.4.5 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.5)下载与你的系统匹配的 wheel：Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。下载 Windows 安装包后运行：
 
 MSVC 构建的 Windows wheel 还需要 [Microsoft Visual C++ v14 x64 运行库](docs/getting-started.md#windows-runtime)。请先安装或修复微软官方运行库；OEA 安装器不代为安装此系统依赖。
 
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.4-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.5-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
@@ -96,4 +96,4 @@ oea mcp
 
 环境和验证方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，敏感问题报告方式见 [SECURITY.md](SECURITY.md)。仓库保留通用自动化契约测试及源码 fixture，不包含已填充的工作空间或生成的测试结果。
 
-采用 [MIT 许可证](LICENSE)。OEA 3.4.4 使用 `oea` 包和命令，公开协议版本为 3.0。受支持的旧状态格式需先离线转换到独立新目录；状态 Schema 不变的更新沿用原数据目录，详见[迁移](docs/migration/README.md)。
+采用 [MIT 许可证](LICENSE)。OEA 3.4.5 使用 `oea` 包和命令，公开协议版本为 3.0。受支持的旧状态格式需先离线转换到独立新目录；状态 Schema 不变的更新沿用原数据目录，详见[迁移](docs/migration/README.md)。

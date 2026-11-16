@@ -483,18 +483,81 @@ class Instances:
         row = await self.host.store.call(lambda db: need(db, "instances", instance_id))
         return {**self.view(row), "workspace": json.loads(row["workspace_json"])}
 
-    async def history(self, instance_id: str, project_id: str, *, before: int | None = None, limit: int = 25):
-        """Read bounded conversation previews; original receipts remain referenced."""
+    async def history(self, instance_id: str, project_id: str, *, before: int | None = None, after: int | None = None,
+                      limit: int = 25, message_page: bool = False):
+        """Read conversation previews, optionally counting visible messages instead of activity."""
         from oea.context.store import CONVERSATION
-        require((before is None or type(before) is int and 0 < before < 2**63) and type(limit) is int and 1 <= limit <= 100, "INVALID_REQUEST", "Read a bounded conversation page")
+        require((before is None or type(before) is int and 0 < before < 2**63)
+                and (after is None or type(after) is int and 0 <= after < 2**63)
+                and type(limit) is int and 1 <= limit <= 100, "INVALID_REQUEST", "Read a bounded conversation page")
         def read(db):
             instance = need(db, "instances", instance_id)
             require(instance["project_id"] == project_id, "PERMISSION_DENIED", "Instance belongs to another project")
-            query = "WITH transcript AS (" + CONVERSATION + "WHERE c.instance_id=? AND c.role IN ('user','assistant') AND (? IS NULL OR c.position<?)) "
-            query += "SELECT t.id,t.position,t.run_id,c.action_id,c.created_at,json_extract(t.body_json,'$.role') AS role,substr(CAST(json_extract(t.body_json,'$.content') AS TEXT),1,8192) AS text,length(CAST(json_extract(t.body_json,'$.content') AS TEXT)) AS characters,json_extract(a.result_json,'$.finish_reason') AS finish_reason,json_extract(a.result_json,'$.content_view.integrity') AS integrity FROM transcript t JOIN conversation c ON c.id=t.id LEFT JOIN actions a ON a.id=c.action_id ORDER BY t.position DESC LIMIT ?"
-            return rows(db, query, (instance_id, before, before, limit + 1))
-        values = await self.host.store.call(read)
-        return {"items": values[:limit], "cursor": values[limit - 1]["position"] if len(values) > limit else None}
+            where = "WHERE c.instance_id=? AND c.role IN ('user','assistant')"
+            params = [instance_id]
+            for bound, comparison in ((before, "<"), (after, ">")):
+                if bound is not None:
+                    where += " AND c.position" + comparison + "?"
+                    params.append(bound)
+            cursor = None
+            if message_page:
+                # Cap activity-only stretches as well as visible messages.
+                activity_page = 1000
+                candidates = db.execute("SELECT c.position,(c.role='user' OR " + reading.VISIBLE_REPLY + ") AS is_message "
+                                        "FROM conversation c LEFT JOIN actions a ON a.id=c.action_id " +
+                                        where + " ORDER BY c.position DESC LIMIT ?", (*params, activity_page + 1))
+                visible, last_message, last_position = 0, None, None
+                for index, candidate in enumerate(candidates):
+                    if index == activity_page:
+                        cursor = last_position
+                        break
+                    if candidate["is_message"]:
+                        if visible == limit:
+                            cursor = last_message
+                            break
+                        visible += 1
+                        last_message = candidate["position"]
+                    last_position = candidate["position"]
+                if cursor is not None:
+                    where += " AND c.position>=?"
+                    params.append(cursor)
+            query = "WITH transcript AS (" + CONVERSATION + where + """)
+                SELECT t.id,t.position,t.run_id,c.action_id,c.created_at,c.role,
+                    substr(CAST(json_extract(t.body_json,'$.content') AS TEXT),1,8192) AS text,
+                    length(CAST(json_extract(t.body_json,'$.content') AS TEXT)) AS characters,
+                    json_extract(a.result_json,'$.finish_reason') AS finish_reason,
+                    json_extract(a.result_json,'$.content_view.integrity') AS integrity
+                FROM transcript t JOIN conversation c ON c.id=t.id LEFT JOIN actions a ON a.id=c.action_id ORDER BY t.position DESC"""
+            if not message_page:
+                query += " LIMIT ?"
+                params.append(limit + 1)
+            values = rows(db, query, params)
+            if not message_page and len(values) > limit:
+                values = values[:limit]
+                cursor = values[-1]["position"]
+            for value in values:
+                value["next_offset"] = 8192 if (value["characters"] or 0) > 8192 else None
+            return {"items": values, "cursor": cursor}
+        return await self.host.store.call(read, transaction="read")
+
+    async def message(self, instance_id: str, project_id: str, entry_id: str, *, offset: int = 0, limit: int = 65536):
+        """Read retained text from one conversation entry using Unicode character offsets."""
+        from oea.context.store import CONVERSATION
+        require(0 <= offset < 2**63 and 1 <= limit <= 65536, "INVALID_REQUEST", "Read a bounded message range")
+        def read(db):
+            instance = need(db, "instances", instance_id)
+            require(instance["project_id"] == project_id, "PERMISSION_DENIED", "Instance belongs to another project")
+            return one(db, "WITH entry AS (" + CONVERSATION +
+                       "WHERE c.id=? AND c.instance_id=? AND c.role IN ('user','assistant')) "
+                       "SELECT substr(CAST(json_extract(body_json,'$.content') AS TEXT),?,?) AS text,"
+                       " length(CAST(json_extract(body_json,'$.content') AS TEXT)) AS characters FROM entry",
+                       (entry_id, instance_id, offset + 1, limit))
+        value = await self.host.store.call(read)
+        require(value is not None, "NOT_FOUND", "Message is not available in this conversation")
+        characters = value["characters"] or 0
+        require(offset <= characters, "INVALID_REQUEST", "Message offset is beyond the retained text")
+        return {"text": value["text"] or "", "characters": characters,
+                "next_offset": offset + limit if offset + limit < characters else None}
 
     async def mark_read(self, instance_id: str, project_id: str, position: int, *, consumer_id: str | None = None):
         """Advance only this reader's cursor over an actually saved message."""

@@ -87,6 +87,23 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(report["provider_reported"]["input_tokens"])
         self.assertEqual(report["usage"]["input_tokens"], 1000)
 
+    async def test_token_budget_deducts_confirmed_cache_reads_and_counts_cache_writes(self):
+        policy = Budget(max_uncached_input_tokens=1200, max_output_tokens=1000,
+                        finalization_fraction=0, recovery_fraction=0)
+        await self.host.store.call(lambda db: db.execute("UPDATE budgets SET policy_json=? WHERE id=?",
+            (policy.model_dump_json(), self.budget)), transaction=True)
+        model = self.model.model_copy(update={"usage_format": "anthropic"})
+        await self.reserve("first", model=model)
+        with self.assertRaises(RuntimeFault) as pending:
+            await self.reserve("second", run=1, incoming=300)
+        self.assertEqual(pending.exception.details["remaining"], 200)
+        await self.settle("first", {"input_tokens": 100, "cache_read_input_tokens": 800,
+                                   "cache_creation_input_tokens": 100, "output_tokens": 100})
+        report = await self.host.budgets.get(self.budget)
+        self.assertEqual(report["remaining"]["uncached_input_tokens"], 1000)
+        self.assertEqual(report["remaining"]["output_tokens"], 900)
+        await self.reserve("second", run=1, incoming=1000)
+
     async def test_run_direct_and_root_do_not_grow_with_a_shared_sibling(self):
         await self.reserve("first")
         await self.settle("first", {"prompt_tokens": 100, "completion_tokens": 10})

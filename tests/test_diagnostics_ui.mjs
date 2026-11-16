@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import {usageRows,projectionRows,cancellationHTML,diagnosisHTML,integrityLabel} from "../src/oea/web/static/diagnostics.mjs";
 
 test("usage separates provider reports from accounting and unknown values",()=>{
-  const html=usageRows({usage:{model_calls:2,input_tokens:300,output_tokens:400},provider_reported:{input_tokens:10,output_tokens:null},estimated:{input_tokens:100,output_tokens:200},reserved:{input_tokens:0,output_tokens:0},needs_review:{input_tokens:200,output_tokens:200}});
+  const html=usageRows({usage:{model_calls:2,input_tokens:300,accounted_uncached_tokens:290,output_tokens:400},provider_reported:{input_tokens:10,output_tokens:null},estimated:{input_tokens:100,output_tokens:200},reserved:{input_tokens:0,output_tokens:0},needs_review:{input_tokens:200,output_tokens:200}});
   assert.match(html,/供应商报告 总输入 \/ 输出<\/dt><dd>10 \/ 未知/);
-  assert.match(html,/预算核算 总输入 \/ 输出<\/dt><dd>300 \/ 400/);
+  assert.match(html,/Token 预算 输入 \/ 输出<\/dt><dd>290 \/ 400/);
   assert.match(html,/待核对/);
   assert.match(html,/非缓存 \/ 缓存读 \/ 缓存写<\/dt><dd>未知 \/ 未知 \/ 未知/);
 });

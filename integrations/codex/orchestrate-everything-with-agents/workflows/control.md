@@ -10,6 +10,8 @@
 
 用户明确要求标记待办时，使用 `runs.mark_handled`，传项目和选中任务原页的 updated_at；每批至多 100 项。核对 items/conflicts，重复请求不增加处理事件。handled 仅结束用户待办，不改执行结果、停止事实或账目；不要用它替代 runs.confirm_action、cancel 或 resume。
 
+查看实例对话用 `instances.history` 分页。需要单条长消息时，用 `instances.message` 沿该条目的 next_offset 读取原正文。
+
 只查状态用 runs.get，查完整动作与诊断时才用 runs.inspect。读取长引用先选择所需 JSON Pointer；配置更新一般选择 `/definition`，不要展开全部包络。results.read 默认 16,384 字符，上限由返回的 page_limit 指示（当前 65,536）；当前输出与上下文余量充足、确实要读长正文时可一次请求 32,768 或 65,536，余量不足时缩小 limit，按原 next_offset 继续。报告正文优先 runs.response，文件使用授权产物下载，不为拿全文遍历完整运行包络。页长由控制端按当前任务和余量选择，不额外调用模型规划分页。
 
 排查旧判断时定位固定 attempt_id 的请求元数据、context 选择和 memory_ref，结合原历史及来源版本核对新材料的正文/引用、读取回执及消息注入位置。输入指纹不能替代请求正文；证据不足时不宣称已确认每段实际发送。材料已保存或消息已读不等于模型已拿到全文；已确认注入的新证据仍被忽视属于模型判断问题，丢失通知、错版本或压缩遗漏则沿平台链路修复。结论保持可复核，不把缺资料、尚未读取和当前无权访问混为一谈。

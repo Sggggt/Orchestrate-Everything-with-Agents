@@ -34,7 +34,8 @@
   - `async create(self, session_id: str, agent_id: str, *, name: str | None=None, role: str='main')`
   - `view(row)`
   - `async get(self, instance_id: str)`
-  - `async history(self, instance_id: str, project_id: str, *, before: int | None=None, limit: int=25)`
+  - `async history(self, instance_id: str, project_id: str, *, before: int | None=None, after: int | None=None, limit: int=25, message_page: bool=False)`
+  - `async message(self, instance_id: str, project_id: str, entry_id: str, *, offset: int=0, limit: int=65536)`
   - `async list(self, session_id: str, *, agent_id: str | None=None, cursor: int=0, limit: int=25)`
 
 ## 依赖与边界
@@ -73,5 +74,7 @@ Agent 的 `removed` 是只读生命周期元数据，通过 `agents.remove` 修�
 `sessions.unread(session_id, project_id, consumer_id=None)` 返回当前阅读身份的群聊未读和各 Agent 的实例未读总数、实例数及 revision。聚合覆盖整个会话，实例列表分页不限制这些总数。`sessions.summary` 在有阅读身份时携带同一 unread 投影；`instances.list` 返回逐实例 unread_count。
 
 `instances.mark_read(instance_id, project_id, position, consumer_id=None)` 只推进该阅读身份的持久游标。位置必须属于目标实例，重复或更早位置不会回退，也不会清除其他实例或群聊的未读。实例未读计数对应含正文的 assistant 消息，不把空工具活动算作消息。首次没有游标时从零计数，不推定历史已读。
+
+`instances.history` 按会话位置读取预览。启用 `message_page` 后，页大小按可见消息计数，附带范围内的折叠活动。用 `after` 增量补读新条目，用返回的 `cursor` 作为下一页的 `before`。长正文的 `next_offset` 可传给 `instances.message`，在原实例和项目范围内以 Unicode 码点偏移读取同一条消息。
 
 HTTP 与 MCP 的 consumer_id 由当前连接传入；显式参数不能代替另一个阅读身份。响应 revision 来自同一会话的事件位置，界面丢弃较旧的异步计数响应。

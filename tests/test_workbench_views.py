@@ -41,12 +41,38 @@ class WorkbenchViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer["characters"], len("Evidence " * 2000))
         original = await self.host.runs.action(answer["action_id"], limit=16384)
         self.assertIn("Evidence ", original["text"])
+        tail = await self.host.registry.call("instances.message", {"instance_id": self.first["id"], "project_id": "p",
+            "entry_id": answer["id"], "offset": answer["next_offset"]})
+        self.assertEqual(answer["text"] + tail["text"], "Evidence " * 2000)
+        self.assertIsNone(tail["next_offset"])
+        with self.assertRaises(RuntimeFault) as denied:
+            await self.host.instances.message(self.second["id"], "p", answer["id"])
+        self.assertEqual(denied.exception.code, "NOT_FOUND")
         older = await self.host.instances.history(self.first["id"], "p", before=page["cursor"], limit=1)
         self.assertEqual(older["items"][0]["role"], "user")
         self.assertNotEqual(older["items"][0]["id"], answer["id"])
         self.assertIsNone(older["cursor"])
         filtered = await self.host.runs.list(self.session["id"], project_id="p", instance_id=self.first["id"])
         self.assertEqual([value["id"] for value in filtered["items"]], [runs[0].id])
+
+    async def test_visible_message_pages_keep_activity_and_unicode_body_boundaries(self):
+        run = await self.host.runs.submit(RunSpec(instance_id=self.first["id"], input="Goal", idempotency_key="work"))
+        await self.host.runs.result(run.id, timeout=5)
+        owner = {"id": run.id}
+        await self.host.contexts.append(owner, self.first, {"role": "assistant", "content": None}, "tool-turn")
+        text = "𐐷" * 8192 + "保存的完整内容"
+        position = await self.host.contexts.append(owner, self.first, {"role": "user", "content": text}, "long-user")
+        recent = await self.host.instances.history(self.first["id"], "p", limit=1, message_page=True)
+        self.assertEqual([item["id"] for item in recent["items"]], ["long-user"])
+        self.assertEqual(recent["cursor"], position)
+        earlier = await self.host.instances.history(self.first["id"], "p", before=position, limit=1, message_page=True)
+        self.assertEqual([item["id"] for item in earlier["items"]][:1], ["tool-turn"])
+        self.assertEqual(len(earlier["items"]), 2)
+        newest = await self.host.instances.history(self.first["id"], "p", after=earlier["cursor"], message_page=True)
+        self.assertEqual(newest["items"], [*recent["items"], earlier["items"][0]])
+        entry = recent["items"][0]
+        body = await self.host.instances.message(self.first["id"], "p", entry["id"], offset=entry["next_offset"])
+        self.assertEqual(entry["text"] + body["text"], text)
 
     async def test_summary_and_artifact_views_keep_session_and_project_ownership(self):
         run = await self.host.runs.submit(RunSpec(instance_id=self.first["id"], input="Goal", idempotency_key="work"))

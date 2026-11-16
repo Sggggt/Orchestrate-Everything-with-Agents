@@ -8,9 +8,9 @@ export const labels = {
   mcp:"MCP 服务绑定",server_id:"服务标识",tools:"允许的工具",skills:"Skills",path:"目录",required:"执行前必需",input_tokens:"工作输入 token",
   pressure:"记忆更新压力比例",tool_inline_tokens:"工具结果内联 token",memory_tokens:"阶段记忆 token",safety_tokens:"安全余量 token",recent_turns:"近期保留消息组",
   project:"项目原件目录",work:"实例工作目录的根目录",references:"只读参考目录",writable_project_paths:"允许写入的项目子目录",writable_directories:"允许写入的其他目录",inherit_project:"继承项目环境默认值",shell:"Shell 参数",environment:"环境变量",
-  command_timeout_seconds:"命令超时（秒）",graph:"执行图",graph_version:"代码图版本",program:"进程程序与参数",program_uses_model:"程序需要模型",budget:"费用与时间预算",
+  command_timeout_seconds:"命令超时（秒）",graph:"执行图",graph_version:"代码图版本",program:"进程程序与参数",program_uses_model:"程序需要模型",budget:"运行预算",
   delivery:"交付要求",text_required:"要求正文",min_artifacts:"最少产物数",output_schema:"结构化结果 JSON Schema",max_model_calls:"最大模型调用次数",
-  max_total_input_tokens:"累计总输入上限（含缓存，可选）",max_uncached_input_tokens:"累计非缓存输入上限（可选）",max_cost:"费用预算上限（按估算预留）",currency:"币种",finalization_fraction:"收尾预留比例",recovery_fraction:"恢复预留比例",max_output_tokens_budget:"累计输出 token 上限",max_tool_calls:"最大工具调用次数",max_elapsed_seconds:"最长工作时间（秒）",
+  max_total_input_tokens:"累计总输入上限（含缓存，可选）",max_uncached_input_tokens:"累计输入预算（扣除缓存命中，可选）",max_cost:"费用预算上限（按估算预留）",currency:"币种",finalization_fraction:"收尾预留比例",recovery_fraction:"恢复预留比例",max_output_tokens_budget:"累计输出 token 上限",max_tool_calls:"最大工具调用次数",max_elapsed_seconds:"最长工作时间（秒）",
   max_stalled_model_calls:"无新证据的模型调用上限",departments:"获准伙伴 Agent标识",can_request:"允许向伙伴请求工作",communication:"通信权限",manager:"manager",
   instructions:"运行指令",context:"上下文与记忆",workspace:"工作环境",execution:"执行与交付",max_steps:"图步数上限（可选）",
   transport:"连接方式",command:"程序与参数",cwd:"程序启动目录",url:"服务地址",environment_refs:"环境变量秘密引用",header_refs:"HTTP 头秘密引用",program_timeout_seconds:"单次进程执行超时（秒）",revision:"Skill 修订（留空采用最新）"

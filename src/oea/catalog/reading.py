@@ -4,7 +4,7 @@ from oea.contracts.errors import require
 from oea.interfaces.registry import operation_context
 from oea.storage.persistence import one, rows
 
-VISIBLE_REPLY = "length(trim(COALESCE(json_extract(c.body_json,'$.content'),json_extract(a.result_json,'$.message.content'),json_extract(a.result_json,'$.text'),'')))>0"
+VISIBLE_REPLY = "length(trim(COALESCE(json_extract(c.body_json,'$.content'),json_extract(a.result_json,'$.message.content'),json_extract(a.result_json,'$.text'),''),char(9,10,13,32)))>0"
 
 
 def reader(consumer_id=None, *, required=True):
