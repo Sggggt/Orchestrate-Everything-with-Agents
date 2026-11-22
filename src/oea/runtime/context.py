@@ -13,7 +13,7 @@ from oea.mcp.upstream import UpstreamTool
 from oea.contracts.configuration import manager_snapshot, AgentDefinition, UsePolicy, MODEL_REQUEST_IMAGE_BYTES, MODEL_IMAGE_MAX_BYTES
 from oea.contracts.measurement import estimate_input, measurement
 from oea.contracts.domain import Wait
-from oea.contracts.errors import RuntimeFault, require, diagnostic
+from oea.contracts.errors import RuntimeFault, require, diagnostic, reported_tool_error
 from oea.models.recovery import input_fingerprint, saved_fault, window_rejected
 from oea.storage.persistence import encode, event, one, rows, now_ms
 from oea.tools.contracts import ToolSpec
@@ -573,17 +573,24 @@ class RunContext:
                     origin="local", stage="tool.validate", details={"errors": [{"path": [], "type": "json_invalid",
                         "message": "Invalid JSON syntax", "line": error.lineno, "column": error.colno}]}).as_dict()}
             observation = None
+            error = None
             if value.get("isError"):
-                error = value.get("error") or {"code": "TOOL_FAILED", "safe_message": "Tool reported failure"}
+                supplied = value.get("error")
+                error = dict(supplied) if isinstance(supplied, dict) and "safe_message" in supplied and "code" in supplied else (
+                    reported_tool_error(value) or {"code": "TOOL_FAILED", "safe_message": "Tool reported failure"})
                 contract = error.get("contract_hash") or result.get("request", {}).get("projection", {}).get("tool_contracts", {}).get(call["function"]["name"]) or self.host.tools.contracts.get(call["function"]["name"], (None,))[0]
                 error.update(run_id=self.run["id"], response_id=state["response_id"], tool_call_id=call["id"],
                              tool=call["function"]["name"], contract_hash=contract,
                              evidence_ref={"conversation_id": key, "response_id": state["response_id"], "tool_call_id": call["id"], **({"action_id": error["action_id"]} if error.get("action_id") else {})})
-                value["error"] = error
                 error["diagnostic"] = diagnostic(error)
-                signature = hashlib.sha256(encode({"tool": error["tool"], "contract": contract, "code": error["code"],
-                    "fields": [(item.get("path"), item.get("type")) for item in error.get("details", {}).get("errors", [])],
-                    "input_hash": hashlib.sha256(call["function"]["arguments"].encode("utf-8")).hexdigest()}).encode("utf-8")).hexdigest()
+                details = error.get("details", {})
+                fields = sorted(encode([item.get("path"), item.get("type")]) for item in details.get("errors", []))
+                failure = {"tool": error["tool"], "contract": contract, "code": error["code"],
+                           "reason": error.get("reason"), "stage": error.get("stage"), "fields": fields,
+                           "feature": details.get("feature"), "database_error_code": details.get("database_error_code")}
+                if not fields and error.get("origin") != "upstream_tool":
+                    failure["arguments"] = call["function"]["arguments"]
+                signature = hashlib.sha256(encode(failure).encode("utf-8")).hexdigest()
                 def observation(db, position):
                     if not error.get("action_id") and action_key is None:
                         event(db, "tool.rejected", run_id=self.run["id"], data={"response_id": state["response_id"],
@@ -591,7 +598,8 @@ class RunContext:
                             "position": position, "error": error})
                     self.host.budgets.blocked(db, self.run["id"], error, signature)
             if key not in recorded or action_key is None:
-                await self.host.contexts.tool_result(self.run, self.instance, self.definition.context, call, value, action_key=action_key, on_insert=observation, identity=key)
+                await self.host.contexts.tool_result(self.run, self.instance, self.definition.context, call, value,
+                    action_key=action_key, error=error, on_insert=observation, identity=key)
             if call["function"]["name"] == "view_image" and value.get("image") and value.get("artifact") and not value.get("isError"):
                 images.append({"type": "oea_image", "artifact_id": value["artifact"]["id"]})
             if value.get("wait"):

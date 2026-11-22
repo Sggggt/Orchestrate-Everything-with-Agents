@@ -70,6 +70,37 @@ class AdapterFailure(RuntimeFault):
         self.safe_to_retry = safe_to_retry
 
 
+def reported_tool_error(result):
+    """Read bounded diagnostic fields from a tool's structured error result."""
+    if result.get("isError") is not True:
+        return None
+    payload = result.get("structured_content", result.get("structuredContent"))
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("error"), dict):
+        payload = payload["error"]
+    code = payload.get("code")
+    message = payload.get("safe_message") or payload.get("message") or payload.get("error")
+    if not isinstance(code, str) or not 0 < len(code) <= 128 or not isinstance(message, str) or not message.strip():
+        return None
+    details = {field: payload[field][:512] for field in ("path", "hint") if isinstance(payload.get(field), str)}
+    metadata = payload.get("details")
+    if isinstance(metadata, dict):
+        for field in ("feature", "database_error_code"):
+            value = metadata.get(field)
+            if isinstance(value, str):
+                details[field] = value[:128]
+            elif type(value) is int:
+                details[field] = value
+    if type(payload.get("retryable")) is bool:
+        details["reported_retryable"] = payload["retryable"]
+    if details.get("path"):
+        details["errors"] = [{"path": [details["path"]], "type": code, "message": message[:512]}]
+    stage = payload.get("stage")
+    return RuntimeFault("TOOL_FAILED", message[:512], details=details, origin="upstream_tool", reason=code,
+                        stage=stage[:128] if isinstance(stage, str) else None).as_dict()
+
+
 def require(condition, code: str, message: str, **kwargs):
     if not condition:
         raise RuntimeFault(code, message, **kwargs)

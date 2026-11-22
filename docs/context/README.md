@@ -8,7 +8,7 @@
 
 ## 投影与历史边界
 
-- 原文、阶段记忆、活跃模型投影分别保存。大工具输出先持久化，再以有界片段和来源引用进入投影；已有动作回执可直接作为原文来源。
+- 原文、阶段记忆和活跃模型投影分别保存。MCP 文本块与结构化结果是同一份 JSON 时，模型只接收一份。较大的工具结果使用短预览和来源引用，完整内容可从原动作回执读取。
 - 工具调用和返回成组保留。记忆更新只处理新增历史，并保留原文的读取入口；摘要失败不覆盖既有记忆，已成功的阶段可继续用于恢复。
 - 当前 Run 的任务输入保持一份，置于已有记忆和前轮历史之后、本轮模型及工具续接之前。新轮开始时补收的旧留言按原发送时间识别，排在新任务之前；本轮新通知仍在执行边界注入。全文、引用选择及摘要失败后的恢复均保留这一顺序，不改写原历史或拆开工具配对。
 - 最新阶段记忆按实例和插入顺序选取；活跃投影从该记忆之后最旧的有界历史页开始读取。超出行窗口时自动通过摘要回调推进阶段记忆，无需先达到 token 压力阈值；每次成功均持久化连续历史位置及来源引用，不扫描全历史。
@@ -34,7 +34,7 @@
   - `async input(self, run, instance)`
   - `async inbox(self, run, instance)`
   - `async reply(self, run, instance, request_id)`
-  - `async tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None)`
+  - `async tool_result(self, run, instance, policy, call, result, *, action_key=None, error=None, on_insert=None, identity=None)`
   - `async history(self, instance_id, *, after=0, limit=20)`
   - `async project(self, run, instance, definition, instructions, tools, *, summarize, output_tokens=None, summary_reserve=None, prepare_tools=None, input_cap=None)`
 
@@ -50,7 +50,7 @@
 
 窗口拒绝恢复沿用本模块的确定性选择与摘要能力，通过更低的 `input_cap` 准备候选；失败保留原记忆与原模型失败。`context.recovered` 记录原 action/attempt、前后输入哈希、估算与投影。模型执行边界验证该证据，不能将它当作用户对未知结果重发的批准。
 
-`context/selection.py` 是纯函数。正常输入走快速路径；压力触发时，在当前有界历史页上为每个完整消息组选择 full 或 reference。引用视图仅卸载可识别的正文，状态、错误、退出码、来源和未决动作保留；assistant 的调用 ID、名称、参数与对应结果不拆分。
+`context/selection.py` 是纯函数。正常输入走快速路径。达到输入压力阈值时，从当前有界历史页为每个完整消息组选取全文或引用。引用视图可卸载 MCP 结构化正文，保留简要状态、截断标记、失败诊断和原文入口。调用 ID、名称、参数与对应结果始终成组保留。
 
 先保留全部组的可行视图，确实放不下最小视图时才允许连续前缀摘要。最新完整组、未配对工具调用及不能形成可信精简事实视图的未决组禁止进入摘要前缀；可精简命令由状态视图保留其身份、生命周期和原证据引用，recent_turns 只影响固定的近期效用。后缀不能跳过消息；摘要按自身本次输出预留重新计算输入空间，并通过原回调分段提交，原记忆及来源链沿用现有恢复语义。
 

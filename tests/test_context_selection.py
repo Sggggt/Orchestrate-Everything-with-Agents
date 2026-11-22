@@ -5,7 +5,7 @@ import random
 import unittest
 
 from oea.context.selection import Group, select_views, utility
-from oea.context.views import reference_message, tool_reference
+from oea.context.views import deduplicate_mcp_result, reference_message, tool_reference
 from oea.contracts.measurement import estimate_input, measurement
 
 
@@ -70,3 +70,10 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(estimate_input(logical, []), estimate_input(wire, []))
         self.assertEqual(estimate_input(logical, [])["basis"], "heuristic_estimate")
         self.assertEqual(measurement("limit", 2, "token", "unknown", limit_source="unknown")["decision"], "unknown")
+
+    def test_distinct_mcp_text_and_rich_blocks_survive_inline_projection(self):
+        data = {"value": True}
+        for blocks in ([{"type": "text", "text": '{"value":1}'}],
+                       [{"type": "text", "text": '{"value":true}'}, {"type": "resource_link", "uri": "https://example.invalid/result"}]):
+            result = {"isError": False, "structured_content": data, "content": blocks}
+            self.assertIs(deduplicate_mcp_result(result), result)

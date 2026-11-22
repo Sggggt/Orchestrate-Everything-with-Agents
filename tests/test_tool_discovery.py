@@ -293,6 +293,50 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(inspection["rejections"]), 1)
         self.assertEqual(self.business.calls, [])
 
+    async def test_structured_tool_rejections_guide_correction_without_blocking_dispatch(self):
+        await self.save(loading="eager")
+        failures, inputs = [], []
+
+        async def invoke(request):
+            arguments = request["arguments"]
+            self.business.calls.append(arguments)
+            if arguments["value"] == 3:
+                return {"value": 4}
+            data = {"code": "MISSING_PARAMETER", "stage": "validate", "path": "query.limit",
+                    "error": "Set a bounded limit.", "retryable": False, "request_id": str(arguments["value"])}
+            result = {"isError": True, "structured_content": data,
+                      "content": [{"type": "text", "text": json.dumps(data)}]}
+            failures.append((request["action_id"], result))
+            return result
+
+        class ModelFixture:
+            async def complete(inner, model, messages, **options):
+                inputs.append(messages)
+                if len(inputs) <= 3:
+                    return call(f"request-{len(inputs)}", "calculate", {"value": len(inputs)})
+                return Completion(text="Done", usage={"prompt_tokens": 20, "completion_tokens": 2})
+
+        self.host.model_api = ModelFixture()
+        with patch.object(self.business, "invoke", invoke):
+            run = await self.submit()
+            await self.host.runs.result(run.id, timeout=5)
+        for messages, (action_id, original) in zip(inputs[1:3], failures):
+            result = json.loads([message["content"] for message in messages if message["role"] == "tool"][-1])
+            error = result["error"]
+            self.assertEqual(error["reason"], "MISSING_PARAMETER")
+            self.assertEqual(error["stage"], "validate")
+            self.assertEqual(error["details"]["path"], "query.limit")
+            self.assertEqual(error["evidence_ref"]["action_id"], action_id)
+            receipt = await self.host.runs.action(action_id)
+            self.assertEqual(json.loads(receipt["text"]), original)
+        self.assertNotIn("The same tool failure recurred", inputs[1][0]["content"])
+        self.assertIn("The same tool failure recurred", inputs[2][0]["content"])
+        self.assertNotIn("The same tool failure recurred", inputs[3][0]["content"])
+        inspection = await self.host.runs.inspect(run.id)
+        self.assertEqual(inspection["rejections"], [])
+        self.assertEqual(inspection["budget"]["usage"]["tool_calls"], 3)
+        self.assertEqual(self.business.calls, [{"value": 1}, {"value": 2}, {"value": 3}])
+
     async def submit(self, key="work", policy=None):
         instance = await self.host.instances.create(self.session["id"], "worker", name="Worker")
         return await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Calculate", idempotency_key=key,

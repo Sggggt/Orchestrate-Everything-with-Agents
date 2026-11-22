@@ -2,11 +2,37 @@
 
 import json
 
+from oea.contracts.errors import reported_tool_error
 from oea.contracts.measurement import content_integrity, content_view
 from oea.storage.persistence import encode
 
 
 BODY_FIELDS = {"text", "stdout", "stderr", "content"}
+STRUCTURED_FIELDS = ("structured_content", "structuredContent")
+RESULT_METADATA = {"state", "status", "exit_code", "truncated", "returned_rows", "row_limit", "next_offset"}
+
+
+def deduplicate_mcp_result(value):
+    """Prefer structured data when a plain text block contains the same JSON."""
+    if not isinstance(value.get("isError"), bool):
+        return value
+    blocks = value.get("content")
+    if not isinstance(blocks, list) or len(blocks) != 1:
+        return value
+    block = blocks[0]
+    if (not isinstance(block, dict) or block.keys() != {"type", "text"}
+            or block["type"] != "text" or not isinstance(block["text"], str)):
+        return value
+    structured = [value[field] for field in STRUCTURED_FIELDS if isinstance(value.get(field), dict)]
+    if not structured:
+        return value
+    try:
+        rendered = json.loads(block["text"])
+        if any(rendered == payload and encode(rendered) == encode(payload) for payload in structured):
+            return {key: item for key, item in value.items() if key != "content"}
+    except (ValueError, RecursionError):
+        pass  # Non-JSON or nonfinite text can carry independent information.
+    return value
 
 
 def deduplicate_skills(messages):
@@ -43,9 +69,27 @@ def tool_reference(value, reference):
     if not isinstance(value, dict):
         return {"content_view": content_view("excerpt", source_ref=reference)}
     result = {key: item for key, item in value.items() if key not in BODY_FIELDS or not isinstance(item, str)}
-    if isinstance(value.get("structuredContent"), dict):
-        # One declared protocol wrapper, not a recursive walk of arbitrary data.
-        result["structuredContent"] = {key: item for key, item in value["structuredContent"].items() if key not in BODY_FIELDS or not isinstance(item, str)}
+    for field in STRUCTURED_FIELDS:
+        structured = value.get(field)
+        if not isinstance(structured, dict):
+            continue
+        if not isinstance(value.get("isError"), bool):
+            if field == "structuredContent":
+                result[field] = {key: item for key, item in structured.items()
+                                 if key not in BODY_FIELDS or not isinstance(item, str)}
+            continue
+        metadata = {key: structured[key] for key in RESULT_METADATA & structured.keys()
+                    if type(structured[key]) in {int, bool, type(None)}
+                    or isinstance(structured[key], str) and len(structured[key]) <= 128}
+        result.pop(field)
+        if metadata:
+            result[field] = metadata
+        if structured.get("truncated") is True and "content_view" not in value:
+            result["truncated"] = True
+    if value.get("isError") and "error" not in result:
+        error = reported_tool_error(value)
+        if error is not None:
+            result["error"] = error
     blocks = value.get("content")
     if isinstance(blocks, list):
         retained = [item for item in blocks if not isinstance(item, dict) or item.get("type") != "text"]
@@ -53,7 +97,7 @@ def tool_reference(value, reference):
             result["content"] = retained
         else:
             result.pop("content", None)
-    integrity, complete = content_integrity(value)
+    integrity, complete = content_integrity(result)
     current = value.get("content_view")
     source = current.get("source_ref") if isinstance(current, dict) else None
     source = source or reference

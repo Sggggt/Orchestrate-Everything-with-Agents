@@ -107,8 +107,10 @@ class Budgets:
                 "recovery_reserve_tokens": recovery, "finalization_reserve_micros": tails["finalization_cost"],
                 "recovery_reserve_micros": tails["recovery_cost"], "basis": "shared_budget",
                 "instruction": "Stop expanding the work; verify and deliver existing results, state unfinished items, and use original receipts for recovery." if finishing else ""}
-        activity = one(db, "SELECT stalled_model_calls FROM run_activity WHERE run_id=?", (run["id"],))
-        if activity and activity["stalled_model_calls"] >= 6:
+        activity = one(db, "SELECT stalled_model_calls,blocker_repeats FROM run_activity WHERE run_id=?", (run["id"],))
+        if activity and activity["blocker_repeats"] > 1:
+            hint["progress_notice"] = "The same tool failure recurred. Use the latest tool diagnostic to change the arguments or method, or report the blocker with the available evidence."
+        elif activity and activity["stalled_model_calls"] >= 6:
             hint["progress_notice"] = "Recent calls have not added successful evidence. Reassess the method, inspect the original error, and retain completed work; repeated activity alone is not progress."
         return min(requested, available), hint
 

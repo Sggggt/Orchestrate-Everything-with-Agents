@@ -24,12 +24,12 @@ The frontend is served directly from local assets, with no build step. Saved Age
 
 ## Run locally
 
-Use Python 3.12+ and download the wheel matching your system from [OEA 3.4.5 releases](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.5). Windows x64 uses `win_amd64`; Linux x64 uses `linux_x86_64`. Normal installation needs no Rust compiler. After downloading the Windows wheel:
+Use Python 3.12+ and download the wheel matching your system from [OEA 3.4.6 releases](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.6). Windows x64 uses `win_amd64`; Linux x64 uses `linux_x86_64`. Normal installation needs no Rust compiler. After downloading the Windows wheel:
 
 MSVC-built Windows wheels also need the [Microsoft Visual C++ v14 x64 runtime](docs/getting-started.md#windows-runtime).
 
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.5-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.6-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
@@ -97,4 +97,4 @@ Runtime state belongs on a local disk outside Git repositories and synchronized 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and [SECURITY.md](SECURITY.md) for sensitive reports. The repository includes generic automated contract tests and source fixtures, with no populated workspace or generated test output.
 
-Licensed under [MIT](LICENSE). OEA 3.4.5 uses the `oea` package and CLI with protocol 3.0. Supported older state formats require an explicit offline migration into a new directory; updates that keep the same state schema reuse the existing data directory.
+Licensed under [MIT](LICENSE). The `oea` package and CLI use control protocol 3.0. Migrate supported older state formats offline into a new directory. Updates with the same state schema can reuse the existing data directory.

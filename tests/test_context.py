@@ -1,5 +1,6 @@
 """Bounded projections retain original evidence and incremental memory."""
 
+import hashlib
 import json
 import re
 import tempfile
@@ -455,6 +456,56 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["action_id"], "call")
         original = await self.contexts.read(self.run, self.instance, source["id"], limit=16384)
         self.assertEqual(original["text"], encode(value))
+
+    async def test_mcp_tool_projection_counts_mirrored_json_once_and_preserves_receipts(self):
+        policy = ContextPolicy(tool_inline_tokens=512)
+        for index, size in enumerate((120, 700)):
+            identity = f"result-{index}"
+            data = {"rows": [{"label": "sample " * size}], "returned_rows": 1, "truncated": size == 700}
+            value = {"isError": False, "structured_content": data,
+                     "content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
+            original = encode(value)
+            await self.store.call(lambda db: db.execute(
+                "INSERT INTO actions(id,run_id,operation_key,name,input_hash,input_json,side_effects,state,result_json,created_at,updated_at) "
+                "VALUES(?,'r',?,'mcp_example','hash','{}','external','completed',?,1,1)", (identity, identity, original)), transaction=True)
+            call = {"id": identity, "function": {"name": "mcp_example", "arguments": "{}"}}
+            await self.contexts.append(self.run, self.instance, {"role": "assistant", "tool_calls": [call]}, "assistant-" + identity)
+            message = await self.contexts.tool_result(self.run, self.instance, policy, call, value, action_key=identity)
+            view = json.loads(message["content"])
+            self.assertGreater(estimated_tokens(original), policy.tool_inline_tokens)
+            self.assertLessEqual(estimated_tokens(message["content"]), policy.tool_inline_tokens)
+            self.assertNotIn("content", view)
+            if index == 0:
+                self.assertEqual(view["structured_content"], data)
+                self.assertNotIn("content_view", view)
+            else:
+                self.assertEqual(view["structured_content"], {"returned_rows": 1, "truncated": True})
+                self.assertFalse(view["content_view"]["source_complete"])
+                reference = view["content_view"]["source_ref"]["reference"]
+                source = await self.contexts.read(self.run, self.instance, reference, limit=len(original))
+                self.assertEqual(source["text"], original)
+                self.assertEqual(source["sha256"], hashlib.sha256(original.encode()).hexdigest())
+            saved = await self.store.call(lambda db: one(db, "SELECT result_json FROM actions WHERE id=?", (identity,)))
+            self.assertEqual(saved["result_json"], original)
+
+    async def test_older_structured_tool_body_can_be_referenced_without_a_summary(self):
+        call = {"id": "old-call", "function": {"name": "mcp_example", "arguments": "{}"}}
+        result = {"isError": False, "structured_content": {"rows": [{"name": "retained evidence " * 500}], "returned_rows": 1}}
+        original = {"role": "tool", "tool_call_id": "old-call", "content": encode(result)}
+        await self.append_messages([{"role": "assistant", "tool_calls": [call]}, original, {"role": "assistant", "content": "Observed one row."}])
+        definition = self.definition.model_copy(update={"context": ContextPolicy(input_tokens=1024)})
+
+        async def unexpected_summary(*args):
+            self.fail("The existing history reference fits without summarizing")
+
+        messages, projection = await self.contexts.project(self.run, self.instance, definition, "Review the evidence.", [], summarize=unexpected_summary)
+        message_groups(messages)
+        self.assertGreater(projection["selection"]["reference_groups"], 0)
+        tool = json.loads(next(message["content"] for message in messages if message["role"] == "tool"))
+        self.assertEqual(tool["structured_content"], {"returned_rows": 1})
+        self.assertEqual(tool["content_view"]["source_ref"]["read_operation"], "read_history")
+        history = await self.contexts.history(self.instance["id"])
+        self.assertEqual(history["items"][1]["message"], original)
 
     async def test_summary_failure_leaves_previous_memory_and_sources_intact(self):
         await self.store.call(lambda db: db.execute("INSERT INTO memories VALUES('memory','i','r',0,'[]','Confirmed fact remains',1)"), transaction=True)

@@ -8,7 +8,7 @@ from oea.contracts.measurement import estimated_tokens, estimate_input, measurem
 from oea.storage.persistence import encode, new_id, now_ms, one, rows
 from oea.context.selection import Group, select_views
 from oea.context.facts import CommandFacts
-from oea.context.views import activity_group, deduplicate_skills, reference_message, tool_reference
+from oea.context.views import STRUCTURED_FIELDS, activity_group, deduplicate_mcp_result, deduplicate_skills, reference_message, tool_reference
 
 
 CONVERSATION = """SELECT c.id,c.position,c.run_id,c.resumption_id,a.name AS action_name,a.state AS action_state,m.created_at AS message_created_at,
@@ -260,32 +260,55 @@ class ContextStore:
                     (now_ms(), request["source_message_id"], instance["id"], run["id"]))
         await self.store.call(apply, transaction=True)
 
-    async def tool_result(self, run, instance, policy, call, result, *, action_key=None, on_insert=None, identity=None):
-        text = encode(result)
+    async def tool_result(self, run, instance, policy, call, result, *, action_key=None, error=None, on_insert=None, identity=None):
+        view = deduplicate_mcp_result(result) if action_key else result
+        if error is not None:
+            view = {**view, "error": error}
+        text = encode(view)
         identity = identity or run["id"] + ":tool:" + call["id"]
         tokens = estimated_tokens(text)
-        if action_key and tokens <= policy.tool_inline_tokens:
-            def append(db):
+        save_view = view is not result
+        if call["function"]["name"] not in {"read_context", "read_skill", "read_history", "read_action"} and tokens > policy.tool_inline_tokens:
+            original = text if view is result else encode(result)
+            reference = await self.source(run, instance, original, "tool:" + call["function"]["name"], action_key=action_key)
+            excerpt = tool_reference(view, {"kind": "context", "reference": reference, "read_operation": "read_context"})
+            body = "\n".join(result[key] for key in ("text", "stdout", "stderr") if isinstance(result.get(key), str))
+            mcp_result = isinstance(result.get("isError"), bool) and any(field in result for field in STRUCTURED_FIELDS)
+            if mcp_result and not body and isinstance(result.get("content"), list):
+                body = "\n".join(block["text"] for block in result["content"] if isinstance(block, dict)
+                                 and block.get("type") == "text" and isinstance(block.get("text"), str))
+            if mcp_result and not body:
+                body = text
+            available = max(0, policy.tool_inline_tokens - estimated_tokens(excerpt) - 16)
+            if body and available:
+                excerpt["text"] = prune_text(body, available, "\n[Excerpt; read the source reference.]\n")
+            encoded = encode(excerpt)
+            if mcp_result and body and available and estimated_tokens(encoded) > policy.tool_inline_tokens:
+                del excerpt["text"]
+                encoded = encode(excerpt)
+            if estimated_tokens(encoded) < tokens:
+                view = excerpt
+                text = encoded
+                save_view = True
+        message = {"role": "tool", "tool_call_id": call["id"], "content": text}
+        if action_key and (error is not None or not save_view and tokens <= policy.tool_inline_tokens):
+            def append_action(db):
                 receipt = one(db, "SELECT id FROM actions WHERE run_id=? AND operation_key=? AND state='completed'", (run["id"], action_key))
                 require(receipt is not None, "RECEIPT_UNAVAILABLE", "Original tool receipt is unavailable")
-                db.execute("INSERT OR IGNORE INTO conversation(id,instance_id,run_id,role,action_id,tool_call_id,created_at) VALUES(?,?,?,'tool',?,?,?)",
-                           (identity, instance["id"], run["id"], receipt["id"], call["id"], now_ms()))
+                if error is not None:
+                    error["action_id"] = receipt["id"]
+                    if isinstance(error.get("evidence_ref"), dict):
+                        error["evidence_ref"]["action_id"] = receipt["id"]
+                    message["content"] = encode(view)
+                body_json = encode(self.redact(message)) if save_view else None
+                db.execute("INSERT INTO conversation(id,instance_id,run_id,role,body_json,action_id,tool_call_id,created_at) "
+                           "VALUES(?,?,?,'tool',?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                           (identity, instance["id"], run["id"], body_json, None if save_view else receipt["id"], call["id"], now_ms()))
                 if db.changes() and on_insert is not None:
                     on_insert(db, db.last_insert_rowid())
-            await self.store.call(append, transaction=True)
-            return {"role": "tool", "tool_call_id": call["id"], "content": text}
-        if call["function"]["name"] not in {"read_context", "read_skill", "read_history", "read_action"} and tokens > policy.tool_inline_tokens:
-            reference = await self.source(run, instance, text, "tool:" + call["function"]["name"], action_key=action_key)
-            view = tool_reference(result, {"kind": "context", "reference": reference, "read_operation": "read_context"})
-            body = "\n".join(result[key] for key in ("text", "stdout", "stderr") if isinstance(result.get(key), str))
-            available = max(0, policy.tool_inline_tokens - estimated_tokens(view) - 16)
-            if body and available:
-                view["text"] = prune_text(body, available, "\n[Excerpt; read the source reference.]\n")
-            encoded = encode(view)
-            if estimated_tokens(encoded) < tokens:
-                text = encoded
-        message = {"role": "tool", "tool_call_id": call["id"], "content": text}
-        await self.append(run, instance, message, identity, on_insert=on_insert)
+            await self.store.call(append_action, transaction=True)
+        else:
+            await self.append(run, instance, message, identity, on_insert=on_insert)
         return message
 
     async def history(self, instance_id, *, after=0, limit=20):
