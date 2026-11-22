@@ -3,7 +3,7 @@
 1. 首次在线用 `host.status` 确认版本与宿主。`runs.list` 按项目分页读取全部历史；需要当前会话时传 session_id，待处理用 view=attention。保留返回游标和实际 ID。
 2. 独立上下文用 instances.create；追加到既有实例使用 runs.submit，携带原意图幂等键。一个实例只有一个写入者，独立实例可并行。
 3. `runs.get` 看状态，`runs.inspect` 看动作、预算和产物。完整结果用 runs.result；大输出通过 results.read，模型历史用 runs.attempts 和固定 attempt_id 的 runs.action。
-4. waiting 输入用 `runs.resume` 和原 Run。失败先看错误、检查点和动作。工具反复报错时看 `runs.inspect` 的 `activity.blocker`，再用证据中的 `action_id` 读取 `runs.action` 原回执。根据阶段和具体原因调整方法，结果未知时沿原动作核对。修复配置后显式继续，默认刷新模型与能力。
+4. waiting 输入用 `runs.resume` 和原 Run。失败先看错误、检查点和动作。工具反复报错时看 `runs.inspect` 的 `activity.blocker`。证据含 `action_id` 时用 `runs.action` 读取原回执。派发前被拒绝的调用看 `rejections` 的字段诊断。根据阶段和具体原因调整方法，结果未知时沿原动作核对。修复配置后显式继续，默认刷新模型与能力。
 5. `runs.cancel` 表示请求取消；核对 cancellation、stopped_at 和原动作，区分已停止和 needs_review。晚到结果保留在原 action，不自动重派。
 6. 连接中断时，用 `events.list` 按持久游标补读原 Run。看到 `model.reconnecting` 时继续观察原 Run，宿主会有限重连。重连结束后用 `runs.get` 核对终态，需要部分正文时按原 `attempt_id` 读取回执。
 7. 独立核对产物内容、来源和实际业务效果。报告实际完成、真实调用量和未验证范围，不把配置成功或状态绿色当作业务正确。

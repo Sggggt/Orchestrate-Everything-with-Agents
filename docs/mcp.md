@@ -18,7 +18,7 @@ Keep a stable consumer identity within one conversation. Independent conversatio
 
 For platform task history, discover `runs.list` and pass `project_id`; `session_id` is optional and `view="attention"` selects outstanding user attention. When the user requests acknowledgement, `runs.mark_handled` accepts up to 100 selected tasks with their observed `updated_at`. It returns acknowledged items and revision conflicts, retaining the original execution and accounting states. It does not confirm side effects or cancel work. Default architecture binding remains available while historical tasks need attention and applies only to subsequently accepted Runs.
 
-For tool failures, `runs.inspect` shows the recorded blocker and repeated occurrences. Read the original tool result with `runs.action` using its `action_id`. A compact model-facing result can reference the full receipt. Use the reported stage and cause to decide whether to correct the next call or inspect an unresolved outcome.
+For tool failures, `runs.inspect` shows the recorded blocker and repeated occurrences. When the evidence includes an `action_id`, read the original tool result with `runs.action`. For a call rejected before dispatch, use the field diagnostics in `rejections`. Use the reported stage and cause to decide whether to correct the next call or inspect an unresolved outcome.
 
 For a platform instance's conversation, use `instances.history` to read a bounded page and `instances.message` to read text from one entry. Discover only the operation you need. Both use the existing control MCP tools and check the owning instance and project.
 
