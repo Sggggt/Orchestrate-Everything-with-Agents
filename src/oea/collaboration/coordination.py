@@ -120,7 +120,7 @@ class Coordination:
                 return {"cards": cards}
             if name == "list_members":
                 limit, cursor = args.get("limit", 25), args.get("cursor", 0)
-                values = rows(db, "SELECT i.rowid AS position,i.id,i.name,i.agent_id,i.role,b.id AS inbox_board_id FROM instances i JOIN agent_definitions a ON a.id=i.agent_id LEFT JOIN boards b ON b.owner_instance_id=i.id AND b.scope='inbox' WHERE i.session_id=? AND i.agent_id IN (" + ",".join("?" for _ in departments) + ") AND json_extract(a.config_json,'$.enabled')=1 AND i.rowid>? ORDER BY i.rowid LIMIT ?", (instance["session_id"], *departments, cursor, limit + 1))
+                values = rows(db, "SELECT i.rowid AS position,i.id,i.name,i.agent_id,i.role,b.id AS inbox_board_id FROM instances i JOIN agent_definitions a ON a.id=i.agent_id LEFT JOIN boards b ON b.owner_instance_id=i.id AND b.scope='inbox' WHERE i.session_id=? AND i.agent_id IN (" + ",".join("?" for _ in departments) + ") AND i.removed_at IS NULL AND json_extract(a.config_json,'$.enabled')=1 AND i.rowid>? ORDER BY i.rowid LIMIT ?", (instance["session_id"], *departments, cursor, limit + 1))
                 return {"items": [value | {"can_notify": True, "can_assign": actor[3] and value["id"] != instance["id"], "inbox_readable": bool(one(db, "SELECT 1 FROM board_readers WHERE board_id=? AND instance_id=?", (value["inbox_board_id"], instance["id"])))} for value in values[:limit]],
                         "cursor": values[limit - 1]["position"] if len(values) > limit else None}
             if name == "list_boards":
@@ -136,7 +136,7 @@ class Coordination:
             if name == "list_instances":
                 agent = args.get("agent_id", instance["agent_id"])
                 limit, cursor = args.get("limit", 25), args.get("cursor", 0)
-                query = "SELECT i.rowid AS position,i.* FROM instances i WHERE i.session_id=? AND i.agent_id=? AND i.rowid>?"
+                query = "SELECT i.rowid AS position,i.* FROM instances i WHERE i.session_id=? AND i.agent_id=? AND i.rowid>? AND i.removed_at IS NULL"
                 params = [instance["session_id"], agent, cursor]
                 if agent != instance["agent_id"]:
                     query += " AND EXISTS(SELECT 1 FROM runs r WHERE r.instance_id=i.id AND r.root_run_id IS ? AND r.root_workflow_run_id IS ?)"

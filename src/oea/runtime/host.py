@@ -96,7 +96,7 @@ class Host:
         for area, service, names in (("projects", self.projects, ("create", "get", "list", "update", "delete")),
                                      ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
-                                     ("instances", self.instances, ("create", "get", "list", "history", "message", "mark_read")),
+                                     ("instances", self.instances, ("create", "get", "list", "history", "message", "mark_read", "remove")),
                                      ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action", "mark_handled")),
                                      ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "candidates", "candidate", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),

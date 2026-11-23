@@ -19,7 +19,7 @@ function canvasRoute(){if(!location.hash.startsWith("#agent-canvas?"))return nul
 const initialCanvas=canvasRoute();
 export const app={state:{canvasRoute:initialCanvas,page:initialCanvas?"agent-canvas":({workspace:"overview",settings:"agent-settings",agents:"agents",mcp:"mcp",skills:"skills",workflows:"workflows",applications:"applications"}[location.hash.slice(1)]||"overview"),projects:[],agents:[],instances:[],sessions:[],project:null,session:null,schema:null,status:null,epoch:0,openTabs:[],selectedInstance:null,runs:[],attentionRuns:[],artifacts:[],summary:{},unread:null,mcp:[],skills:[]},rpc};
 app.runListeners=new Set();
-let stream=null,refreshing=false,refreshAgain=false,sessionsChanged=false,instanceLoad=0;
+let stream=null,refreshing=false,refreshAgain=false,sessionsChanged=false,instancesChanged=false,instanceLoad=0;
 function frame(preserve=false) {
   document.body.classList.toggle("agent-canvas-open",app.state.page==="agent-canvas");
   const s=app.state,previous=preserve?$("#page"):null,focused=preserve?document.activeElement:null;
@@ -140,8 +140,16 @@ async function scheduleRefresh(fact){
   if(fact.kind.startsWith("workflow.")){app.onWorkflowEvent?.(fact);app.onWorkflowRunEvent?.(fact);return;}
   if(!["message.","run.","instance.","session.","artifact."].some(prefix=>fact.kind.startsWith(prefix)))return;
   if(fact.kind.startsWith("session."))sessionsChanged=true;
+  const s=app.state;
+  if(fact.session_id===s.session?.id){
+    if(fact.kind==="instance.created"||fact.kind==="instance.removed")instancesChanged=true;
+    if(fact.kind==="instance.removed"){
+      s.openTabs=s.openTabs.filter(id=>id!==fact.instance_id);
+      if(s.selectedInstance?.id===fact.instance_id)s.selectedInstance={...s.selectedInstance,removed_at:fact.data.removed_at};
+    }
+  }
   if(refreshing){refreshAgain=true;return;}refreshing=true;
-  try {do{refreshAgain=false;const updateSessions=sessionsChanged;sessionsChanged=false;const selected=app.state.session?.id;if(selected){const session=await rpc("sessions.get",{session_id:selected});if(app.state.session?.id===selected)app.state.session=session;}if(updateSessions||app.state.session?.archived){const switched=app.state.session?.archived;await app.reloadSessions();if(switched)app.state.page="overview";}else await loadInstances();if(app.state.page==="chat")await refreshChat(app);else if(["overview","artifacts","conversation"].includes(app.state.page)&&!$(".v2-dialog-backdrop,.modal-backdrop"))await app.render();app.refreshFrame();}while(refreshAgain);}
+  try {do{refreshAgain=false;const updateSessions=sessionsChanged,updateInstances=instancesChanged;sessionsChanged=false;instancesChanged=false;const selected=s.session?.id;if(selected){const session=await rpc("sessions.get",{session_id:selected});if(s.session?.id===selected)s.session=session;}if(updateSessions||s.session?.archived){const switched=s.session?.archived;await app.reloadSessions();if(switched)s.page="overview";}else await loadInstances();if(s.page==="chat")await refreshChat(app);else if((updateInstances&&s.page==="overview")||(["overview","artifacts","conversation"].includes(s.page)&&!$(".v2-dialog-backdrop,.modal-backdrop")))await app.render();app.refreshFrame();}while(refreshAgain);}
   catch(error){notify(error.message,true);}finally{refreshing=false;}
 }
 function createProject(){const form=element(`<form><div class="field"><label for="project-name">项目名称</label><input id="project-name" required maxlength="80"></div><div class="field"><label for="project-folder">项目原件目录（可选）</label><input id="project-folder" title="原件默认只读"></div><p>${iconButton("plus","创建项目",{type:"submit",className:"primary"})}</p></form>`);const close=modal("新建项目",form);form.onsubmit=async event=>{event.preventDefault();try{const project=await rpc("projects.create",{name:$("#project-name",form).value,folder:$("#project-folder",form).value||null});app.state.projects.push(project);close();await loadProject(project.id);}catch(error){notify(error.message,true);}};}

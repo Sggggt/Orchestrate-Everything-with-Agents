@@ -45,7 +45,8 @@ export function disposeConversation(){active?.close();active=null;}
 export async function renderConversation(app,root){
   const s=app.state,instance=s.selectedInstance;if(!instance){disposeConversation();await app.navigate("overview");return;}
   root.className="conversation-page";
-  if(active?.root===root&&active.instanceId===instance.id){await active.refresh();return;}
+  const removed=Boolean(instance.removed_at);
+  if(active?.root===root&&active.instanceId===instance.id&&active.removed===removed){await active.refresh();return;}
   disposeConversation();
   const projectId=s.project.id,sessionId=s.session.id,definition=s.agents.find(row=>row.definition.id===instance.agent_id)?.definition;
   const model=instance.role==="manager"?definition?.manager?.model:definition?.model;
@@ -54,6 +55,7 @@ export async function renderConversation(app,root){
   const draft=drafts.get(instance.id);
   root.innerHTML=`<div class="chat-layout"><section class="chat-panel"><header class="chat-header">${avatar(s,instance.agent_id,true)}<div class="chat-identity"><h2>${escape(instance.name)}</h2><p>${escape(definition?.name||"Agent")} · ${instance.role==="manager"?"manager":"独立对话"}</p></div><div class="chat-header-actions"><button class="icon-btn" id="conversation-settings" title="配置 Agent" aria-label="配置 Agent">${icon("settings")}</button><span id="conversation-state"></span><button class="icon-btn" id="instance-inspector" aria-label="切换任务记录" aria-expanded="false">${icon("panel")}</button></div></header><div class="conversation transcript" aria-label="对话记录"><div class="transcript-inner"><button class="btn small load-more" id="older-conversation" hidden>加载更早的消息</button><div id="conversation-entries"></div><div id="conversation-live" aria-live="off"></div><div id="conversation-notice"></div></div></div><div class="composer-area"><button class="conversation-jump" id="conversation-latest" hidden>${icon("arrow")} 回到最新</button><form id="composer" class="composer"><textarea id="chat-input" aria-label="发送给 ${escape(instance.name)} 的消息" placeholder="与 ${escape(definition?.name||instance.name)} 一起工作…" rows="2">${escape(draft.text)}</textarea><div class="composer-footer"><div class="composer-tools"><button type="button" class="icon-btn" id="conversation-upload" title="添加工作产物" aria-label="上传产物">${icon("plus")}</button><span id="composer-status">Enter 发送 · Shift + Enter 换行</span></div><span class="composer-model" title="${escape(modelLabel)}">${escape(modelLabel)}</span><button class="composer-send" type="submit" aria-label="发送消息">${icon("arrow")}</button><button class="composer-stop" type="button" id="conversation-stop" aria-label="请求停止当前工作" hidden><span></span></button></div></form></div></section><aside class="inspector" aria-label="任务记录"><div class="inspector-section"><h3>任务记录</h3><div id="conversation-runs"></div><button class="text-link" id="older-runs" hidden>更多任务</button></div><details class="inspector-section"><summary>执行上下文</summary><dl class="v2-kv"><dt>实例</dt><dd>${escape(instance.id)}</dd><dt>模型</dt><dd>${escape(modelLabel)}</dd></dl></details></aside></div>`;
   const feed=$(".transcript",root),editor=$("#chat-input",root),container=$("#conversation-entries",root),live=$("#conversation-live",root),jump=$("#conversation-latest",root);
+  if(removed){$("#composer",root).classList.add("is-read-only");editor.readOnly=true;}
   let entries=[],before=null,runs=[],runCursor=null,first=true,closed=false,loading=false,again=false,stream=null,streamId=null,submitting=false,refreshTimer=null,liveValue=null,readPosition=0,marking=false;
   const nodes=new Map();
   const current=()=>!closed&&s.project?.id===projectId&&s.selectedInstance?.id===instance.id&&s.page==="conversation";
@@ -108,7 +110,7 @@ export async function renderConversation(app,root){
     for(const button of root.querySelectorAll("[data-evidence-action]"))button.onclick=()=>showAction(button.dataset.evidenceAction,button.dataset.evidenceAttempt||null);
     const stop=$("#conversation-stop",root),send=$(".composer-send",root);
     stop.hidden=!running;stop.disabled=!!running?.cancel_requested_at;send.hidden=!!running;send.disabled=submitting||!editor.value.trim();
-    $("#composer-status",root).textContent=running?.cancel_requested_at?"停止请求已提交，等待执行确认":running?"正在工作 · 可先起草下一条消息":"Enter 发送 · Shift + Enter 换行";
+    $("#composer-status",root).textContent=removed?"实例已删除，历史记录可查看。":running?.cancel_requested_at?"停止请求已提交，等待执行确认":running?"正在工作 · 可先起草下一条消息":"Enter 发送 · Shift + Enter 换行";
     if((running?.id||null)!==streamId){
       stream?.close();stream=null;streamId=running?.id||null;
       if(running||latest?.state==="completed"){liveValue=null;live.innerHTML="";}
@@ -178,7 +180,7 @@ export async function renderConversation(app,root){
   }
   const visible=()=>{if(document.visibilityState==="visible")markRead();};
   document.addEventListener("visibilitychange",visible);document.addEventListener("oea-modal-close",visible);
-  active={root,instanceId:instance.id,refresh,close(){closed=true;clearTimeout(refreshTimer);stream?.close();document.removeEventListener("visibilitychange",visible);document.removeEventListener("oea-modal-close",visible);}};
+  active={root,instanceId:instance.id,removed,refresh,close(){closed=true;clearTimeout(refreshTimer);stream?.close();document.removeEventListener("visibilitychange",visible);document.removeEventListener("oea-modal-close",visible);}};
   $("#older-conversation",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const older=await readHistory({before});if(!current())return;entries=mergeEntries(entries,older.items);before=older.cursor;draw({prepend:true});}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   $("#older-runs",root).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const page=await rpc("runs.list",{session_id:sessionId,project_id:projectId,instance_id:instance.id,cursor:runCursor,limit:25});if(!current())return;runs.push(...page.items);runCursor=page.cursor;drawState();}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
   $("#conversation-settings",root).onclick=()=>app.openSettings(instance.agent_id);
@@ -195,6 +197,7 @@ export async function renderConversation(app,root){
   });
   $("#conversation-stop",root).onclick=async event=>{const run=runs.find(value=>liveStates.has(value.state)),button=event.currentTarget;if(!run)return;button.disabled=true;try{await rpc("runs.cancel",{run_id:run.id});notify("停止请求已提交，实际结果以执行回执为准。");await refresh();}catch(error){button.disabled=false;notify(error.message,true);}};
   $("#composer",root).onsubmit=async event=>{
+    if(removed){event.preventDefault();return;}
     event.preventDefault();const input=editor.value;if(submitting||!input.trim()||runs.some(run=>liveStates.has(run.state)))return;
     const key=draft.key,artifact_ids=[...(attachments.get(instance.id)?.keys()||[])].filter(id=>input.includes(id));submitting=true;$(".composer-send",root).disabled=true;
     try{

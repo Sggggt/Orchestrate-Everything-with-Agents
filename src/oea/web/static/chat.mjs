@@ -21,7 +21,7 @@ export async function renderChat(app,root){
   document.addEventListener("visibilitychange",active.onVisible);document.addEventListener("oea-modal-close",active.onVisible);
   $("#collaboration-mode").value=s.session.mode;
   $("#collaboration-mode").onchange=async event=>{try{s.session=await rpc("sessions.set_mode",{session_id:s.session.id,mode:event.target.value,expected_epoch:s.session.epoch});updateTargets();notify("协作模式已更新，已接受的实例工作保留。");}catch(error){event.target.value=s.session.mode;notify(error.message,true);}};
-  $("#add-instance").onclick=()=>addInstance(app);
+  $("#add-instance").onclick=()=>addInstance(app,{onCreated:()=>renderChat(app,$("#page"))});
   $("#message-content").value=d.content;
   $("#message-content").oninput=event=>{d.content=event.target.value;d.key=crypto.randomUUID();};
   $("#message-content").onkeydown=event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();$(".v2-composer").requestSubmit();}};
@@ -109,19 +109,26 @@ export async function refreshChat(app){
   }
   view.updateTargets?.();const mode=$("#collaboration-mode");if(mode)mode.value=app.state.session.mode;
 }
-function addInstance(app){
-  const s=app.state,agents=s.agents.map(row=>row.definition).filter(agent=>agent.enabled);
-  const content=element(`<form><div class="field"><label for="instance-agent">Agent</label><select id="instance-agent">${agents.map(agent=>`<option value="${escape(agent.id)}">${escape(agent.name)}</option>`).join("")}</select></div><div class="field" data-instance-role hidden><label for="instance-role">角色</label><select id="instance-role"><option value="main">主 Agent</option><option value="manager">manager</option></select></div><div class="field"><label for="instance-name">实例名称</label><input id="instance-name" required maxlength="256" placeholder="例如：文档审阅 01"></div><p><button class="btn primary">添加实例</button></p></form>`);
+export function addInstance(app,{agentId=null,onCreated}={}){
+  const s=app.state,session=s.session,page=s.page;
+  if(!session){app.createSession();return;}
+  const agents=s.agents.map(row=>row.definition).filter(agent=>agent.enabled&&(!agentId||agent.id===agentId));
+  if(!agents.length){notify("当前没有可添加实例的 Agent。",true);return;}
+  const content=element(`<form><div class="field"><label for="instance-agent">Agent</label><select id="instance-agent" ${agentId?"disabled":""}>${agents.map(agent=>`<option value="${escape(agent.id)}">${escape(agent.name)}</option>`).join("")}</select></div><div class="field" data-instance-role hidden><label for="instance-role">角色</label><select id="instance-role"><option value="main">主 Agent</option><option value="manager">manager</option></select></div><div class="field"><label for="instance-name">实例名称</label><input id="instance-name" required maxlength="256" placeholder="例如：文档审阅 01"></div><p><button class="btn primary">添加实例</button></p></form>`);
   const agent=$("#instance-agent",content),role=$("#instance-role",content),roleField=$("[data-instance-role]",content);
   const updateRole=()=>{
-    roleField.hidden=s.session.mode!=="collaborative"||!agents.find(item=>item.id===agent.value)?.manager;
+    roleField.hidden=session.mode!=="collaborative"||!agents.find(item=>item.id===agent.value)?.manager;
     if(roleField.hidden)role.value="main";
   };
   agent.onchange=updateRole;updateRole();
   const close=modal("添加工作实例",content);
+  if(agentId)$("#instance-name",content).focus();
   content.onsubmit=async event=>{
     event.preventDefault();
-    try{await rpc("instances.create",{session_id:s.session.id,agent_id:agent.value,name:$("#instance-name",content).value,role:role.value});close();await app.reloadInstances();await renderChat(app,$("#page"));}
+    const button=$("button",content);if(button.disabled)return;button.disabled=true;
+    try{await rpc("instances.create",{session_id:session.id,agent_id:agent.value,name:$("#instance-name",content).value,role:role.value});await close();
+      if(s.session?.id===session.id&&s.page===page){await app.reloadInstances();if(s.session?.id===session.id&&s.page===page)await onCreated?.();}}
     catch(error){notify(error.message,true);}
+    finally{button.disabled=false;}
   };
 }

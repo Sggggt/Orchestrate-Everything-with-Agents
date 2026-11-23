@@ -448,7 +448,7 @@ class Instances:
         if role == "manager":
             require(session["mode"] == "collaborative" and definition.manager is not None,
                     "MANAGER_UNAVAILABLE", "Enable collaborative mode and configure this manager")
-        previous = one(db, "SELECT * FROM instances WHERE session_id=? AND agent_id=? AND name=? AND role=?", (session_id, agent_id, name, role))
+        previous = one(db, "SELECT * FROM instances WHERE session_id=? AND agent_id=? AND name=? AND role=? AND removed_at IS NULL", (session_id, agent_id, name, role))
         if previous:
             return previous
         if scope.source == "application":
@@ -462,7 +462,7 @@ class Instances:
         config = definition.model_dump(mode="json")
         if scope.source == "platform" and not config["workspace"]["project"]:
             config["workspace"]["project"] = project["folder"]
-        db.execute("INSERT INTO instances VALUES(?,?,?,?,?,?,?,?,NULL,?)",
+        db.execute("INSERT INTO instances(id,project_id,session_id,agent_id,name,role,config_json,workspace_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                    (identity, session["project_id"], session_id, agent_id, name, role, encode(config), "{}", now_ms()))
         if scope.source == "platform":
             self.host.boards._create(db, session["project_id"], "Inbox", "inbox", session_id, identity)
@@ -479,9 +479,36 @@ class Instances:
     def view(row):
         return {key: row[key] for key in ("id", "project_id", "session_id", "agent_id", "name", "role", "active_run_id", "created_at")}
 
+    async def remove(self, instance_id: str, project_id: str):
+        """Remove an idle platform instance from active use while preserving its history."""
+        self.host.assert_open()
+
+        def write(db):
+            instance = need(db, "instances", instance_id)
+            session = need(db, "sessions", instance["session_id"])
+            require(instance["project_id"] == project_id and session["source"] == "platform",
+                    "PERMISSION_DENIED", "Instance is outside this platform project")
+            if instance["removed_at"] is not None:
+                return instance["removed_at"], True
+            pending = one(db, "SELECT id,state FROM runs WHERE instance_id=? AND state IN ('accepted','running','waiting','needs_review') LIMIT 1", (instance_id,))
+            if not pending:
+                pending = one(db, "SELECT w.id,w.state FROM runs r JOIN workflow_runs w ON w.id=r.root_workflow_run_id WHERE r.instance_id=? AND w.state IN ('accepted','running','waiting','needs_review') LIMIT 1", (instance_id,))
+            require(not pending and not instance["active_run_id"], "INSTANCE_IN_USE",
+                    "Finish or cancel the instance's pending work and inspect unresolved actions before deletion", details=pending or {})
+            removed_at = now_ms()
+            db.execute("UPDATE instances SET removed_at=? WHERE id=?", (removed_at, instance_id))
+            event(db, "instance.removed", project_id=project_id, session_id=session["id"], instance_id=instance_id,
+                  data={"agent_id": instance["agent_id"], "removed_at": removed_at})
+            return removed_at, False
+
+        removed_at, reused = await self.host.store.call(write, transaction=True)
+        if not reused:
+            self.host.notify()
+        return {"instance_id": instance_id, "removed_at": removed_at, "reused": reused}
+
     async def get(self, instance_id: str):
         row = await self.host.store.call(lambda db: need(db, "instances", instance_id))
-        return {**self.view(row), "workspace": json.loads(row["workspace_json"])}
+        return {**self.view(row), "removed_at": row["removed_at"], "workspace": json.loads(row["workspace_json"])}
 
     async def history(self, instance_id: str, project_id: str, *, before: int | None = None, after: int | None = None,
                       limit: int = 25, message_page: bool = False):
@@ -586,7 +613,7 @@ class Instances:
         def read(db):
             need(db, "sessions", session_id)
             consumer = reading.reader(consumer_id, required=False)
-            query = "SELECT i.rowid AS position,i.*," + (reading.instance_count_sql() if consumer else "NULL") + " AS unread_count FROM instances i WHERE i.session_id=? AND i.rowid>?"
+            query = "SELECT i.rowid AS position,i.*," + (reading.instance_count_sql() if consumer else "NULL") + " AS unread_count FROM instances i WHERE i.session_id=? AND i.rowid>? AND i.removed_at IS NULL"
             params = [consumer, session_id, cursor] if consumer else [session_id, cursor]
             if agent_id is not None:
                 query += " AND i.agent_id=?"

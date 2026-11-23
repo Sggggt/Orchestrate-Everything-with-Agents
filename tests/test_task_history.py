@@ -11,7 +11,7 @@ from pathlib import Path
 from oea import AgentDefinition, Model, RunSpec, RunHandlingSelection
 from oea.contracts.errors import RuntimeFault
 from oea.migration.handling import PRE_HANDLING_SCHEMA
-from oea.migration.upgrade import upgrade_state
+from oea.migration.upgrade import PRE_INSTANCE_REMOVAL_SCHEMA, upgrade_state
 from oea.runtime.host import Host
 from oea.storage.persistence import one
 
@@ -146,6 +146,9 @@ class TaskHistoryTests(unittest.IsolatedAsyncioTestCase):
         frozen = Path(__file__).parents[1] / 'src/oea/migration/schema-v3-pre-handling.sql'
         self.assertEqual(hashlib.sha256(frozen.read_text(encoding='utf-8').encode()).hexdigest(), PRE_HANDLING_SCHEMA)
         with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
+            db.execute('DROP INDEX instances_identity')
+            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
+            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
             db.execute('DROP INDEX usage_attention')
             db.execute('ALTER TABLE runs DROP COLUMN handled_at')
             db.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (PRE_HANDLING_SCHEMA,))
@@ -162,3 +165,27 @@ class TaskHistoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run['state'], 'completed')
             self.assertEqual(run['handling_state'], 'pending')
             self.assertIsNone(run['handled_at'])
+
+    async def test_upgrade_from_revision_four_preserves_instance_history_and_allows_removal(self):
+        task = await self.seed('original')
+        identity = self.instances['session-p']
+        await self.host.aclose()
+        source = self.root / 'source'
+        with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
+            db.execute('DROP INDEX instances_identity')
+            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
+            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
+            db.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (PRE_INSTANCE_REMOVAL_SCHEMA,))
+            db.execute("UPDATE metadata SET value='4' WHERE key='schema_revision'")
+        before = (source / 'oea.sqlite').read_bytes()
+        target = self.root / 'upgraded'
+        self.assertTrue(upgrade_state(source, target=target, apply=True)['applied'])
+        self.assertEqual((source / 'oea.sqlite').read_bytes(), before)
+        async with Host(target) as upgraded:
+            original = await upgraded.instances.get(identity)
+            self.assertIsNone(original['removed_at'])
+            await upgraded.instances.remove(identity, 'p')
+            replacement = await upgraded.instances.create('session-p', 'agent-p', name=original['name'])
+            self.assertEqual([item['id'] for item in (await upgraded.instances.list('session-p'))['items']], [replacement['id']])
+            self.assertNotEqual(replacement['id'], identity)
+            self.assertEqual((await upgraded.runs.get(task))['state'], 'completed')

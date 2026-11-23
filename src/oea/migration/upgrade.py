@@ -22,6 +22,7 @@ PRE_READING_SCHEMA = "f1ae954f76e97a33ed398e63efcfd4a9a689e27be0988264efc54be1d2
 PRE_DELIVERY_SCHEMA = "63eaabe949e6e57f3fb5d024a6a78bbee84c89570b6bdd2a7dfebb9c804bb011"
 LATEST_V2_SCHEMA = "801fb5a11b1e183934b768b948afccb5b810fd3da206561d4edfefb2e4b46b64"
 PRE_OAP_SCHEMA = "ed8f44ca54060afa066f3d12681ba62dcfa5958ffb7c3c163b71b2dbf7d67b2e"
+PRE_INSTANCE_REMOVAL_SCHEMA = "4f64f4f52093593a35d2e40343debc139f661c1cdcaf0c2ca93350539db10e61"
 TOOL_NAMES = {"read_file": ("exec_command", "write_stdin"), "search_files": ("exec_command", "write_stdin"),
               "write_file": ("apply_patch",), "edit_file": ("apply_patch",), "run_command": ("exec_command", "write_stdin"), "read_image": ("view_image",)}
 OLD_BUDGET = {"max_model_calls": 128, "max_input_tokens": 2000000, "max_output_tokens": 262144,
@@ -107,17 +108,13 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
     with offline_source(source) as check, closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as original:
         original.row_factory = sqlite3.Row
         metadata = dict(original.execute("SELECT key,value FROM metadata"))
+        from oea.migration.applications import transition as additive_transition
         from oea.migration.handling import PRE_HANDLING_SCHEMA
-        if metadata.get('protocol_version') == '3.0' and metadata.get('schema_sha256') == PRE_HANDLING_SCHEMA:
-            from oea.migration.applications import transition as handling_transition
-            return handling_transition(original, source, destination, apply, check, handling_only=True)
         from oea.migration.canvas import PRE_CANVAS_SCHEMA
-        if metadata.get('protocol_version') == '3.0' and metadata.get('schema_sha256') == PRE_CANVAS_SCHEMA:
-            from oea.migration.applications import transition as canvas_transition
-            return canvas_transition(original, source, destination, apply, check, canvas_only=True)
-        if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == PRE_OAP_SCHEMA:
-            from oea.migration.applications import transition as application_transition
-            return application_transition(original, source, destination, apply, check)
+        additive_revisions = {PRE_OAP_SCHEMA: 1, PRE_CANVAS_SCHEMA: 2, PRE_HANDLING_SCHEMA: 3, PRE_INSTANCE_REMOVAL_SCHEMA: 4}
+        revision = additive_revisions.get(metadata.get("schema_sha256"))
+        if metadata.get("protocol_version") == "3.0" and revision is not None:
+            return additive_transition(original, source, destination, apply, check, source_revision=revision)
         from oea.migration.architectures import INITIAL_V3_SCHEMA, transition
         if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == INITIAL_V3_SCHEMA:
             return transition(original, source, destination, apply, check)
@@ -298,7 +295,7 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
             verify_files(source, files)
             require(file_sha256(database) == source_hash, "MIGRATION_SOURCE_CHANGED", "Source database changed during conversion")
             if apply:
-                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "4"), ("migration_complete", "true")])
+                output.executemany("INSERT INTO metadata VALUES(?,?)", [("protocol_version", PROTOCOL_VERSION), ("schema_sha256", hashlib.sha256(script.encode()).hexdigest()), ("schema_revision", "5"), ("migration_complete", "true")])
                 report.update(applied=True, changed=True)
             output.commit()
         if apply:

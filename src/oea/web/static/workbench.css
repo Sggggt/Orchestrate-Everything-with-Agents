@@ -164,6 +164,9 @@ body,.layout { min-width:0; }.mobile-nav-toggle,.nav-scrim { display:none; }
 .dialog-footer>.form-hint { margin-right:auto; }
 .instance-picker { min-width:0; grid-template-columns:minmax(0,1fr); }
 .instance-dialog,.instance-dialog .instance-option { min-width:0; max-width:100%; }
+.instance-management-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:8px; }
+.instance-management-row>.icon-btn { margin-top:8px; }
+.composer.is-read-only :is(textarea,button,.composer-model) { display:none; }
 .instance-dialog .instance-option-heading strong { font-size:14px; }
 .instance-dialog .instance-option .v2-state { white-space:nowrap; flex-shrink:0; }
 .instance-dialog .instance-preview { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:normal; overflow-wrap:anywhere; line-height:1.8; max-width:100%; }.instance-preview p { margin:0; }
@@ -248,4 +251,7 @@ body,.layout { min-width:0; }.mobile-nav-toggle,.nav-scrim { display:none; }
 .thread-link>.unread-badge { margin-left:auto; }.browser-tab>.unread-badge { margin-left:3px; }
 .agent-card-head>.unread-badge { position:absolute; top:19px; right:4px; }
 .agent-card-identity { padding-right:26px; }.agent-card-name { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }.agent-card-name>.badge { margin:0; font-size:10px; font-weight:400; }
+.agent-card-head.has-instance-controls>.agent-card-identity { padding-right:0; }
+.agent-card-actions { display:flex; align-items:center; align-self:flex-start; flex-shrink:0; gap:6px; margin-left:auto; }
+.agent-card-actions>.icon-btn { width:30px; height:30px; padding:6px; }
 button.v2-avatar { cursor:pointer; padding:0; }button.v2-avatar:hover { outline:2px solid #c9bdf2; outline-offset:2px; }

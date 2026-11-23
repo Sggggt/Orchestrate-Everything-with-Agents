@@ -23,7 +23,7 @@ def summary(db, session_id, project_id, consumer_id):
     agents = rows(db, "SELECT i.agent_id,COUNT(DISTINCT i.id) AS instances,SUM(CASE WHEN " + VISIBLE_REPLY + " THEN 1 ELSE 0 END) AS count "
         "FROM instances i LEFT JOIN instance_read_positions p ON p.instance_id=i.id AND p.consumer_id=? "
         "LEFT JOIN conversation c ON c.instance_id=i.id AND c.role='assistant' AND c.position>COALESCE(p.position,0) "
-        "LEFT JOIN actions a ON a.id=c.action_id WHERE i.session_id=? GROUP BY i.agent_id", (consumer_id, session_id))
+        "LEFT JOIN actions a ON a.id=c.action_id WHERE i.session_id=? AND i.removed_at IS NULL GROUP BY i.agent_id", (consumer_id, session_id))
     revision = one(db, "SELECT COALESCE(MAX(position),0) AS position FROM events WHERE session_id=?", (session_id,))["position"]
     return {"revision": revision, "project_id": project_id, "session_id": session_id, "consumer_id": consumer_id,
             "messages": {"count": count, "position": position}, "agents": {row["agent_id"]: {"count": row["count"], "instances": row["instances"]} for row in agents}}

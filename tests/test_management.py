@@ -246,3 +246,41 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
         self.assertEqual((await self.host.runs.result(accepted.id, timeout=10)).text, "Retained in-flight result")
+
+    async def test_remove_instance_preserves_receipts_and_rejects_pending_or_foreign_work(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class InFlightModel(ManagementModel):
+            async def complete(self, *args, **options):
+                entered.set()
+                await release.wait()
+                return await super().complete(*args, **options)
+
+        self.host.model_api = InFlightModel()
+        session = await self.host.sessions.create("p")
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://fixture.invalid/v1", model="fixture")))
+        instance = await self.host.instances.create(session["id"], "worker", name="stable")
+        params = {"instance_id": instance["id"], "project_id": "p"}
+        with self.assertRaises(RuntimeFault) as denied:
+            await self.host.registry.call("instances.remove", params | {"project_id": "q"})
+        self.assertEqual(denied.exception.code, "PERMISSION_DENIED")
+        spec = RunSpec(instance_id=instance["id"], input="Retain history", idempotency_key="original")
+        run = await self.host.runs.submit(spec)
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            with self.assertRaises(RuntimeFault) as busy:
+                await self.host.registry.call("instances.remove", params)
+            self.assertEqual(busy.exception.code, "INSTANCE_IN_USE")
+        finally:
+            release.set()
+        self.assertEqual((await self.host.runs.result(run.id, timeout=10)).text, "Completed")
+        removed = await self.host.registry.call("instances.remove", params)
+        self.assertFalse(removed["reused"])
+        self.assertEqual(await self.host.registry.call("instances.remove", params), removed | {"reused": True})
+        self.assertEqual((await self.host.instances.list(session["id"]))["items"], [])
+        self.assertEqual((await self.host.sessions.unread(session["id"], "p", consumer_id="reader"))["agents"], {})
+        self.assertEqual(len((await self.host.instances.history(instance["id"], "p"))["items"]), 2)
+        self.assertTrue((await self.host.runs.submit(spec)).reused)
+        with self.assertRaises(RuntimeFault) as retired:
+            await self.host.runs.submit(spec.model_copy(update={"idempotency_key": "new"}))
+        self.assertEqual(retired.exception.code, "INSTANCE_REMOVED")

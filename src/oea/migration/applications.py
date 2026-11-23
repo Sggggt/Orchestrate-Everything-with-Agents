@@ -1,4 +1,4 @@
-"""Offline additive OAP upgrade, retaining graph positions and directory bindings."""
+"""Offline additive protocol-three upgrades retaining graph positions and directory bindings."""
 
 from contextlib import closing
 import hashlib
@@ -14,8 +14,8 @@ from oea.storage.persistence import encode
 from oea.security.secrets import atomic_write
 
 
-def transition(original, source, destination, apply, check, *, canvas_only=False, handling_only=False):
-    """Copy facts and checkpoints unchanged, then add application ownership tables."""
+def transition(original, source, destination, apply, check, *, source_revision):
+    """Copy facts and checkpoints unchanged, then apply the missing schema revisions."""
     files = inventory_files(source)
     material = {item["relative_path"]: item for item in files}
     vault, secret_status = _vault(source)
@@ -24,7 +24,7 @@ def transition(original, source, destination, apply, check, *, canvas_only=False
             "STATE_INTEGRITY", "Source database integrity needs review")
     schema = Path(__file__).parents[1].joinpath("storage/schema-v3.sql").read_text(encoding="utf-8")
     from oea.migration.canvas import upgrade_canvas
-    additions = '' if canvas_only or handling_only else ("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n"
+    additions = '' if source_revision >= 2 else ("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n"
                   "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'platform' CHECK(source IN ('platform','application'));\n" + schema.split("-- Application ownership (OAP 1.0).", 1)[1])
     report = {"format_version": "3.0", "source_protocol": "3.0", "applied": False, "changed": False,
               "ready_for_apply": True, "secrets": secret_status, "checkpoint_policy": "preserve original graph positions",
@@ -38,12 +38,16 @@ def transition(original, source, destination, apply, check, *, canvas_only=False
             from oea.migration.upgrade import quote
             report["table_counts"][table] = original.execute("SELECT COUNT(*) FROM " + quote(table)).fetchone()[0]
         output.executescript('BEGIN;\n' + additions)
-        if not handling_only:
+        if source_revision < 3:
             upgrade_canvas(output)
-        from oea.migration.handling import upgrade_handling
-        upgrade_handling(output)
+        if source_revision < 4:
+            from oea.migration.handling import upgrade_handling
+            upgrade_handling(output)
+        output.execute("ALTER TABLE instances ADD COLUMN removed_at INTEGER")
+        output.execute("DROP INDEX instances_identity")
+        output.execute("CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role) WHERE removed_at IS NULL")
         output.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (hashlib.sha256(schema.encode()).hexdigest(),))
-        output.execute("UPDATE metadata SET value='4' WHERE key='schema_revision'")
+        output.execute("UPDATE metadata SET value='5' WHERE key='schema_revision'")
         for identity, path, size, digest in original.execute("SELECT id,path,bytes,sha256 FROM artifacts"):
             relative = Path("artifacts") / identity
             copied = material.get(relative.as_posix())

@@ -52,7 +52,7 @@ class Messages:
             return None, "NOT_DELIVERED"
         candidates = rows(db, """SELECT i.id,i.role FROM instances i
             JOIN sessions s ON s.id=i.session_id JOIN agent_definitions a ON a.id=i.agent_id
-            WHERE i.session_id=? AND i.agent_id=? AND s.source='platform'
+            WHERE i.session_id=? AND i.agent_id=? AND s.source='platform' AND i.removed_at IS NULL
             AND json_extract(a.config_json,'$.enabled')=1
             AND (i.role='main' OR (s.mode='collaborative' AND json_type(a.config_json,'$.manager')='object'))
             AND (? != 'inbox' OR EXISTS(SELECT 1 FROM board_readers r WHERE r.board_id=? AND r.instance_id=i.id))
@@ -119,7 +119,7 @@ class Messages:
         exact = ([board["owner_instance_id"]] if board["scope"] == "inbox" else []) + list(spec.mentions)
         for target in dict.fromkeys(exact):
             recipient = one(db, "SELECT * FROM instances WHERE id=?", (target,))
-            available = recipient and Boards.can_read(db, board, recipient)
+            available = recipient and recipient["removed_at"] is None and Boards.can_read(db, board, recipient)
             if source and available:
                 available = recipient["session_id"] == source[1]["session_id"] and recipient["agent_id"] in source[2]
             if available:

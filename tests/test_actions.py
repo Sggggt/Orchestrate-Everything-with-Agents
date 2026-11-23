@@ -37,7 +37,7 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
             db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES('s','p','Session',1)")
             db.execute("INSERT INTO budgets(id,project_id,root_run_id,policy_json,started_at,created_at) VALUES('b','p','r','{}',1,1)")
             for instance, run in (("i", "r"), ("j", "other")):
-                db.execute("INSERT INTO instances VALUES(?,'p','s','worker',?,'main','{}','{}',?,1)", (instance, instance, run))
+                db.execute("INSERT INTO instances VALUES(?,'p','s','worker',?,'main','{}','{}',?,1,NULL)", (instance, instance, run))
                 db.execute("INSERT INTO runs(id,instance_id,root_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at) VALUES(?,?,?,'b','running','{}','key','hash','main',1,1)", (run, instance, run))
         await self.store.call(seed, transaction=True)
         self.gateway = ToolGateway(self.store, authorize=self.authorize)

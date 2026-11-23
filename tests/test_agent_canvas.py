@@ -116,6 +116,9 @@ class CanvasTests(unittest.IsolatedAsyncioTestCase):
         frozen = Path(__file__).parents[1] / 'src/oea/migration/schema-v3-pre-canvas.sql'
         self.assertEqual(hashlib.sha256(frozen.read_text(encoding='utf-8').encode()).hexdigest(), PRE_CANVAS_SCHEMA)
         with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
+            db.execute('DROP INDEX instances_identity')
+            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
+            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
             db.execute('DROP INDEX usage_attention')
             db.execute('ALTER TABLE runs DROP COLUMN handled_at')
             db.execute('DROP INDEX agent_architectures_owner')

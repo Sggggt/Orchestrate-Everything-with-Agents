@@ -7,6 +7,7 @@ import { showRun } from "./runs.mjs";
 import { showTaskHistory } from "./task-history.mjs";
 import { markdown } from "./markdown.mjs";
 import { formField } from "./configuration-form.mjs";
+import { addInstance } from "./chat.mjs";
 
 export { renderConversation,disposeConversation } from "./conversation.mjs";
 export function bindWorkbench(app,root){
@@ -17,6 +18,8 @@ export function bindWorkbench(app,root){
   for(const button of root.querySelectorAll("[data-configure-agent]"))button.onclick=()=>app.openSettings(button.dataset.configureAgent);
   for(const button of root.querySelectorAll("[data-remove-agent]"))button.onclick=()=>{const row=app.state.agents.find(value=>value.definition.id===button.dataset.removeAgent);if(!row)return;confirmRemoval("删除 Agent",`删除 ${row.definition.name} 后将停止接受新工作。历史和文件保留；未结束或待核对的工作会阻止删除。`,async()=>{await removeAgent(app,row.definition.id,row.revision);await app.render();app.refreshFrame();notify("Agent 已删除，历史和文件已保留。");});};
   for(const button of root.querySelectorAll("[data-agent-chat]"))button.onclick=()=>openAgent(app,button.dataset.agentChat);
+  for(const button of root.querySelectorAll("[data-add-agent-instance]"))button.onclick=()=>addInstance(app,{agentId:button.dataset.addAgentInstance,onCreated:async()=>{await app.render();app.refreshFrame();}});
+  for(const button of root.querySelectorAll("[data-manage-agent-instances]"))button.onclick=()=>openAgent(app,button.dataset.manageAgentInstances,{manage:true});
   for(const button of root.querySelectorAll("[data-instance]"))button.onclick=()=>openInstance(app,button.dataset.instance);
   for(const button of root.querySelectorAll("[data-close-instance]"))button.onclick=()=>{const s=app.state;s.openTabs=s.openTabs.filter(id=>id!==button.dataset.closeInstance);if(s.selectedInstance?.id===button.dataset.closeInstance){s.selectedInstance=null;app.navigate("overview");}else app.refreshFrame();};
   for(const button of root.querySelectorAll("[data-task-history]"))button.onclick=()=>showTaskHistory(app,button.dataset.taskHistory).catch(error=>notify(error.message,true));
@@ -34,9 +37,10 @@ function chooseAgent(app){
   const content=element(`<div>${s.agents.map(row=>`<button class="settings-agent" data-choose-agent="${escape(row.definition.id)}">${avatar(s,row.definition.id)}${escape(row.definition.name)}</button>`).join("")}</div>`),close=modal("选择 Agent",content);
   for(const button of content.querySelectorAll("[data-choose-agent]"))button.onclick=()=>{close();openAgent(app,button.dataset.chooseAgent);};
 }
-export async function openAgent(app,identity,{choose=false}={}){
+export async function openAgent(app,identity,{choose=false,manage=false}={}){
   const s=app.state;if(!s.session){app.createSession();return;}
   const sessionId=s.session.id,projectId=s.project.id;
+  choose||=manage;
   if(!choose&&s.unread?.agents?.[identity]?.instances===0){await openDraft(app,identity);return;}
   try{
     const page=await rpc("instances.list",{session_id:sessionId,agent_id:identity,limit:25});
@@ -46,15 +50,34 @@ export async function openAgent(app,identity,{choose=false}={}){
     if(!choose&&!instances.length){await openDraft(app,identity);return;}
     if(!choose&&instances.length===1&&cursor==null){await openInstance(app,instances[0].id);return;}
     const name=s.agents.find(row=>row.definition.id===identity)?.definition.name||"Agent";
-    const content=element(`<div class="instance-dialog"><div class="instance-picker"></div><button class="text-link" id="more-agent-instances" hidden>更多实例</button><footer class="dialog-footer"><button class="icon-btn" id="create-independent-instance" title="新建独立对话" aria-label="新建独立对话">${icon("plus")}</button></footer></div>`),close=modal(`${name} · 选择实例`,content,{size:"medium"});
+    const content=element(`<div class="instance-dialog"><div class="instance-picker"></div><button class="text-link" id="more-agent-instances" hidden>更多实例</button>${manage?"":`<footer class="dialog-footer"><button class="icon-btn" id="create-independent-instance" title="新建独立对话" aria-label="新建独立对话">${icon("plus")}</button></footer>`}</div>`),close=modal(`${name} · ${manage?"管理实例":"选择实例"}`,content,{size:"medium"});
     const draw=()=>{
-      $(".instance-picker",content).innerHTML=instances.map(instance=>{const run=s.runs.find(value=>value.instance_id===instance.id),state=instance.active_run_id?"running":run?.state;return `<button class="instance-option ${instance.active_run_id?"":"is-idle"}" data-choose-instance="${escape(instance.id)}"><div class="instance-option-heading"><strong>${escape(instance.name)}</strong>${unreadBadge(instance.unread_count)}${state?badge(state):'<span class="v2-state">尚未开始</span>'}</div><span class="instance-origin">${instance.role==="manager"?"manager":"独立对话"}${run?` · ${date(run.updated_at||run.created_at)}`:""}</span><span class="instance-preview">${markdown(run?.goal||"尚无消息")}</span></button>`;}).join("")||'<p class="quiet-state">暂无实例。</p>';
+      $(".instance-picker",content).innerHTML=instances.map(instance=>{
+        const run=s.runs.find(value=>value.instance_id===instance.id),state=instance.active_run_id?"running":run?.state;
+        const option=`<button class="instance-option ${instance.active_run_id?"":"is-idle"}" data-choose-instance="${escape(instance.id)}"><div class="instance-option-heading"><strong>${escape(instance.name)}</strong>${unreadBadge(instance.unread_count)}${state?badge(state):'<span class="v2-state">尚未开始</span>'}</div><span class="instance-origin">${instance.role==="manager"?"manager":"独立对话"}${run?` · ${date(run.updated_at||run.created_at)}`:""}</span><span class="instance-preview">${markdown(run?.goal||"尚无消息")}</span></button>`;
+        const removeLabel=escape(`删除实例 ${instance.name}`);
+        return manage?`<div class="instance-management-row">${option}<button class="icon-btn danger-text" data-remove-agent-instance="${escape(instance.id)}" title="${removeLabel}" aria-label="${removeLabel}">${icon("trash")}</button></div>`:option;
+      }).join("")||'<p class="quiet-state">暂无实例。</p>';
       $("#more-agent-instances",content).hidden=cursor==null;
       for(const button of content.querySelectorAll("[data-choose-instance]"))button.onclick=()=>{close();openInstance(app,button.dataset.chooseInstance).catch(error=>notify(error.message,true));};
+      for(const button of content.querySelectorAll("[data-remove-agent-instance]"))button.onclick=()=>{
+        const instance=instances.find(value=>value.id===button.dataset.removeAgentInstance);
+        confirmRemoval("删除实例",`删除「${instance.name}」后，将停止接收新工作。历史记录和产物会保留。`,async()=>{
+          try{await rpc("instances.remove",{instance_id:instance.id,project_id:projectId});}
+          catch(error){if(error.code==="INSTANCE_IN_USE")throw new Error("该实例还有未结束或待核对的工作，请先处理后再删除。");throw error;}
+          instances=instances.filter(value=>value.id!==instance.id);draw();
+          if(s.session?.id===sessionId){
+            await app.reloadInstances();
+            if(s.session?.id===sessionId&&s.page==="overview")await app.render();
+            app.refreshFrame();
+          }
+          notify("实例已删除。");
+        });
+      };
     };
     draw();
     $("#more-agent-instances",content).onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const page=await rpc("instances.list",{session_id:sessionId,agent_id:identity,limit:25,cursor});instances.push(...page.items);cursor=page.cursor;for(const instance of page.items)if(!s.instances.some(value=>value.id===instance.id))s.instances.push(instance);draw();}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
-    $("#create-independent-instance",content).onclick=()=>{close();openDraft(app,identity);};
+    if(!manage)$("#create-independent-instance",content).onclick=()=>{close();openDraft(app,identity);};
   }catch(error){notify(error.message,true);}
 }
 export async function openDraft(app,agentId){
@@ -68,8 +91,12 @@ export async function openInstance(app,identity){
   if(!instance)instance=await rpc("instances.get",{instance_id:identity});
   if(instance.project_id!==s.project.id)await app.selectProject(instance.project_id);
   if(instance.session_id!==s.session?.id){const session=s.sessions.find(value=>value.id===instance.session_id)||await rpc("sessions.get",{session_id:instance.session_id});if(session.archived)throw new Error("此会话已归档，请先从回收站恢复。");if(!s.sessions.some(value=>value.id===session.id))s.sessions.push(session);await app.selectSession(session.id);}
-  s.selectedInstance=instance;if(!instance.draft&&!s.instances.some(value=>value.id===identity))s.instances.push(instance);
-  if(!s.openTabs.includes(identity))s.openTabs.push(identity);await app.navigate("conversation");
+  s.selectedInstance=instance;
+  if(!instance.removed_at){
+    if(!instance.draft&&!s.instances.some(value=>value.id===identity))s.instances.push(instance);
+    if(!s.openTabs.includes(identity))s.openTabs.push(identity);
+  }
+  await app.navigate("conversation");
 }
 function projectSettings(app){
   const s=app.state;let workspace=structuredClone(s.project.workspace||{});

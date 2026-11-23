@@ -67,6 +67,7 @@ class Runs:
         if previous:
             require(previous["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Run key has different input or ownership")
             return previous, True
+        require(instance["removed_at"] is None, "INSTANCE_REMOVED", "This instance no longer accepts work")
         need(db, "projects", instance["project_id"])
         self.host.assert_project_available(instance["project_id"])
         definition = AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
@@ -440,6 +441,7 @@ class Runs:
         require(not one(db, "SELECT 1 FROM actions WHERE run_id=? AND (state='needs_review' OR state='dispatched' AND side_effects!='none') LIMIT 1", (run_id,)),
                 "OUTCOME_UNCERTAIN", "Inspect unresolved side effects before resuming")
         instance = need(db, "instances", run["instance_id"])
+        require(instance["removed_at"] is None, "INSTANCE_REMOVED", "This instance no longer accepts work")
         if source_message_id:
             message = need(db, "messages", source_message_id)
             require(message["session_id"] == instance["session_id"], "MESSAGE_MISMATCH", "Reply must belong to the original session")

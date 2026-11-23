@@ -256,7 +256,7 @@ class Converter:
             if workspaces.get(row["id"], {}).get("work"):
                 binding = {"work_dir": workspaces[row["id"]]["work"]}
             # Legacy titles need not be unique; immutable IDs are stable instance names.
-            self.db.execute("INSERT INTO instances VALUES(?,?,?,?,?,?,?,?,NULL,?)", (row["id"], session["project_id"], row["session_id"], row["agent_id"], row["id"], role, config.model_dump_json(), _json(binding), row["created_at"]))
+            self.db.execute("INSERT INTO instances(id,project_id,session_id,agent_id,name,role,config_json,workspace_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (row["id"], session["project_id"], row["session_id"], row["agent_id"], row["id"], role, config.model_dump_json(), _json(binding), row["created_at"]))
             self.db.execute("INSERT INTO boards VALUES(?,?,?,'inbox',?,'Inbox',?)", ("board_inbox_" + row["id"], session["project_id"], row["session_id"], row["id"], row["created_at"]))
             self.db.execute("INSERT INTO board_readers VALUES(?,?)", ("board_inbox_" + row["id"], row["id"]))
             self.link("threads", row["id"], "instance", row["id"])
@@ -512,6 +512,7 @@ def _convert(source, source_db, destination, apply, source_check):
             report["applied"] = True
             output.execute("INSERT INTO metadata VALUES('protocol_version',?)", (PROTOCOL_VERSION,))
             output.execute("INSERT INTO metadata VALUES('schema_sha256',?)", (hashlib.sha256(script.encode("utf-8")).hexdigest(),))
+            output.execute("INSERT INTO metadata VALUES('schema_revision','5')")
             output.execute("INSERT INTO metadata VALUES('migration_complete','true')")
         output.execute("UPDATE imported_migrations SET report_json=? WHERE id=?", (_json(report), converter.migration_id))
         output.commit()
