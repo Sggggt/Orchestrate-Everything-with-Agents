@@ -26,12 +26,14 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-OEA 需要 Python 3.12+。从 [OEA 3.4.6 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.6)下载与你的系统匹配的 wheel：Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。下载 Windows 安装包后运行：
+OEA 需要 Python 3.12+。从 [OEA 3.4.7 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.7)下载与你的系统匹配的 wheel。Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。
 
 MSVC 构建的 Windows wheel 还需要 [Microsoft Visual C++ v14 x64 运行库](docs/getting-started.md#windows-runtime)。请先安装或修复微软官方运行库；OEA 安装器不代为安装此系统依赖。
 
+如果是在已有安装上升级，请在启动 3.4.7 前按[离线状态升级说明](docs/getting-started.md#update-tool)操作。
+
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.6-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-3.4.7-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 

@@ -7,7 +7,7 @@ oea migrate --source /path/to/old-state
 oea migrate --source /path/to/old-state --target /path/to/new-state --apply
 ```
 
-`migrate` recognizes legacy schema 29, supported protocol-2 states, and the protocol-3 schema before programmable Agent architectures. The equivalent explicit entry for an `oea.sqlite` source is:
+`migrate` recognizes legacy schema 29 and supported earlier protocol-2 and protocol-3 state revisions. For an `oea.sqlite` source, use `upgrade-state` to inspect the source and write a separate target.
 
 ```console
 oea upgrade-state --data-dir /path/to/old-state
@@ -30,4 +30,8 @@ The SDK entries are `oea.migration.offline.migrate_legacy` and `oea.migration.up
 
 ## Agent canvas state upgrade
 
-The Agent canvas release adds candidate ownership and deletion markers plus cached topology projections. Existing state must be stopped and converted with `oea upgrade-state` into a new external directory. The source is unchanged. This additive transition preserves architecture definitions, immutable version hashes, bindings, graph checkpoints and existing directory bindings. Old shared candidates have no Agent owner and remain available for copying. Control protocol 3.0 and OAP 1.0 are unchanged; the current state schema revision is 4. The later task-handling addition keeps the original Run state and adds a nullable `handled_at` field; old tasks begin unhandled. Existing canvas-schema directories receive this additive change through the same offline copy workflow, with checkpoint and credential preservation checks.
+The Agent canvas release adds candidate ownership and deletion markers plus cached topology projections. Existing state must be stopped and converted with `oea upgrade-state` into a new external directory. The source is unchanged. This additive transition preserves architecture definitions, immutable version hashes, bindings, graph checkpoints and existing directory bindings. Old shared candidates have no Agent owner and remain available for copying. State schema revision 4 adds a nullable `handled_at` field while preserving the original Run state. Old tasks begin unhandled. Existing canvas-schema directories receive this additive change through the same offline copy workflow, with checkpoint and credential preservation checks.
+
+## OEA 3.4.7 state upgrade
+
+OEA 3.4.7 uses state schema revision 5 to record instance removal while retaining history. Use `oea upgrade-state` with the 3.4.7 CLI to convert a stopped revision 4 state directory into a new target. The conversion preserves existing Run records, graph checkpoints, workspace bindings and model secrets. It verifies managed artifact copies and rotates the target's local control credential. After switching to the target, run `oea open` to sign in again and reconnect existing MCP clients.
