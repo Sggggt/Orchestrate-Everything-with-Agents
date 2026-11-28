@@ -41,6 +41,22 @@ def process_terminated(pid):
         return True
 
 
+def command_process_ids(receipt):
+    identities = {receipt["pid"], receipt["workload_pid"]}
+    if os.name == "nt":
+        identities.add(int(receipt["stdout"].split("started ", 1)[1].split()[0]))
+    else:
+        pending = list(identities)
+        while pending:
+            pid = pending.pop()
+            path = Path("/proc", str(pid), "task", str(pid), "children")
+            if path.exists():
+                children = {int(value) for value in path.read_text().split()} - identities
+                identities.update(children)
+                pending.extend(children)
+    return sorted(identities)
+
+
 async def setup_application(host, *, tools=Tools()):
     await host.projects.create("Example", project_id="p")
     await host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(host, Model(base_url="https://model.invalid", model="fixture")), tools=tools))
@@ -132,7 +148,7 @@ from pathlib import Path
 from unittest.mock import patch
 from oea import Tools
 from oea.runtime.host import Host
-from test_application_recovery import setup_application
+from test_application_recovery import command_process_ids,setup_application
 from test_command_recovery_v3 import WaitingCommandModel
 async def main():
     code="from pathlib import Path; import os,time; p=Path('starts.txt'); p.write_text(str(int(p.read_text())+1) if p.exists() else '1'); print('started',os.getpid(),flush=True); time.sleep(2); Path('late.txt').write_text('late'); time.sleep(30)"
@@ -143,7 +159,7 @@ async def main():
             while True:
                 receipt=await host.command_sessions.observe(run.id,{'command_session_id':command,'yield_time_ms':100})
                 if 'started' in receipt['stdout']: break
-            print(json.dumps({'run':run.id,'instance':run.instance_id,'conversation':conversation['id'],'app':registered['application']['id'],'credential':registered['credential'],'command':command,'work':str(host.active[run.id].paths.work_dir),'pid':os.getpid(),'command_pids':[receipt['pid'],receipt['workload_pid'],int(receipt['stdout'].split('started ',1)[1].split()[0])]}),flush=True)
+            print(json.dumps({'run':run.id,'instance':run.instance_id,'conversation':conversation['id'],'app':registered['application']['id'],'credential':registered['credential'],'command':command,'work':str(host.active[run.id].paths.work_dir),'pid':os.getpid(),'command_pids':command_process_ids(receipt)}),flush=True)
             await asyncio.Event().wait()
 asyncio.run(main())
 """, encoding="utf-8")

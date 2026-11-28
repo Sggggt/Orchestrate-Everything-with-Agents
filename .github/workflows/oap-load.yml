@@ -46,6 +46,6 @@ jobs:
       - name: Run full regression with the native Linux backend
         env:
           PYTHONPATH: tests
-        run: python -B -m unittest discover -s tests -p 'test_*.py'
+        run: python -B -m unittest discover -s tests -p 'test_*.py' -v
       - name: Run thirty-minute load acceptance
         run: python -B scripts/check_oap_load.py --work-dir "$RUNNER_TEMP/oap-load" --duration 1800
