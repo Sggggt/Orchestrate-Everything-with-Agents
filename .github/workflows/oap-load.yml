@@ -13,17 +13,22 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PYTHONDONTWRITEBYTECODE: '1'
-      CARGO_HOME: ${{ runner.temp }}/cargo
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      PIP_CACHE_DIR: ${{ runner.temp }}/pip-cache
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Prepare external build paths
+        shell: python {0}
+        run: |
+          import os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          paths = {'CARGO_HOME': root / 'cargo', 'RUSTUP_HOME': root / 'rustup', 'PIP_CACHE_DIR': root / 'pip-cache',
+                   'TEMP': root, 'TMP': root, 'TMPDIR': root}
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              for key, path in paths.items():
+                  path.mkdir(parents=True, exist_ok=True)
+                  output.write(key + '=' + str(path) + '\n')
       - name: Prepare native dependencies
         run: |
           sudo apt-get update
