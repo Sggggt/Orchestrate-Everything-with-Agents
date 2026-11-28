@@ -11,12 +11,12 @@ from oea.contracts.configuration import AgentDefinition, Manager, Model
 
 class ConfigurationTests(unittest.TestCase):
     def test_complete_configuration_round_trips_without_losing_groups(self):
-        value = AgentDefinition(id="reviewer", name="Reviewer", manager=Manager(model=Model(model="coordinator")))
+        value = AgentDefinition(id="reviewer", name="Reviewer", manager=Manager(model_ref="coordinator"))
         encoded = value.model_dump_json()
         self.assertEqual(AgentDefinition.model_validate_json(encoded), value)
         self.assertEqual(value.context.input_tokens, 32768)
-        self.assertEqual(value.model.max_output_tokens, 4096)
-        self.assertEqual(value.manager.model.model, "coordinator")
+        self.assertEqual(Model().max_output_tokens, 4096)
+        self.assertEqual(value.manager.model_ref, "coordinator")
         self.assertEqual(value.tools.local, ())
 
     def test_removed_capacity_and_flat_model_fields_are_rejected(self):

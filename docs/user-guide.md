@@ -99,7 +99,7 @@ Start with a small text task so you can verify the model configuration before ad
 1. Open the project menu beside **当前项目** and choose **新建项目** (New project). Give the project a descriptive name.
 2. Use the menu beside **当前会话** to create a session with **新建会话** (New session).
 3. Open **Agent**, add an Agent, and provide a name and stable ID such as `reviewer`. Creating the draft does not save a working configuration yet.
-4. In **模型与职责** (Role and model), enter the provider's API base URL, exact model name and your instructions. Enter the credential in **主模型密钥** (Main model key) when required by the provider.
+4. Add the endpoint, upstream model and required credential in **API Box**, then select that Box model when creating an Agent. Enter instructions in the Agent's basic information.
 5. Save the configuration with the checkmark control labelled **保存配置**. Use **检查已保存配置** to inspect missing fields, credential availability, tool bindings, program lookup and path readiness. This check does not call a model.
 6. Return to **工作台 → 总览** (Workbench → Overview), then choose **进入对话** on the Agent card. With no existing instance, OEA opens a draft conversation; the first message creates the stable instance.
 7. Send a small goal, such as asking for a concise explanation of a familiar programming concept. State the expected language and deliverable. `Enter` sends; `Shift + Enter` inserts a newline.
@@ -119,8 +119,8 @@ Select the project and session before acting on their work. The main navigation 
 | **工作台** — Workbench | Open **总览**, **协作消息** and **工作产物**, plus instance conversation tabs |
 | **Agent** | Manage reusable Agent definitions and open their configuration |
 | **工作流** — Workflows | Create and inspect project graphs and their executions |
-| **MCP 工具** — MCP tools | Register services, discover tools and inspect tool calls |
-| **Skills** | Register Skill directories and read their instructions and references |
+| **API Box** | Manage model connections and write-only credentials |
+| **插件** — Plugins | Configure installed plugins; manage standalone MCP tools and Skills in their tabs |
 | **设置与配置** — Settings | Edit the selected Agent's configuration groups |
 | **回收站** — Recycle bin | Find and restore archived sessions for the current project |
 
@@ -140,15 +140,15 @@ Open an Agent's gear control to edit its settings. Save changes before starting 
 | Configuration group | What to decide |
 | --- | --- |
 | **概览与画布** — Overview and canvas | Configuration availability, active version, candidate selection and the clickable canvas preview |
-| **模型与职责** — Model and responsibility | Name, instructions, provider, model, credential and common generation settings |
-| **常用能力** — Common capabilities | Local/MCP tools, Skills, environment and working input size |
+| **基本信息与职责** — Basic information and responsibility | Name and instructions; main model selection belongs to creation and conversation |
+| **常用能力** — Common capabilities | Plugins, local/MCP tools, Skills, environment and working input size |
 | **通信与协调** — Communication and coordination | Partner Agents, delegation and optional manager settings |
 
 The desktop settings page preserves advanced fields it does not display. Edit full configuration through source/SDK or explicit configuration export/import. Click the canvas preview to edit nodes, state, mappings and subgraphs in the full-screen workbench. Save a candidate without changing execution, then confirm **切换版本** to publish and apply it. Select another candidate to preview it; confirm deletion to remove a draft while retaining published versions. Trials use independent instances. Switching applies only to subsequently accepted tasks; existing tasks and resumptions keep their original graph. Historical attention or usage does not block the change. See [Agent architectures](agent-architectures.md).
 
 The built-in model transport uses OpenAI-compatible Chat Completions. Enter the provider's API base prefix; OEA appends `/chat/completions`. Choose options supported by that provider. The model's context-window setting and reserved output must fit its actual limits. Increase input capacity only when the model supports it. Model output, recent history, tools and images all consume context.
 
-Keep credentials in the secret field or a supported `env:` / `vault:` reference. Saved secret values are not displayed again. Leaving the password input empty preserves an existing binding; detaching it is a separate action. A manager has its own model and secret, with no automatic fallback to the main model.
+Manage model connections and write-only credentials in API Box. Box names are unique; upstream model identifiers may repeat. Main conversations select subsequent-task models, while managers select their independent Box reference only in settings. Accepted Runs keep their resolved model.
 
 New work uses accepted configuration snapshots. Current permission revocation takes effect at execution boundaries. Changing a default path does not move an existing instance's files. For advanced fields, use [the SDK guide](sdk.md) or inspect the current shared schema:
 
@@ -375,7 +375,7 @@ Connect with `PlatformClient.from_data_dir()` to manage the running main host. T
 
 Use `arun` / `astream` and asynchronous context managers in an application that already has an event loop. Keep a client and Agent on their original event loop. New Python function implementations must be registered in the host process before a remote binding can use them.
 
-For executable examples and advanced lifecycle, stream and recovery contracts, see [Python SDK](sdk.md), [model Agent example](../examples/model_agent.py) and [process Agent example](../examples/integration_agent.py). Process Agents implement OEA's protocol-3 UTF-8 JSONL protocol; an arbitrary console script is not automatically an OEA Agent.
+For executable examples and advanced lifecycle, stream and recovery contracts, see [Python SDK](sdk.md), [model Agent example](../examples/model_agent.py) and [process Agent example](../examples/integration_agent.py). Process Agents implement OEA's protocol-4 UTF-8 JSONL protocol; an arbitrary console script is not automatically an OEA Agent.
 
 ### External application access
 
@@ -481,3 +481,9 @@ When reporting a problem, include the application version, operation, task/actio
 | [Architecture](architecture.md) | Host, LangGraph and persistence responsibilities |
 | [Module interfaces](modules.md) | Per-module Python interfaces |
 | [Contributing](../CONTRIBUTING.md) | Developing and validating framework changes |
+
+## API Box and plugins
+
+Manage model endpoints and write-only credentials centrally in API Box, which is available without a project. Agent creation selects a default Box reference. Main-instance conversations select a model for subsequent tasks or update the Agent default; ordinary settings contain no model API fields. Managers select only in their settings. Accepted Runs and default resumes retain their pinned model.
+
+Plugins groups Installed, MCP and Skills. Standalone connections and Skills remain supported. Editing a shared MCP connection through a plugin creates a dedicated copy; it does not modify the original registration or third-party files. The built-in Plugin Creator packages capabilities, and Agent Factory creates project Agents within explicitly granted model, plugin and execution scopes. Existing root-budget rules remain unchanged. See [API Box](models/README.md) and [plugins](plugins/README.md).

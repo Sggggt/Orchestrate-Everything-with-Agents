@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import Agent, AgentDefinition, Artifact, Completion, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -140,7 +142,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def configure_reader(self):
         await self.host.agents.save(AgentDefinition(id="reader", name="Reader",
-            model=Model(base_url="https://model.invalid/v1", model="protocol-fixture")))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture"))))
 
     async def test_sdk_assignment_exposes_metadata_then_reads_only_explicitly_assigned_text(self):
         body = b"The retained source has the expected evidence."
@@ -218,7 +220,7 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
             session_id=self.session["id"], consumer_id="controller")
         await self.stream(upload["id"], body)
         await self.host.agents.save(AgentDefinition(id="reader", name="Reader", tools=Tools(local=("view_image",)), workspace=Workspace(),
-            model=Model(base_url="https://model.invalid/v1", model="protocol-fixture")))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture"))))
         images, observed = [], []
         class ImageModel:
             async def complete(self, model, messages, **options):

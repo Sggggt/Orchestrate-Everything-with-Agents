@@ -15,9 +15,9 @@ export async function manageMCP(app,root){
     const state={project,mcpServers:[],mcpQuery:"",mcpDirectory:"",mcpDraft:null,mcpDetail:null,mcpId:null,mcpTab:"connection",mcpCalls:[],mcpEpoch:0};
     let component;
     const mounted=new WeakSet();
-    const current=()=>app.state.project?.id===project.id&&app.state.page==="mcp";
+    const current=()=>app.state.project?.id===project.id&&app.state.page==="plugins"&&app.state.pluginTab==="mcp";
     const draw=()=>{
-      const target=$("#page");if(!current()||!target)return;
+      const target=entry.root;if(!current()||!target?.isConnected)return;
       const focus=document.activeElement?.dataset.focus,selection=document.activeElement?.selectionStart;
       target.className="";target.innerHTML=component.page();
       target.onclick=async event=>{if(editorInteraction(event))return;const button=event.target.closest("[data-action]");if(!button||button.disabled)return;try{await component.action(button.dataset.action,button);}catch(error){notify(error.message,true);}};
@@ -57,5 +57,5 @@ export async function manageMCP(app,root){
     entry={load,draw,refresh};projects.set(project.id,entry);
   }
   app.onMCPEvent=fact=>entry.refresh(fact);
-  await entry.load();entry.draw();
+  entry.root=root;await entry.load();entry.draw();
 }

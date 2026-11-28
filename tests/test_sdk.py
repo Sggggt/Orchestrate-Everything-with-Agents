@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import Agent, AgentDefinition, Completion, Model, ToolKit, ContextPolicy, Instructions
 from oea.runtime.host import Host
 from oea.contracts.errors import RuntimeFault
@@ -77,7 +79,7 @@ class AsyncSDKTests(unittest.IsolatedAsyncioTestCase):
             model = SavedModel()
             async with Host(Path(directory) / "state", model_api=model) as host:
                 await host.projects.create("Project", project_id="p")
-                definition = AgentDefinition(id="saved", name="Saved", project_id="p", model=Model(base_url="https://example.invalid/v1", model="saved-v1"),
+                definition = AgentDefinition(id="saved", name="Saved", project_id="p", model_ref=await register_model(host, Model(base_url="https://example.invalid/v1", model="saved-v1")),
                     instructions=Instructions(system="Preserved GUI instruction"), context=ContextPolicy(memory_tokens=1536))
                 await host.registry.call("agents.save", {"definition": definition.model_dump(mode="json"), "expected_revision": 0})
                 session = await host.sessions.create("p")
@@ -86,11 +88,14 @@ class AsyncSDKTests(unittest.IsolatedAsyncioTestCase):
                     identity = agent.instance().id
                     self.assertEqual((await host.agents.get("saved"))["revision"], 1)
                     definition.name = "Renamed in GUI"
-                    definition.model.model = "saved-v2"
+                    definition.model_ref = await register_model(host, Model(base_url="https://example.invalid/v1", model="saved-v2"))
                     await host.registry.call("agents.save", {"definition": definition.model_dump(mode="json"), "expected_revision": 1})
                     self.assertEqual((await agent.arun("Second", idempotency_key="second")).text, "Done")
                     self.assertEqual(agent.instance().id, identity)
-                self.assertEqual(await host.agents.get("saved"), {"definition": definition.model_dump(mode="json"), "revision": 2})
+                saved = await host.agents.get("saved")
+                self.assertEqual(saved["definition"], definition.model_dump(mode="json"))
+                self.assertEqual(saved["revision"], 2)
+                self.assertEqual(saved["model_summary"]["main"]["model_id"], "saved-v2")
                 self.assertTrue(host.opened)
                 self.assertEqual(model.models, ["saved-v1", "saved-v2"])
                 self.assertIn("Preserved GUI instruction", model.messages[0][0]["content"])
@@ -100,7 +105,7 @@ class AsyncSDKTests(unittest.IsolatedAsyncioTestCase):
             async with Host(Path(directory) / "state", model_api=EchoModel()) as host:
                 for project in ("p", "q"):
                     await host.projects.create(project, project_id=project)
-                definition = AgentDefinition(id="global", name="Global", model=Model(base_url="https://example.invalid/v1", model="fixture"))
+                definition = AgentDefinition(id="global", name="Global", model_ref=await register_model(host, Model(base_url="https://example.invalid/v1", model="fixture")))
                 await host.agents.save(definition)
                 async with Agent.from_saved("global", host=host) as missing:
                     with self.assertRaises(RuntimeFault) as scope:

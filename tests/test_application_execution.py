@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Instructions, Model, ProjectWorkspace, RunSpec, Tools, Workspace
 from oea.contracts.applications import ApplicationBinding, ApplicationGrant, ApplicationRun, ApplicationResume, ConversationCreate
 from oea.contracts.errors import RuntimeFault
@@ -31,7 +33,7 @@ class ApplicationExecutionTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Example", project_id="p", folder=self.project_dir,
             workspace=ProjectWorkspace(network="allow", environment={"PRIVATE_SETTING": "local"}))
         self.definition = AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid", model="fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid", model="fixture")),
             tools=Tools(local=("exec_command", "write_stdin", "apply_patch", "publish_artifact")),
             instructions=Instructions(agent_md="Private project instructions"))
         await self.host.agents.save(self.definition)

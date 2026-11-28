@@ -7,7 +7,7 @@ description: Develop Agents, configure capabilities, and orchestrate work in Orc
 
 leader 负责目标、计划、委派、核验和汇总；OEA Host 负责权限、成本预算、持久回执与恢复，LangGraph 驱动执行。确定性工作使用普通函数或节点，独立职责和上下文才创建 Agent。
 
-只加载当前目标对应的一个工作流。首次在线操作用 `host.status` 核实协议 3 宿主；纯源码工作可跳过。用 `platform_guide(consumer_id, area, action)` 读取一个动作，再用 `platform_call(consumer_id, operation, params)` 执行。参数和 Schema 以实际共享注册表为准。
+只加载当前目标对应的一个工作流。首次在线操作用 `host.status` 核实协议 4 宿主；纯源码工作可跳过。用 `platform_guide(consumer_id, area, action)` 读取一个动作，再用 `platform_call(consumer_id, operation, params)` 执行。参数和 Schema 以实际共享注册表为准。
 
 | 当前目标 | 加载 |
 | --- | --- |
@@ -17,13 +17,14 @@ leader 负责目标、计划、委派、核验和汇总；OEA Host 负责权限�
 | 保存业务图、map、条件、循环、子图、中断与恢复 | [编排](workflows/orchestration.md) |
 | 群聊、跨 Agent 定向通知与伙伴授权、manager 协作、证据交接与模式切换 | [协作](workflows/collaboration.md) |
 | 运行、历史分页、待办处理、取消和原回执核对 | [控制](workflows/control.md) |
+| 安装、组合、绑定插件与创建 Agent | [插件](workflows/plugins.md) |
 | 配置和发现上游业务 MCP | [业务 MCP](workflows/mcp.md) |
 | 安装、连接、升级和状态目录 | [维护](workflows/maintenance.md) |
 | 登记外部应用、授权 Agent、开发 OAP 客户端 | [应用接入](workflows/applications.md) |
 
 ## 公共约定
 
-- 六要素为模型、指令、工具、Skills、Context、Workspace／Execution。main 与 manager 独立配置模型和秘密；manager 按需配置，工具、Skills、环境与执行继承定义或显式收窄；角色名称不授予管理员权限。
+- 六要素为模型、指令、工具、Skills、Context、Workspace／Execution。模型连接与秘密由用户 API Box 集中保管，main、summary 与可选 manager 选择模型引用；工具、Skills、环境与执行继承定义或显式收窄；角色名称不授予管理员权限。
 - 一个会话保持稳定 `consumer_id`，独立对话使用不同值。列表按游标取一页。已有明确动作无需重复发现，不加载全部历史和完整协议。
 - 长响应返回 `result_ref`，用 `results.read`、原项目和 JSON Pointer 读取所需字段。配置引用固定修订；不能为找回响应重跑写操作。详见[协议约定](references/protocol.md)。
 - 实例拥有稳定目录和独立上下文，一个实例只有一个写入者。独立工作可并行，没有全局、Agent、批次、模型或 MCP 容量配额。根成本预算由 manager、实例、子图、摘要和恢复共同使用。

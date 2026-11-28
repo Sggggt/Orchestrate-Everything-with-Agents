@@ -1,6 +1,6 @@
 # MCP and Codex skills
 
-The control MCP connects to an already running OEA 3 host using protocol 3.0. Install the matching [platform wheel](getting-started.md#quick-install) with the `mcp` extra, then use the installed command:
+The control MCP connects to an already running OEA 4 host using protocol 4.0. Install the matching [platform wheel](getting-started.md#quick-install) with the `mcp` extra, then use the installed command:
 
 ```sh
 oea mcp

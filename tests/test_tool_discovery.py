@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec, Tools
 from oea.contracts.configuration import CapabilityUse, UsePolicy
 from oea.contracts.errors import RuntimeFault
@@ -53,7 +55,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
     async def save(self, *, loading="deferred", functions=("calculate",), schema_budget_tokens=None, stalled=12):
         from oea import Budget, Execution
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="fixture")),
             execution=Execution(budget=Budget(max_stalled_model_calls=stalled)),
             tools=Tools(loading=loading, functions=functions, schema_budget_tokens=schema_budget_tokens)))
 
@@ -454,7 +456,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.business.spec.input_schema["properties"]["value"]["description"] = secret
         self.host.tools.providers["calculate"] = self.business
         definition = AgentDefinition.model_validate((await self.host.agents.get("worker"))["definition"])
-        definition.model.credential_ref = "env:OEA_DISCOVERY_TEST_KEY"
+        await self.host.model_profiles.set_credential(definition.model_ref, secret, 1)
         await self.host.agents.save(definition)
         requests = []
         class ModelFixture:
@@ -462,10 +464,9 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 requests.append(options["tools"])
                 return call("load", "tool_guide", {"name": "calculate"})
         self.host.model_api = ModelFixture()
-        with patch.dict("os.environ", {"OEA_DISCOVERY_TEST_KEY": secret}):
-            run = await self.submit()
-            with self.assertRaises(RuntimeFault) as rejected:
-                await self.host.runs.result(run.id, timeout=5)
+        run = await self.submit()
+        with self.assertRaises(RuntimeFault) as rejected:
+            await self.host.runs.result(run.id, timeout=5)
         self.assertEqual(rejected.exception.code, "TOOL_SCHEMA_CONTAINS_SECRET")
         self.assertEqual(len(requests), 1)
         self.assertNotIn(secret, json.dumps(requests))

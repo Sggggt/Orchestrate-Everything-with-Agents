@@ -9,10 +9,13 @@
 
 Orchestrate Everything with Agents is a lightweight multi-agent development and collaboration platform for individuals. Develop and orchestrate anything within the framework: your own Agents, tools, code, models and workflows, brought together in a workspace on your computer. Start with a conversation, turn repeatable work into a graph, and keep each Agent's context independent while they work toward a shared goal. Of course, if you feel like it, you can let your ChatGPT control it all.
 
+
+OEA 4.0 introduces [API Box](docs/models/README.md) and [plugins](docs/plugins/README.md). Existing installations require an [offline state upgrade](docs/migration/README.md) before starting the matching runtime.
+
 ## What you can build
 
 - **Personal Agent workspaces.** Organize Agents, conversations, instructions and skills by project.
-- **Your own execution logic.** Edit [Agent architectures](docs/agent-architectures.md) from ReAct, Plan-and-Execute or Reflexion templates, or register a Python graph or protocol-3 process Agent. LangGraph drives Agent and business execution.
+- **Your own execution logic.** Edit [Agent architectures](docs/agent-architectures.md) from ReAct, Plan-and-Execute or Reflexion templates, or register a Python graph or protocol-4 process Agent. LangGraph drives Agent and business execution.
 - **Independent parallel instances.** Reuse configurations with separate contexts, stable work directories, ordered results and cancellation along actual ownership.
 - **Reusable workflows.** Compose Agent, map, condition, template, function, subgraph, wait and end nodes, including loops and parallel joins. Every workflow belongs to one project.
 - **Tools and work artifacts.** Register MCP services, grant selected tools, exchange complete collaboration messages and keep session files with source attribution and downloadable references.
@@ -24,20 +27,20 @@ The frontend is served directly from local assets, with no build step. Saved Age
 
 ## Run locally
 
-Use Python 3.12+ and download the wheel matching your system from the [OEA 3.4.7 release](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.7). Windows x64 uses `win_amd64`; Linux x64 uses `linux_x86_64`. Normal installation needs no Rust compiler.
+Use Python 3.12+ and download the wheel matching your system from the [OEA 4.0.0 release](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v4.0.0). Windows x64 uses `win_amd64`; Linux x64 uses `linux_x86_64`. Normal installation needs no Rust compiler.
 
 MSVC-built Windows wheels also need the [Microsoft Visual C++ v14 x64 runtime](docs/getting-started.md#windows-runtime).
 
-If you are upgrading an existing installation, follow the [offline state upgrade instructions](docs/getting-started.md#update-tool) before starting 3.4.7.
+If you are upgrading an existing installation, follow the [offline state upgrade instructions](docs/getting-started.md#update-tool) before starting 4.0.0.
 
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.7-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-4.0.0-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 
 On Linux, use the downloaded `linux_x86_64` wheel filename instead. Run `oea open` in another terminal to open the authenticated workbench. The first-launch origin is **http://127.0.0.1:8890**; a plain page visit does not grant management access. Keep state on local disk outside source and synchronized folders. The Windows installer also accepts `-Wheel` to prepare a managed environment and launchers. See [installation](docs/getting-started.md) for direct downloads, system prerequisites and source development.
 
-Configure project directory/network defaults, then an Agent's model, credentials and capabilities. Start with one capable Agent and add independent instances when the work needs separate context or responsibility. Managers are optional; main and summary models can be configured independently.
+Configure project directory/network defaults, add model connections and credentials to API Box, then select an Agent's model reference and capabilities. Start with one capable Agent and add independent instances when the work needs separate context or responsibility. Managers are optional; main and summary models can be configured independently.
 
 Local tools default to the [native sandbox](docs/native/README.md): PSEC on Windows and Bubblewrap on Linux. Unavailable capabilities fail explicitly. Commands and process Agents also require the host's `--allow-commands` grant. Explicit `trusted` mode provides no OS isolation. Startup creates no demonstration work or model calls.
 
@@ -99,4 +102,4 @@ Runtime state belongs on a local disk outside Git repositories and synchronized 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and [SECURITY.md](SECURITY.md) for sensitive reports. The repository includes generic automated contract tests and source fixtures, with no populated workspace or generated test output.
 
-Licensed under [MIT](LICENSE). The `oea` package and CLI use control protocol 3.0. Migrate supported older state formats offline into a new directory. Updates with the same state schema can reuse the existing data directory.
+Licensed under [MIT](LICENSE). The `oea` package and CLI use control protocol 4.0. Migrate supported older state formats offline into a new directory. Updates with the same state schema can reuse the existing data directory.

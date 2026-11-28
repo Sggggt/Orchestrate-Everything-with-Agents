@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea.contracts.configuration import AgentDefinition, Budget, Model, ModelPricing, Execution, Tools, Workspace
 from oea.contracts.domain import RunSpec, Completion
 from oea.contracts.errors import RuntimeFault
@@ -22,7 +24,7 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         self.price = ModelPricing(currency="USD", revision="test-price", input_per_million=1,
             output_per_million=2, cache_read_per_million="0.1", cache_write_per_million=4)
         self.model = Model(base_url="https://model.invalid/v1", model="fixture", pricing=self.price)
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=self.model))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, self.model)))
         session = await self.host.sessions.create("p")
         self.session = session
         shared = await self.host.budgets.create("p", Budget(max_cost="0.1"), "shared", session_id=session["id"])
@@ -151,7 +153,7 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         price = ModelPricing(currency="USD", revision="tail-test", input_per_million=0, output_per_million=1,
                              cache_read_per_million=0, cache_write_per_million=0)
         await self.host.agents.save(AgentDefinition(id="tail", name="Tail", project_id="p",
-            model=self.model.model_copy(update={"pricing":price,"max_output_tokens":1000}),
+            model_ref=await register_model(self.host, self.model.model_copy(update={"pricing":price,"max_output_tokens":1000})),
             tools=Tools(local=("apply_patch","publish_artifact")) if partial else Tools(), workspace=Workspace(sandbox="trusted"),
             execution=Execution(budget=Budget(max_cost="0.001", max_output_tokens=100000, finalization_fraction=.2, recovery_fraction=.1))))
         instance = await self.host.instances.create(self.session["id"], "tail")

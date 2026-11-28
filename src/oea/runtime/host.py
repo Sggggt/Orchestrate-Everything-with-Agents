@@ -14,7 +14,7 @@ from oea.applications.business import ApplicationBusiness
 from oea.applications.access import PlatformAccess
 from oea.budgets.service import Budgets
 from oea.catalog.service import Agents, Instances, Projects, Sessions, need
-from oea.contracts.configuration import AgentDefinition, PROTOCOL_VERSION
+from oea.contracts.configuration import AgentDefinition, RunConfiguration, PROTOCOL_VERSION
 from oea.context.store import ContextStore
 from oea.contracts.errors import RuntimeFault, require
 from oea.security.lock import WorkspaceLock
@@ -57,6 +57,8 @@ class Host:
         self.transport = ModelTransport()
         self.model_api = model_api
         self.models = ModelExecutor(self)
+        from oea.models.profiles import ModelProfiles
+        self.model_profiles = ModelProfiles(self)
         self.budgets = Budgets(self.store)
         self.command_sessions = CommandSessions(self.root / "commands", on_settle=self._command_settled)
         self.contexts = ContextStore(self.store, redact=self.redact, command_facts=self.command_sessions.facts)
@@ -74,6 +76,10 @@ class Host:
         self.mcp = UpstreamMCP(self)
         self.skills = Skills(self)
         self.history = ImportedHistory(self)
+        from oea.plugins.service import Plugins
+        self.plugins = Plugins(self)
+        from oea.plugins.factory import AgentFactory, FactoryTool
+        self.factory = AgentFactory(self)
         self.pending_launches = set()
         self.project_deletion_scopes = {}
         self.workflows = Workflows(self)
@@ -86,6 +92,8 @@ class Host:
         self.registry = OperationRegistry(authorize=self.access.guard)
         self.file_writes = FileWrites()
         self.saver_scope = self.saver = self.graph = None
+        for name in ("plugin_options", "create_agent", "build_plugin"):
+            self.tools.register(FactoryTool(self, name))
         for name in SCHEMAS:
             self.tools.register(LocalTool(name, resolve_run=self.resolve_workspace, publish=self.artifacts.publish, commands_enabled=allow_commands, file_writes=self.file_writes, image_artifact=self.artifacts.image_for_run, sessions=self.command_sessions))
         self.tools.register(ProcessAgentTool(self, enabled=allow_commands))
@@ -94,9 +102,9 @@ class Host:
         for name in sorted(COORDINATION_TOOLS):
             self.tools.register(CoordinationTool(self, name))
         for area, service, names in (("projects", self.projects, ("create", "get", "list", "update", "delete")),
-                                     ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_credential")),
+                                     ("agents", self.agents, ("save", "get", "list", "schema", "check", "probe", "remove", "set_model", "create")),
                                      ("sessions", self.sessions, ("create", "get", "list", "update", "set_archived", "set_mode", "summary", "unread")),
-                                     ("instances", self.instances, ("create", "get", "list", "history", "message", "mark_read", "remove")),
+                                     ("instances", self.instances, ("create", "get", "list", "history", "message", "mark_read", "remove", "set_model")),
                                      ("runs", self.runs, ("submit", "get", "list", "inspect", "action", "command", "attempts", "response", "result", "resume", "cancel", "confirm_action", "mark_handled")),
                                      ("artifacts", self.artifacts, ("get", "for_run", "read", "list", "candidates", "candidate", "begin_upload", "get_upload", "commit_upload")),
                                      ("workflows", self.workflows, ("create", "get", "list", "update", "schema", "node_types", "validate", "activity", "set_archived", "remove", "restore", "run", "get_run", "list_runs", "inspect", "node_result", "members", "result", "resume", "cancel")),
@@ -108,6 +116,10 @@ class Host:
             self.registry.register("messages." + name, getattr(self.messages, name), read_only=name in {"get", "list", "unread"})
         for name in ("create", "get", "list", "rotate_credential", "set_enabled", "remove", "bind", "bindings"):
             self.registry.register("applications." + name, getattr(self.applications, name), read_only=name in {"get", "list", "bindings"})
+        for area, service, names in (("models", self.model_profiles, ("get", "list", "save", "set_credential", "set_enabled", "remove", "probe")),
+                                     ("plugins", self.plugins, ("list", "get", "catalog", "install", "update", "set_enabled", "remove", "bind", "configure_component", "build", "export", "sources", "add_source", "refresh_source", "remove_source"))):
+            for name in names:
+                self.registry.register(area + "." + name, getattr(service, name), read_only=name in {"get", "list", "catalog", "sources"})
         self.registry.register("host.status", self.status, read_only=True)
         self.registry.register("host.describe", self.describe, read_only=True)
         self.registry.register("host.guide", self.guide, read_only=True)
@@ -137,6 +149,8 @@ class Host:
             self.vault = SecretVault(self.root)
             if self.model_api is None:
                 self.model_api = ModelAPI(self.transport, secret=self.secret, redact=self.redact)
+            await self.model_profiles.open()
+            await self.plugins.open()
             definitions = await self.store.call(lambda db: rows(db, "SELECT config_json FROM agent_definitions"))
             self.definitions = {definition.id: definition for definition in (AgentDefinition.model_validate_json(row["config_json"]) for row in definitions) if not definition.removed}
             await self.applications.open()
@@ -147,6 +161,7 @@ class Host:
             await self.saver.setup()
             self.graph = self.agent_graphs.resolve(Execution())
             self.opened = True
+            await self.plugins.start()
             await self._recover()
             await self.workflows.open()
             await self.dependencies.open()
@@ -174,7 +189,7 @@ class Host:
         counts, workflow_counts = await self.store.call(read)
         workflows = {row["state"]: row["count"] for row in workflow_counts}
         active_workflows = workflows.get("running", 0) + len(set(self.workflows.computation_owners.values()) & self.workflows.reviewing)
-        return {"version": __version__, "protocol_version": "3.0", "opened": self.opened, "closing": self.closing, "native_component": await inspect_component(),
+        return {"version": __version__, "protocol_version": PROTOCOL_VERSION, "opened": self.opened, "closing": self.closing, "native_component": await inspect_component(),
                 "data_dir": str(self.root), "allow_commands": self.tools.providers["exec_command"].commands_enabled,
                 "active_executions": len(self.active) + active_workflows,
                 "active_agent_executions": len(self.active), "active_workflow_executions": active_workflows,
@@ -362,18 +377,11 @@ class Host:
         if context.scope.source == "application":
             require(self.applications.current_grant(context.scope).model, "PERMISSION_DENIED", "Application model authorization was revoked")
             current = context.current_definition()
-        model = current.model
-        summary_model = current.summary_model
         if context.instance["role"] == "manager":
             session = await self.sessions.get(context.instance["session_id"])
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager is no longer enabled")
-            model = current.manager.model
-            summary_model = current.manager.summary_model
-        saved = context.definition.model
-        if purpose == "summary":
-            model = summary_model or model
-            saved = context.definition.summary_model or saved
-        require(model.credential_ref == saved.credential_ref, "MODEL_CONFIGURATION_CHANGED", "Model credentials changed; inspect and resume at an explicit boundary")
+        self.model_profiles.authorize(context.definition, purpose=purpose)
+        saved = (context.definition.summary_model or context.definition.model) if purpose == "summary" else context.definition.model
         require(saved.base_url and saved.model, "MODEL_NOT_CONFIGURED", "Save an endpoint and model before running")
         credential = self.secret(saved.credential_ref)
         require(not saved.credential_ref or credential, "MODEL_NOT_CONFIGURED", "The configured model credential is unavailable")
@@ -400,6 +408,9 @@ class Host:
                     continuation="request_user_authorization")
             return
         context.check_tool_policy(name)
+        if name in {"plugin_options", "create_agent", "build_plugin"}:
+            self.factory.authorize(context, name)
+            return
         if name in COORDINATION_TOOLS:
             require(name in context.coordination_tools(), "PERMISSION_DENIED", "Communication capability is not currently bound")
             return
@@ -516,7 +527,7 @@ class Host:
         run, instance, resumption, deadline, budget_policy, scope, project = claimed
         graph = config = None
         try:
-            definition = AgentDefinition.model_validate_json(run["config_json"])
+            definition = RunConfiguration.model_validate_json(run["config_json"])
             if scope.source == "application":
                 self.applications.current_grant(scope)
             graph = await self.agent_graphs.resolve_execution(definition.execution, instance["project_id"],

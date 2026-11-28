@@ -1,6 +1,5 @@
 """Candidate ownership, cached canvas projections and retained execution versions."""
 
-import hashlib
 from contextlib import closing
 import json
 from pathlib import Path
@@ -10,6 +9,9 @@ import unittest
 from unittest.mock import patch
 
 import httpx
+
+from historical_state import historical_state
+from model_support import register_model
 
 from oea import AgentArchitecture, AgentDefinition, ArchitectureBinding, ArchitectureClient, Completion, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
@@ -35,7 +37,7 @@ class CanvasTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create('Project', project_id='p')
         await self.host.projects.create('Other', project_id='q')
         for identity in ('first', 'second'):
-            await self.host.agents.save(AgentDefinition(id=identity, project_id='p', name=identity, model=Model(base_url='http://model.invalid', model='test')))
+            await self.host.agents.save(AgentDefinition(id=identity, project_id='p', name=identity, model_ref=await register_model(self.host, Model(base_url='http://model.invalid', model='test'))))
         self.client = ArchitectureClient(self.host)
         self.graph = react().model_dump(mode='json')
         self.graph['metadata']['extension'] = {'preserve': [1, 2]}
@@ -102,7 +104,7 @@ class CanvasTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(host=self.host)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1', headers={'Authorization': 'Bearer ' + app.state.token}) as client:
-                response = await client.post('/api/rpc', json={'protocol_version': '3.0', 'request_id': 'remove', 'operation': 'architectures.remove',
+                response = await client.post('/api/rpc', json={'protocol_version': '4.0', 'request_id': 'remove', 'operation': 'architectures.remove',
                     'params': {'project_id': 'p', 'architecture_id': 'draft', 'owner_agent_id': 'first', 'expected_revision': 1}})
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response.json()['result']['removed'])
@@ -112,20 +114,8 @@ class CanvasTests(unittest.IsolatedAsyncioTestCase):
     async def test_offline_upgrade_preserves_original_versions_and_checkpoints(self):
         await self.client.publish('draft', 'p', 1)
         await self.host.aclose()
-        source = self.root / 'source'
-        frozen = Path(__file__).parents[1] / 'src/oea/migration/schema-v3-pre-canvas.sql'
-        self.assertEqual(hashlib.sha256(frozen.read_text(encoding='utf-8').encode()).hexdigest(), PRE_CANVAS_SCHEMA)
-        with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
-            db.execute('DROP INDEX instances_identity')
-            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
-            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
-            db.execute('DROP INDEX usage_attention')
-            db.execute('ALTER TABLE runs DROP COLUMN handled_at')
-            db.execute('DROP INDEX agent_architectures_owner')
-            db.execute('ALTER TABLE agent_architectures DROP COLUMN owner_agent_id')
-            db.execute('ALTER TABLE agent_architectures DROP COLUMN removed')
-            db.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (PRE_CANVAS_SCHEMA,))
-            db.execute("UPDATE metadata SET value='2' WHERE key='schema_revision'")
+        source = historical_state(self.root / 'source', self.root / 'historical', revision=2, schema_hash=PRE_CANVAS_SCHEMA)
+        with closing(sqlite3.connect(source / 'oea.sqlite')) as db:
             original = db.execute('SELECT definition_json,sha256 FROM architecture_versions').fetchall()
         before = (source / 'oea.sqlite').read_bytes()
         checkpoint = (source / 'graphs.sqlite').read_bytes()

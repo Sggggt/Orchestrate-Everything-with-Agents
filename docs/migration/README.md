@@ -1,4 +1,4 @@
-# Offline migration to protocol 3
+# Offline migration to protocol 4
 
 Migration reads an idle source and creates a separate new target. Normal startup accepts only the current schema; it never upgrades a database in place or selects an old execution path.
 
@@ -35,3 +35,11 @@ The Agent canvas release adds candidate ownership and deletion markers plus cach
 ## OEA 3.4.7 state upgrade
 
 OEA 3.4.7 uses state schema revision 5 to record instance removal while retaining history. Use `oea upgrade-state` with the 3.4.7 CLI to convert a stopped revision 4 state directory into a new target. The conversion preserves existing Run records, graph checkpoints, workspace bindings and model secrets. It verifies managed artifact copies and rotates the target's local control credential. After switching to the target, run `oea open` to sign in again and reconnect existing MCP clients.
+
+## OEA 4.0 API Box upgrade
+
+The current target is control protocol 4.0 and schema revision 6. The offline converter imports all main, summary and manager model connections into the user API Box, preserving distinct settings and credentials. Definitions and instance configurations retain only model references. Immutable Run snapshots retain their accepted model settings and original receipts. Compatible protocol-3 graph positions remain recoverable; archived older execution versions stay unsupported and are never replayed.
+
+Conversion verifies record counts, references, artifact hashes, credentials and source stability before marking the new target usable. Only credentials without retained references are removed from the new vault; MCP credentials, pending actions and source backups remain. Budgets and usage are unchanged. After verifying the target, update the matching runtime, switch the data entry explicitly and reconnect control MCP clients. A source checkout is not a published installation package.
+
+An offline product upgrade holds accepted, running and waiting work for explicit continuation. Original states and errors are retained in the private migration receipt; actions, checkpoints, waits and budgets remain. Startup does not replay imported business work. Previously unresolved work remains unresolved.

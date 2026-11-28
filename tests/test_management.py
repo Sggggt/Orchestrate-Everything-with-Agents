@@ -7,6 +7,8 @@ import tempfile
 import unittest
 import uuid
 
+from model_support import register_model
+
 from oea import (AgentDefinition, Budget, Communication, Completion, ContextPolicy, Delivery,
                  Execution, Instructions, Manager, MCPBinding, MCPServer, Model, RunSpec,
                  SkillBinding, Tools, Workspace)
@@ -112,7 +114,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         skill.mkdir()
         (skill / "SKILL.md").write_text("A public guide.", encoding="utf-8")
         definition = AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="main", temperature=0.2),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="main", temperature=0.2)),
             instructions=Instructions(system="Review assigned inputs.", agent_md="Retain evidence."),
             tools=Tools(local=("exec_command", "apply_patch"), functions=("review",), mcp=(MCPBinding(server_id="business", tools=("inspect",)),)),
             skills=(SkillBinding(id="guide", path=skill, name="Guide", description="Review guidance", required=True),),
@@ -120,7 +122,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
             workspace=Workspace(sandbox="trusted", project=project, work=self.root / "work", references=(skill,), writable_project_paths=("output",), environment={"REVIEW_MODE": "local"}),
             execution=Execution(budget=Budget(max_model_calls=12), delivery=Delivery(min_artifacts=1)),
             communication=Communication(departments=("review",), can_request=True),
-            manager=Manager(model=Model(base_url="https://manager.invalid/v1", model="manager"), instructions=Instructions(system="Coordinate reviewers.")))
+            manager=Manager(model_ref=await register_model(self.host, Model(base_url="https://manager.invalid/v1", model="manager")), instructions=Instructions(system="Coordinate reviewers.")))
         saved = await self.host.registry.call("agents.save", {"definition": definition.model_dump(mode="json"), "expected_revision": 0})
         self.assertEqual(saved["definition"], definition.model_dump(mode="json"))
         renamed = definition.model_copy(update={"name": "Renamed worker"})
@@ -185,7 +187,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_archive_preserves_completed_work_until_restored(self):
         session = await self.host.sessions.create("p", "Work")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://fixture.invalid/v1", model="fixture")))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://fixture.invalid/v1", model="fixture"))))
         instance = await self.host.instances.create(session["id"], "worker", name="stable")
         original = RunSpec(instance_id=instance["id"], input="Retain this result.", idempotency_key="original")
         accepted = await self.host.runs.submit(original)
@@ -234,7 +236,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
                 return Completion(text="Retained in-flight result", usage={"prompt_tokens": 1, "completion_tokens": 1})
         self.host.model_api = InFlightModel()
         session = await self.host.sessions.create("p")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://fixture.invalid/v1", model="fixture")))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://fixture.invalid/v1", model="fixture"))))
         instance = await self.host.instances.create(session["id"], "worker", name="stable")
         accepted = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Existing work", idempotency_key="in-flight"))
         try:
@@ -258,7 +260,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
 
         self.host.model_api = InFlightModel()
         session = await self.host.sessions.create("p")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://fixture.invalid/v1", model="fixture")))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://fixture.invalid/v1", model="fixture"))))
         instance = await self.host.instances.create(session["id"], "worker", name="stable")
         params = {"instance_id": instance["id"], "project_id": "p"}
         with self.assertRaises(RuntimeFault) as denied:

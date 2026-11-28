@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 from apsw import CantOpenError
 
+from model_support import register_model
+
 from oea.contracts.configuration import AgentDefinition, Budget, CapabilityUse, Execution, Manager, Model, SkillBinding, UsePolicy, Workspace
 from oea.contracts.domain import Completion, RunSpec
 from oea.contracts.errors import RuntimeFault
@@ -167,21 +169,20 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.host.register_tool(unsafe_query)
         saved = await self.host.agents.get("worker")
         definition = AgentDefinition.model_validate(saved["definition"])
-        definition.model.credential_ref = "env:OEA_TEST_SCHEMA_KEY"
+        await self.host.model_profiles.set_credential(definition.model_ref, secret, 1)
         definition.tools.loading = "eager"
         definition.tools.functions = ("unsafe_query",)
-        with patch.dict("os.environ", {"OEA_TEST_SCHEMA_KEY": secret}):
-            await self.host.agents.save(definition, expected_revision=1)
-            instance = await self.host.instances.create(self.session["id"], "worker")
-            rejected = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Use the declared capability", idempotency_key="unsafe-metadata"))
-            with self.assertRaises(RuntimeFault) as unsafe:
-                await self.host.runs.result(rejected.id, timeout=5)
-            self.assertEqual(unsafe.exception.code, "TOOL_SCHEMA_CONTAINS_SECRET")
-            self.assertEqual(model.calls, 0)
-            definition.tools.functions = ("safe_query",)
-            await self.host.agents.save(definition, expected_revision=2)
-            accepted = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Use public metadata", idempotency_key="safe-metadata"))
-            await self.host.runs.result(accepted.id, timeout=5)
+        await self.host.agents.save(definition, expected_revision=1)
+        instance = await self.host.instances.create(self.session["id"], "worker")
+        rejected = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Use the declared capability", idempotency_key="unsafe-metadata"))
+        with self.assertRaises(RuntimeFault) as unsafe:
+            await self.host.runs.result(rejected.id, timeout=5)
+        self.assertEqual(unsafe.exception.code, "TOOL_SCHEMA_CONTAINS_SECRET")
+        self.assertEqual(model.calls, 0)
+        definition.tools.functions = ("safe_query",)
+        await self.host.agents.save(definition, expected_revision=2)
+        accepted = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Use public metadata", idempotency_key="safe-metadata"))
+        await self.host.runs.result(accepted.id, timeout=5)
         declared = next(value for value in model.tools if value["function"]["name"] == "safe_query")
         self.assertEqual(declared["function"]["parameters"]["properties"]["api_key"]["type"], "string")
         self.assertEqual(model.calls, 1)
@@ -219,7 +220,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root / "state", model_api=model, allow_commands=True).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://example.invalid/v1", model="protocol-fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="protocol-fixture")),
             tools=(tools or ToolKit.local(files=False)).bindings, workspace=workspace or Workspace(sandbox="trusted", )))
         self.session = await self.host.sessions.create("p", session_id="session")
 
@@ -518,16 +519,16 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         model = WaitModel()
         await self.open(model)
         value = (await self.host.agents.get("worker"))["definition"]
-        value["model"] = Model().model_dump()
+        value["model_ref"] = None
         await self.host.agents.save(value)
         handle = await self.submit()
         with self.assertRaises(RuntimeFault) as caught:
             await self.host.runs.result(handle.id, timeout=10)
         self.assertEqual(caught.exception.code, "MODEL_NOT_CONFIGURED")
         before = await self.host.instances.get(handle.instance_id)
-        value["model"] = Model(base_url="https://example.invalid/v1", model="configured").model_dump()
+        value["model_ref"] = await register_model(self.host, Model(base_url="https://example.invalid/v1", model="configured"))
         await self.host.agents.save(value)
-        await self.host.runs.resume(handle.id, "configured-model", input="The confirmed answer is 37")
+        await self.host.runs.resume(handle.id, "configured-model", input="The confirmed answer is 37", refresh_model=True)
         self.assertEqual((await self.host.runs.result(handle.id, timeout=10)).text, "Answer: 37")
         after = await self.host.instances.get(handle.instance_id)
         self.assertEqual(before["workspace"]["work_dir"], after["workspace"]["work_dir"])
@@ -733,7 +734,7 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
             model.release.set()
         await self.host.runs.result(unrelated.id, timeout=10)
         definition = (await self.host.agents.get("worker"))["definition"]
-        definition["manager"] = Manager(model=Model(base_url="https://example.invalid/v1", model="manager")).model_dump(mode="json")
+        definition["manager"] = Manager(model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="manager"))).model_dump(mode="json")
         await self.host.agents.save(definition)
         await self.host.sessions.set_mode(self.session["id"], "collaborative", 0)
         manager = await self.host.instances.create(self.session["id"], "worker", name="manager", role="manager")
@@ -825,11 +826,11 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
 
         await self.open(ManagerModel(), tools=ToolKit.local(commands=True))
         definition = (await self.host.agents.get("worker"))["definition"]
-        definition["model"] = Model().model_dump()
+        definition["model_ref"] = None
         definition["instructions"] = {"system": "PRIVATE_MAIN_INSTRUCTION", "agent_md": ""}
         definition["execution"]["program"] = ["unavailable-business-program"]
         definition["skills"] = [SkillBinding(id="business", path=self.root / "private-skill", required=True).model_dump(mode="json")]
-        definition["manager"] = Manager(model=Model(base_url="https://example.invalid/v1", model="manager-only"), tools=__import__("oea").Tools(), skills=(), execution=Execution()).model_dump(mode="json")
+        definition["manager"] = Manager(model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="manager-only")), tools=__import__("oea").Tools(), skills=(), execution=Execution()).model_dump(mode="json")
         await self.host.agents.save(definition)
         await self.host.store.call(lambda db: db.execute("UPDATE sessions SET mode='collaborative' WHERE id=?", (self.session["id"],)), transaction=True)
         instance = await self.host.instances.create(self.session["id"], "worker", name="manager", role="manager")

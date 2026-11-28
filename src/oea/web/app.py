@@ -114,7 +114,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             if not token or not hmac.compare_digest(token.encode("utf-8"), provided.encode("utf-8")):
                 return JSONResponse(envelope(error={"code": "PERMISSION_DENIED", "safe_message": "Local client authentication required"}), status_code=401)
             if request.headers.get("X-OEA-Protocol-Version", PROTOCOL_VERSION) != PROTOCOL_VERSION:
-                return JSONResponse(envelope(error={"code": "PROTOCOL_MISMATCH", "safe_message": "Use an OEA protocol-3 client"}), status_code=409)
+                return JSONResponse(envelope(error={"code": "PROTOCOL_MISMATCH", "safe_message": "Use an OEA protocol-4 client"}), status_code=409)
         response = await call_next(request)
         response.headers.update({"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
@@ -165,7 +165,8 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             require(call.protocol_version == PROTOCOL_VERSION, "PROTOCOL_MISMATCH", "Use the current operation contract")
             consumer = request.headers.get("X-OEA-Consumer-ID", "browser")
             require(0 < len(consumer) <= 128 and 0 < len(call.request_id) <= 256, "INVALID_REQUEST", "Use bounded request and consumer identities")
-            value = await app.state.host.registry.call(call.operation, call.params, correlation_id=call.request_id, consumer_id=consumer, agent_name=call.agent_name)
+            value = await app.state.host.registry.call(call.operation, call.params, correlation_id=call.request_id, consumer_id=consumer,
+                agent_name=call.agent_name, user_initiated=not bool(request.headers.get("authorization")))
             result = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
             encoded = encode(result)
             if call.compact and call.operation != "results.read" and len(encoded.encode("utf-8")) > app.state.host.results.inline_bytes:
@@ -178,7 +179,7 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             return envelope(error=app.state.host.redact(error.as_dict()), request_id=call.request_id)
 
     @app.get("/api/events")
-    async def events(request: Request, project_id: str | None = None, session_id: str | None = None, run_id: str | None = None, after: int = 0):
+    async def events(request: Request, project_id: str | None = None, session_id: str | None = None, run_id: str | None = None, after: int = 0, global_scope: bool = False):
         backend = app.state.host
         if request.headers.get("last-event-id"):
             try:
@@ -192,7 +193,8 @@ def create_app(state_dir=None, *, host=None, allow_commands=False, client_url=No
             owner = await backend.store.call(scope)
             require(project_id in {None, owner}, "PERMISSION_DENIED", "Run belongs to another project")
             project_id = owner
-        require(project_id is not None, "INVALID_REQUEST", "Select an owning project")
+        require(not global_scope or project_id is None and session_id is None and run_id is None, "INVALID_REQUEST", "Global events cannot include a business scope")
+        require(project_id is not None or global_scope, "INVALID_REQUEST", "Select an owning project or global scope")
         await backend.events_service.list(project_id, session_id=session_id, run_id=run_id, after=after, limit=1)
         async def frames():
             position = after

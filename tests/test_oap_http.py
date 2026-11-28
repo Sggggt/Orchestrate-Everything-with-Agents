@@ -9,6 +9,8 @@ import unittest
 
 import httpx
 
+from model_support import register_model
+
 from oea import AgentDefinition, ApplicationBinding, ApplicationClient, ApplicationGrant, Instructions, Model, PlatformClient
 from oea.contracts.applications import OAP_PREFIX
 from oea.contracts.errors import RuntimeFault
@@ -35,7 +37,7 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.platform.aclose)
         await self.host.projects.create("Example", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid", model="fixture"), instructions=Instructions(system="Internal role", agent_md="Private project guide")))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid", model="fixture")), instructions=Instructions(system="Internal role", agent_md="Private project guide")))
         self.clients, self.registrations, self.conversations = [], [], []
         for name in ("First", "Second"):
             registered = await self.platform.call("applications.create", {"name": name})
@@ -58,7 +60,7 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         agents = await client.agents()
         self.assertEqual(len(agents["items"]), 1)
         self.assertNotIn("credential", json.dumps(agents))
-        management = await client.client.post("/api/rpc", json={"protocol_version": "3.0", "operation": "projects.list", "params": {}, "request_id": "forged"})
+        management = await client.client.post("/api/rpc", json={"protocol_version": "4.0", "operation": "projects.list", "params": {}, "request_id": "forged"})
         self.assertEqual(management.status_code, 401)
         landing = await client.client.get("/")
         self.assertNotIn("set-cookie", landing.headers)
@@ -178,7 +180,7 @@ class OAPHTTPTests(unittest.IsolatedAsyncioTestCase):
         first, second = await self.complete(0), await self.complete(1)
         await self.host.projects.create("Other", project_id="q")
         await self.host.agents.save(AgentDefinition(id="other", name="Other", project_id="q",
-            model=Model(base_url="https://model.invalid", model="fixture")))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid", model="fixture"))))
         app_id = self.registrations[0]["application"]["id"]
         binding = await self.host.applications.bind(ApplicationBinding(app_id=app_id, project_id="q", agent_id="other"))
         conversation = await self.clients[0].create_conversation(binding["id"], idempotency_key="other-conversation")

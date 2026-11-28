@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Execution, Model, RunSpec, WorkflowBuilder
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -22,7 +24,7 @@ class LimitTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(Path(self.temporary.name) / "state", model_api=ModelFixture()).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="fixture"), execution=Execution(max_steps=1)))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="fixture")), execution=Execution(max_steps=1)))
         session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(session["id"], "worker")
 

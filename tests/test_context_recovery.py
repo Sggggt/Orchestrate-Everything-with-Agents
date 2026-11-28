@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import httpx
 
+from model_support import register_model
+
 from oea import AgentDefinition, Budget, Execution, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.models.api import ModelAPI
@@ -48,7 +50,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def configure(self, calls=128):
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="fixture")),
             execution=Execution(budget=Budget(max_model_calls=calls))))
 
     async def asyncTearDown(self):

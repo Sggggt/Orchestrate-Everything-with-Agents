@@ -1,7 +1,14 @@
 import { animate,reducedMotion } from "./motion.mjs";
+export const controlProtocol="4.0";
 export const $=(selector,root=document)=>root.querySelector(selector);
 export const escape=(value="")=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const paths = {
+  more: "M4 12h1 M11.5 12h1 M19 12h1",
+  layers: "m12 3 9 5-9 5-9-5z M3 12l9 5 9-5 M3 16l9 5 9-5",
+  cube: "m12 2 9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10 M7 4.8l9 5",
+  chip: "M6 6h12v12H6z M9 2v4 M15 2v4 M9 18v4 M15 18v4 M2 9h4 M2 15h4 M18 9h4 M18 15h4 M10 10h4v4h-4z",
+  edit: "m15 4 5 5 M4 20l4-1 13-13-4-4L4 15z",
+  power: "M12 2v10 M7 5a8 8 0 1 0 10 0",
   plug: "M8 2v5 M16 2v5 M6 7h12v4a6 6 0 0 1-6 6v5 M12 17a6 6 0 0 1-6-6",
   book: "M4 3h7a3 3 0 0 1 3 3v15a4 4 0 0 0-4-2H4z M14 6a3 3 0 0 1 3-3h4v16h-3a4 4 0 0 0-4 2",
   grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
@@ -63,7 +70,7 @@ export function notify(message,error=false) {const root=$("#toast"); root.textCo
 export async function rpc(operation,params={}) {
   let consumer=localStorage.getItem("oea-consumer"); if(!consumer){consumer="browser-"+crypto.randomUUID();localStorage.setItem("oea-consumer",consumer);}
   let response;
-  try {response=await fetch("/api/rpc",{method:"POST",headers:{"Content-Type":"application/json","X-OEA-Protocol-Version":"3.0","X-OEA-Consumer-ID":consumer},body:JSON.stringify({protocol_version:"3.0",operation,params,...(operation==="messages.send"?{agent_name:"leader"}:{}),request_id:crypto.randomUUID()})});}
+  try {response=await fetch("/api/rpc",{method:"POST",headers:{"Content-Type":"application/json","X-OEA-Protocol-Version":controlProtocol,"X-OEA-Consumer-ID":consumer},body:JSON.stringify({protocol_version:controlProtocol,operation,params,request_id:crypto.randomUUID()})});}
   catch {throw new Error("连接中断。请先查询原回执，再继续原工作。");}
   const body=await response.json(); if(body.error){const detail=body.error.details?.errors?.map(item=>item.path.join(".")+": "+item.message).join("\n");throw Object.assign(new Error(body.error.safe_message+(detail?"\n"+detail:"")),body.error);} if(!response.ok)throw new Error("本地服务暂不可用"); return body.result;
 }

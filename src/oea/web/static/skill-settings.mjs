@@ -10,10 +10,10 @@ export async function manageSkills(app,root){
   let entry=projects.get(project.id);
   if(!entry){
     const state={project,skillRegistry:{items:[]},skillDetail:null,skillDirectory:"",skillQuery:"",skillEpoch:0,skillFiles:[]};
-    const current=()=>app.state.project?.id===project.id&&app.state.page==="skills";
+    const current=()=>app.state.project?.id===project.id&&app.state.page==="plugins"&&app.state.pluginTab==="skills";
     let component;
     const draw=()=>{
-      const target=$("#page");if(!current()||!target)return;
+      const target=entry.root;if(!current()||!target?.isConnected)return;
       const focus=document.activeElement?.id,selection=document.activeElement?.selectionStart;
       target.className="";target.innerHTML=component.page();
       target.onclick=async event=>{const button=event.target.closest("[data-action]");if(!button||button.disabled)return;try{await component.action(button.dataset.action,button);}catch(error){notify(error.message,true);}};
@@ -28,5 +28,5 @@ export async function manageSkills(app,root){
     entry={load,draw,refresh};projects.set(project.id,entry);
   }
   app.onSkillEvent=fact=>entry.refresh(fact);
-  await entry.load();entry.draw();
+  entry.root=root;await entry.load();entry.draw();
 }

@@ -15,7 +15,8 @@ from pathlib import Path
 from pydantic import ValidationError
 from cryptography.fernet import InvalidToken
 
-from oea.contracts.configuration import AgentDefinition, Model, PROTOCOL_VERSION, manager_snapshot
+from oea.contracts.configuration import Model
+from oea.migration.configuration_v3 import AgentDefinition, PROTOCOL_VERSION, manager_snapshot
 from oea.contracts.errors import RuntimeFault, require
 from oea.mcp.upstream import MCPServer
 from oea.security.secrets import dpapi
@@ -395,7 +396,7 @@ class Converter:
         self.report["history_only_tables"] = sorted(set(self.tables) - {"projects", "sessions", "agent_configs", "threads", "messages", "collaboration_messages", "artifacts", "mcp_servers", "skill_registry"})
 
 
-def migrate_legacy(source: str | Path, target: str | Path | None = None, *, apply: bool = False) -> dict:
+def _migrate_to_v3(source: str | Path, target: str | Path | None = None, *, apply: bool = False) -> dict:
     """Inspect schema 29 by default; apply only into a previously absent directory.
 
     Stop the old host and checkpoint SQLite before calling this function. Active locks
@@ -523,3 +524,9 @@ def _convert(source, source_db, destination, apply, source_check):
         if output is not None:
             output.close()
         original.close()
+
+
+def migrate_legacy(source, target=None, *, apply=False):
+    """Convert retired legacy state through the offline-only decoder into API Box state."""
+    from oea.migration.box import chain
+    return chain(_migrate_to_v3, source, target=target, apply=apply)

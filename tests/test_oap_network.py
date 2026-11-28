@@ -14,6 +14,8 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 import uvicorn
 
+from model_support import register_model
+
 from oea import AgentDefinition, ApplicationBinding, ApplicationGrant, Model, Tools
 from oea.runtime.host import Host
 from oea.web.app import create_app
@@ -59,7 +61,7 @@ class OAPNetworkTests(unittest.IsolatedAsyncioTestCase):
 
                     await host.projects.create("Example", project_id="p")
                     tools = Tools(local=("exec_command", "write_stdin", "publish_artifact"))
-                    await host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url=origin + "/v1", model="protocol-fixture"), tools=tools))
+                    await host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(host, Model(base_url=origin + "/v1", model="protocol-fixture")), tools=tools))
                     registered = await host.applications.create("Application")
                     binding = await host.applications.bind(ApplicationBinding(app_id=registered["application"]["id"], project_id="p", agent_id="worker", grant=ApplicationGrant(tools=tools)))
                     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, proxy_headers=False, timeout_graceful_shutdown=2))

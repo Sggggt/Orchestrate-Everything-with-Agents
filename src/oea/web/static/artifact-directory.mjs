@@ -1,11 +1,11 @@
 // Original artifact grouping, cards, upload picker and read-only source modal.
-import { $,escape,icon,rpc,element,notify,date } from "./ui.mjs";
+import { $,controlProtocol,escape,icon,rpc,element,notify,date } from "./ui.mjs";
 import { avatar } from "./workbench-shell.mjs";
 import { artifactDownload,artifactSource,groupArtifacts,readArtifactPreview } from "./artifacts.mjs";
 
 const pages=new WeakMap();
 export const formatBytes=bytes=>bytes<1024?`${bytes} B`:bytes<1024*1024?`${(bytes/1024).toFixed(1)} KB`:`${(bytes/1024/1024).toFixed(1)} MB`;
-function card(item){return `<article class="artifact-card"><button class="artifact-card-open" data-artifact="${escape(item.id)}" data-focus="artifact-${escape(item.id)}" aria-label="查看原文：${escape(item.name)}"><span class="file-symbol">${icon("file")}</span><h3 title="${escape(item.name)}">${escape(item.name)}</h3><p>${formatBytes(item.bytes)}<span>·</span>${date(item.created_at)}</p><span class="artifact-open-hint">查看原文 ${icon("arrow")}</span></button><a class="icon-btn artifact-download" href="${artifactDownload(item.id,item.project_id)}" aria-label="下载 ${escape(item.name)}" title="下载产物">${icon("download")}</a></article>`;}
+function card(item){return `<article class="artifact-card"><button class="artifact-card-open" data-artifact="${escape(item.id)}" data-focus="artifact-${escape(item.id)}" aria-label="查看原文：${escape(item.name)}"><span class="file-symbol">${icon("file")}</span><h3 title="${escape(item.name)}">${escape(item.name)}</h3><p>${formatBytes(item.bytes)}<span>·</span>${date(item.created_at)}</p></button><a class="icon-btn artifact-download" href="${artifactDownload(item.id,item.project_id)}" aria-label="下载 ${escape(item.name)}" title="下载产物">${icon("download")}</a></article>`;}
 
 export function renderArtifactsPage(app,root){
   const s=app.state,scope=s.project.id+":"+s.session?.id,signature=(s.artifacts[0]?.id||"")+":"+(s.summary.artifacts||0);
@@ -16,7 +16,7 @@ export function renderArtifactsPage(app,root){
   const active=()=>root.isConnected&&app.state.page==="artifacts"&&scope===app.state.project?.id+":"+app.state.session?.id;
   const results=()=>{
     const groups=groupArtifacts(page.items,s.agents.map(row=>row.definition));
-    $("#artifact-results",root).innerHTML=groups.length?`<div class="artifacts-by-agent">${groups.map(({source,items})=>`<section class="artifact-source-group" data-source-key="${escape(source.key)}"><div class="section-heading"><h2>${source.kind==="agent"?avatar(s,source.agent_id):icon(source.kind==="upload"?"clip":"file")}${escape(source.label)}</h2><span class="artifact-group-count">${items.length} 项产物</span></div><div class="artifact-grid">${items.map(card).join("")}</div></section>`).join("")}</div>`:`<div class="empty"><h3>${page.query?"没有匹配的产物":"还没有工作产物"}</h3><div>${page.query?"试试文件名或来源 Agent 的名称。":"Agent 交付的成果和你上传的文件会保存在当前会话。"}</div><button class="btn" data-upload>添加产物</button></div>`;
+    $("#artifact-results",root).innerHTML=groups.length?`<div class="artifacts-by-agent">${groups.map(({source,items})=>`<section class="artifact-source-group" data-source-key="${escape(source.key)}"><div class="section-heading"><h2>${source.kind==="agent"?avatar(s,source.agent_id):icon(source.kind==="upload"?"clip":"file")}${escape(source.label)}</h2><span class="artifact-group-count">${items.length} 项产物</span></div><div class="artifact-grid">${items.map(card).join("")}</div></section>`).join("")}</div>`:`<div class="empty"><h3>${page.query?"没有匹配的产物":"还没有工作产物"}</h3><button class="btn" data-upload>添加产物</button></div>`;
     $("#artifact-more",root).hidden=page.cursor==null;
     $(".artifact-total",root).textContent=`已载入 ${page.items.length} 个文件 · ${formatBytes(page.items.reduce((sum,item)=>sum+item.bytes,0))}`;
     for(const button of root.querySelectorAll("[data-artifact]"))button.onclick=()=>previewArtifact(app,button.dataset.artifact);
@@ -50,7 +50,7 @@ export async function uploadArtifact(app,onUploaded){
     const key=localStorage.getItem(slot)||crypto.randomUUID();localStorage.setItem(slot,key);
     const receipt=await rpc("artifacts.begin_upload",{project_id,session_id,name:file.name,bytes:file.size,sha256,idempotency_key:key});
     if(receipt.state!=="completed"){
-      const response=await fetch(`/api/artifact-uploads/${encodeURIComponent(receipt.id)}/content?project_id=${encodeURIComponent(project_id)}`,{method:"PUT",headers:{"Content-Type":"application/octet-stream","X-OEA-Protocol-Version":"3.0","X-OEA-Consumer-ID":localStorage.getItem("oea-consumer")},body:file});
+      const response=await fetch(`/api/artifact-uploads/${encodeURIComponent(receipt.id)}/content?project_id=${encodeURIComponent(project_id)}`,{method:"PUT",headers:{"Content-Type":"application/octet-stream","X-OEA-Protocol-Version":controlProtocol,"X-OEA-Consumer-ID":localStorage.getItem("oea-consumer")},body:file});
       const result=await response.json();if(result.error)throw new Error(result.error.safe_message);if(!response.ok||result.result?.state!=="completed")throw new Error("请读取原上传回执，核对文件是否已完整接收。");
     }
     localStorage.removeItem(slot);notify("产物已收存");onUploaded?.({id:receipt.id,name:receipt.name});

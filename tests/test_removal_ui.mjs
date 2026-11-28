@@ -12,7 +12,7 @@ test("missing Skill sources can be deleted directly from the list after confirma
     rpc:async(operation,params)=>{calls.push({operation,params});assert.equal(operation,"skills.remove");return {removed:true};},
     loadBootstrap:async()=>{state.skillRegistry={items:[]};},showRemove:(skill,after)=>{assert.equal(skill,saved);confirm=after;}});
   assert.match(component.page(),/data-action="registry-skill-delete" data-id="guide"/);
-  assert.match(component.page(),/skill-card-title[\s\S]*registry-skill-select[\s\S]*class="badge[^\"]*">已启用/);
+  assert.match(component.page(),/skill-card-title[\s\S]*registry-skill-select[\s\S]*aria-label="已启用"/);
   assert.match(component.page(),/aria-label="删除 Guide"/);
   assert.doesNotMatch(component.page(),/>删除 Skill<\/button>/);
   await component.action("registry-skill-delete",{dataset:{id:"guide"}});

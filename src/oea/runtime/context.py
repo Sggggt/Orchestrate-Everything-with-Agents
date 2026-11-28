@@ -167,7 +167,8 @@ class RunContext:
                 saved = self.application_definition = (current, grant, self.application_project, assemble(current, grant, *self.application_project[:2]))
             return saved[3]
         require(self.instance["role"] != "manager" or current.manager is not None, "MODE_CHANGED", "The optional role is no longer configured")
-        return manager_snapshot(current) if self.instance["role"] == "manager" else current
+        current = manager_snapshot(current) if self.instance["role"] == "manager" else current
+        return self.host.plugins.current_definition(current, self.instance["project_id"], self.definition)
 
     def authorize_extension(self):
         if self.scope.source == "application":
@@ -177,6 +178,7 @@ class RunContext:
         current = self.current_definition()
         names = [name for name in (*self.definition.tools.local, *self.definition.tools.functions)
                  if name in (*current.tools.local, *current.tools.functions)
+                 and name not in {"plugin_options", "create_agent", "build_plugin"}
                  and not isinstance(self.host.tools.providers.get(name), UpstreamTool)
                  and (name not in {"exec_command", "write_stdin"} or self.host.tools.providers[name].commands_enabled)]
         if self.scope.source == "application":
@@ -184,6 +186,7 @@ class RunContext:
         names.extend(["read_context", "read_history", "read_action", "read_artifact", "wait_for_input"])
         names.extend(self.host.mcp.names(self))
         names.extend(sorted(self.coordination_tools()))
+        names.extend(self.host.factory.names(self))
         if self.available_skills():
             names.append("read_skill")
         names = self.filter_tools(names)
@@ -194,7 +197,7 @@ class RunContext:
             return []
         if names is None:
             names = self.tool_names()
-        return [name for name in names if name in self.definition.tools.functions or name in COORDINATION_TOOLS - {"list_members", "list_boards"} or isinstance(self.host.tools.providers.get(name), UpstreamTool)]
+        return [name for name in names if name in self.definition.tools.functions or name in self.host.factory.names(self) or name in COORDINATION_TOOLS - {"list_members", "list_boards"} or isinstance(self.host.tools.providers.get(name), UpstreamTool)]
 
     async def load_tool(self, name, *, load=True, pin=False, action_id=None):
         require(name in self.deferred_tools(), "PERMISSION_DENIED", "Tool is not currently discoverable in this run")
@@ -284,7 +287,9 @@ class RunContext:
         if self.scope.source == "application":
             return set()
         current, before = self.current_definition().communication, self.definition.communication
-        return COORDINATION_TOOLS if before.can_request and current.can_request else INSTANCE_TOOLS
+        if before.can_request and current.can_request:
+            return COORDINATION_TOOLS
+        return INSTANCE_TOOLS | {"create_instance", "assign_work"} if "create_agent" in self.host.factory.names(self) else INSTANCE_TOOLS
 
     def check_tool_policy(self, name):
         if name == "tool_guide":

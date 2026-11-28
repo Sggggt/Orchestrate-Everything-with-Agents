@@ -1,4 +1,4 @@
-"""Shared version-three Agent configuration; construction performs no I/O."""
+"""Shared version-four Agent configuration; construction performs no I/O."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-PROTOCOL_VERSION = "3.0"
+PROTOCOL_VERSION = "4.0"
 # Encoded image data URIs share one request envelope with text and tools.
 MODEL_REQUEST_TEXT_BYTES = 8 * 1024 * 1024
 MODEL_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
@@ -253,9 +253,16 @@ class Communication(Configuration):
     can_request: bool = False
 
 
+class AgentCreation(Configuration):
+    enabled: bool = False
+    model_refs: tuple[str, ...] = ()
+    plugins: tuple[str, ...] = ()
+    recursive: bool = False
+
+
 class Manager(Configuration):
-    model: Model = Field(default_factory=Model)
-    summary_model: Model | None = None
+    model_ref: str | None = None
+    summary_model_ref: str | None = None
     instructions: Instructions = Field(default_factory=Instructions)
     communication: Communication = Field(default_factory=Communication)
     context: ContextPolicy = Field(default_factory=ContextPolicy)
@@ -272,8 +279,10 @@ class AgentDefinition(Configuration):
     enabled: bool = True
     removed: bool = Field(default=False, json_schema_extra={"readOnly": True})
     description: str = Field(default="", max_length=640)
-    model: Model = Field(default_factory=Model)
-    summary_model: Model | None = None
+    model_ref: str | None = None
+    summary_model_ref: str | None = None
+    plugins: tuple[str, ...] = ()
+    creation: AgentCreation = Field(default_factory=AgentCreation)
     instructions: Instructions = Field(default_factory=Instructions)
     tools: Tools = Field(default_factory=Tools)
     skills: tuple[SkillBinding, ...] = ()
@@ -295,7 +304,20 @@ def manager_snapshot(definition):
     manager = definition.manager
     if manager is None:
         raise ValueError("Manager is not configured")
-    return definition.model_copy(update={"model": manager.model, "summary_model": manager.summary_model, "instructions": manager.instructions,
+    return definition.model_copy(update={"model_ref": manager.model_ref, "summary_model_ref": manager.summary_model_ref, "instructions": manager.instructions,
         "communication": manager.communication, "context": manager.context,
         **{field: getattr(manager, field) if getattr(manager, field) is not None else getattr(definition, field)
            for field in ("tools", "skills", "workspace", "execution")}})
+
+
+class RunConfiguration(AgentDefinition):
+    """Resolved, immutable-at-acceptance execution data, never an Agent declaration."""
+
+    model: Model = Field(default_factory=Model)
+    summary_model: Model | None = None
+    model_version: int | None = None
+    summary_model_version: int | None = None
+    model_name: str | None = None
+    summary_model_name: str | None = None
+    plugin_versions: dict[str, int] = Field(default_factory=dict)
+    plugin_components: dict[str, dict[str, tuple[str, ...]]] = Field(default_factory=dict)

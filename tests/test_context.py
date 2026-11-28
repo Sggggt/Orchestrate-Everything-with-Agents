@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oea.contracts.configuration import AgentDefinition, ContextPolicy, Model
+from oea.contracts.configuration import AgentDefinition, RunConfiguration, ContextPolicy, Model
 from oea.context.store import ContextStore, estimated_tokens, message_groups
 from oea.contracts.errors import RuntimeFault
 from oea.storage.persistence import Store, encode, one, rows
@@ -32,14 +32,15 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="oea-context-")
         self.store = Store(Path(self.temporary.name))
         await self.store.open()
-        self.definition = AgentDefinition(id="worker", name="Worker")
+        agent = AgentDefinition(id="worker", name="Worker")
+        self.definition = RunConfiguration.model_validate(agent.model_dump())
         def seed(db):
             db.execute("INSERT INTO projects(id,name,folder,archived,created_at) VALUES('p','Project',NULL,0,1)")
-            db.execute("INSERT INTO agent_definitions VALUES('worker','p',?,1,1)", (self.definition.model_dump_json(),))
+            db.execute("INSERT INTO agent_definitions VALUES('worker','p',?,1,1)", (agent.model_dump_json(),))
             db.execute("INSERT INTO sessions(id,project_id,name,created_at) VALUES('s','p','Session',1)")
             db.execute("INSERT INTO budgets(id,project_id,root_run_id,policy_json,started_at,created_at) VALUES('b','p','r','{}',1,1)")
             for instance, run in (("i", "r"), ("j", "other")):
-                db.execute("INSERT INTO instances VALUES(?,'p','s','worker',?,'main','{}','{}',?,1,NULL)", (instance, instance, run))
+                db.execute("INSERT INTO instances(id,project_id,session_id,agent_id,name,role,config_json,workspace_json,active_run_id,created_at) VALUES(?,'p','s','worker',?,'main','{}','{}',?,1)", (instance, instance, run))
                 db.execute("INSERT INTO runs(id,instance_id,root_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at) VALUES(?,?,?,'b','running',?,'key','hash','main',1,1)",
                            (run, instance, run, encode("Read the sources and deliver the confirmed answer")))
             return one(db, "SELECT * FROM runs WHERE id='r'"), one(db, "SELECT * FROM instances WHERE id='i'")

@@ -2,7 +2,7 @@
 
 from oea.interfaces.client import PlatformClient
 from oea.contracts.execution import ResumeExecutionLimits
-from oea.contracts.configuration import (PROTOCOL_VERSION, AgentDefinition, Budget, Communication, ContextPolicy,
+from oea.contracts.configuration import (PROTOCOL_VERSION, AgentDefinition, AgentCreation, RunConfiguration, Budget, Communication, ContextPolicy,
                             CapabilityUse, UsePolicy, Delivery, Execution, Instructions, Manager, MCPBinding, Model, ModelPricing, SummaryPolicy, SkillBinding, Tools, Workspace, ProjectWorkspace)
 from oea.contracts.domain import AgentDescriptor, Artifact, Completion, MessageSpec, RunHandle, RunResult, RunSpec, RunDisplay, RunHandlingSelection, Wait
 from oea.contracts.errors import RuntimeFault
@@ -17,9 +17,9 @@ from oea.sdk.architectures import ArchitectureClient
 from oea.mcp.upstream import MCPServer
 from oea.skills.service import SkillSource
 
-__version__ = "3.4.7"
+__version__ = "4.0.0"
 
-__all__ = ["RunHandlingSelection", "AgentArchitecture", "ArchitectureGraph", "ArchitectureNode", "ArchitectureEdge", "ArchitectureBuilder", "ArchitectureOptions", "ArchitectureClient", "StateField", "ArchitectureBinding",
+__all__ = ["AgentCreation", "RunConfiguration", "RunHandlingSelection", "AgentArchitecture", "ArchitectureGraph", "ArchitectureNode", "ArchitectureEdge", "ArchitectureBuilder", "ArchitectureOptions", "ArchitectureClient", "StateField", "ArchitectureBinding",
            "Agent", "AgentInstance", "AgentDefinition", "Model", "ModelPricing", "SummaryPolicy", "Instructions", "Tools", "ToolKit", "tool", "FunctionTool", "ResumeExecutionLimits",
            "ToolProvider", "ToolSpec", "SkillBinding", "ContextPolicy", "Workspace", "ProjectWorkspace", "Execution", "Delivery", "Budget",
            "Communication", "Manager", "MCPBinding", "CapabilityUse", "UsePolicy", "PlatformClient", "RuntimeFault", "AgentDescriptor", "Artifact",

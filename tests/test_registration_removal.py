@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, MCPServer, Model, RunSpec, SkillSource
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -24,7 +26,7 @@ class RegistrationRemovalTests(unittest.IsolatedAsyncioTestCase):
         for project in ("p", "q"):
             await self.host.projects.create(project, project_id=project)
         self.session = await self.host.sessions.create("p")
-        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid/v1", model="fixture"))
+        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="fixture")))
         await self.host.agents.save(self.definition)
 
     async def asyncTearDown(self):
@@ -97,7 +99,7 @@ class RegistrationRemovalTests(unittest.IsolatedAsyncioTestCase):
         source.rmdir()
         removed = await self.host.registry.call("skills.remove", {"skill_id": "guide", "project_id": "p", "expected_revision": 1})
         self.assertTrue(removed["removed"])
-        self.assertEqual((await self.host.skills.list("p"))["items"], [])
+        self.assertEqual([row for row in (await self.host.skills.list("p"))["items"] if row["definition"]["project_id"] == "p"], [])
         self.assertNotIn("guide", self.host.skills.definitions)
         self.assertEqual((await self.host.skills.body("guide", 1))["body"], "Read the evidence.")
         again = await self.host.skills.remove("guide", "p", 1)

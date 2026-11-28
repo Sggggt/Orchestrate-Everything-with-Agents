@@ -7,7 +7,7 @@ from typing import Literal
 from oea.catalog.service import need
 from oea.catalog import reading
 from oea.collaboration.boards import Boards
-from oea.contracts.configuration import AgentDefinition, manager_snapshot
+from oea.contracts.configuration import AgentDefinition, RunConfiguration, manager_snapshot
 from oea.contracts.domain import MessageSpec
 from oea.contracts.errors import RuntimeFault, require
 from oea.context.store import ContextStore
@@ -20,14 +20,14 @@ class Messages:
         self.host = host
 
     @staticmethod
-    def source(db, run_id, session):
+    def source(db, run_id, session, *, current_definition=None):
         require(session["source"] == "platform", "PERMISSION_DENIED", "Application execution has no platform communication capability")
         run = need(db, "runs", run_id)
         instance = need(db, "instances", run["instance_id"])
         require(instance["session_id"] == session["id"] and run["state"] == "running" and run["cancel_requested_at"] is None,
                 "PERMISSION_DENIED", "Sender does not own an active run in this session")
-        before = AgentDefinition.model_validate_json(run["config_json"])
-        current = AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
+        before = RunConfiguration.model_validate_json(run["config_json"])
+        current = current_definition or AgentDefinition.model_validate_json(need(db, "agent_definitions", instance["agent_id"])["config_json"])
         require(current.enabled, "AGENT_DISABLED", "Sender is disabled")
         if instance["role"] == "manager":
             require(session["mode"] == "collaborative" and current.manager is not None, "MODE_CHANGED", "Manager coordination is disabled")
@@ -37,6 +37,11 @@ class Messages:
         else:
             require(need(db, "workflow_runs", run["root_workflow_run_id"])["cancel_requested_at"] is None, "RUN_CANCELLED", "Root intent was cancelled")
         departments = {instance["agent_id"]} | (set(before.communication.departments) & set(current.communication.departments))
+        if before.creation.enabled and current.creation.enabled and "agent-factory" in before.plugins and "agent-factory" in current.plugins:
+            departments.update(row["agent_id"] for row in rows(db, "SELECT agent_id FROM agent_creations WHERE run_id=?", (run_id,)))
+        creator = one(db, "SELECT i.agent_id FROM agent_creations c JOIN runs r ON r.id=c.run_id JOIN instances i ON i.id=r.instance_id WHERE c.agent_id=? AND i.session_id=? AND r.root_run_id IS ? AND r.root_workflow_run_id IS ?", (instance["agent_id"], instance["session_id"], run["root_run_id"], run["root_workflow_run_id"]))
+        if creator:
+            departments.add(creator["agent_id"])
         return run, instance, departments, before.communication.can_request and current.communication.can_request
 
     @staticmethod
@@ -81,7 +86,9 @@ class Messages:
                 require(all(item["agent_id"] in source[2] for item in recipients), "PERMISSION_DENIED", "An original recipient is no longer reachable")
             return previous, True
         identity = new_id("message")
-        origin = {"kind": "leader", "name": self.host.redact((operation_context.get() or {}).get("agent_name") or "leader")} if not source else {
+        context = operation_context.get() or {}
+        origin = ({"kind": "user", "name": "user"} if context.get("user_initiated") else {
+            "kind": "leader", "name": self.host.redact(context.get("agent_name") or "leader")}) if not source else {
             "kind": "instance", "instance_id": source[1]["id"], "name": source[1]["name"], "agent_id": source[1]["agent_id"], "run_id": source[0]["id"]}
         db.execute("INSERT INTO messages(id,project_id,session_id,board_id,source_json,body,root_run_id,root_workflow_run_id,idempotency_key,input_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (identity, board["project_id"], board["session_id"], board["id"], encode(origin), self.host.redact(spec.content),

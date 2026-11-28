@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -17,6 +18,7 @@ class SkillSource(Configuration):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     path: Path
     project_id: str | None = None
+    plugin_owner: str | None = Field(default=None, json_schema_extra={"readOnly": True})
     name: str = Field(default="", max_length=80)
     description: str = Field(default="", max_length=640)
     enabled: bool = True
@@ -32,7 +34,8 @@ class Skills:
 
     def source_path(self, directory, relative):
         root = directory.expanduser().resolve()
-        require(not root.is_relative_to(self.host.root) and not self.host.root.is_relative_to(root), "PERMISSION_DENIED", "A Skill source cannot expose host state")
+        managed = root.is_relative_to(self.host.root / "plugins" / "packages")
+        require(managed or (not root.is_relative_to(self.host.root) and not self.host.root.is_relative_to(root)), "PERMISSION_DENIED", "A Skill source cannot expose host state")
         target = (root / relative).resolve()
         require(target.is_relative_to(root) and target.is_file(), "PERMISSION_DENIED", "Skill file is unavailable or outside its source directory")
         return target
@@ -94,22 +97,29 @@ class Skills:
 
     async def _register(self, definition, body, sha, *, expected_revision):
         def save(db):
-            if definition.project_id:
-                require(one(db, "SELECT 1 FROM projects WHERE id=?", (definition.project_id,)), "NOT_FOUND", "Project does not exist")
-            previous = one(db, "SELECT * FROM skills WHERE id=?", (definition.id,))
-            require(not previous or previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Skill cannot change its project")
-            require(expected_revision is None or expected_revision == (previous["revision"] if previous else 0), "REVISION_CONFLICT", "Skill configuration changed")
-            revision = previous["revision"] + 1 if previous else 1
-            db.execute("INSERT INTO skills VALUES(?,?,?,?,0,?) ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,removed=0,updated_at=excluded.updated_at",
-                (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
-            db.execute("INSERT OR IGNORE INTO skill_bodies VALUES(?,?)", (sha, body))
-            db.execute("INSERT INTO skill_versions VALUES(?,?,?,?,?,?,?)", (definition.id, revision, str(definition.path), sha, definition.name, definition.description, now_ms()))
-            event(db, "skill.saved", project_id=definition.project_id, data={"skill_id": definition.id, "revision": revision})
-            return revision
+            return self._save(db, definition, body, sha, expected_revision)
         revision = await self.host.store.call(save, transaction=True)
         self.definitions[definition.id] = (definition, revision)
         self.host.notify()
         return {"definition": definition.model_dump(mode="json"), "revision": revision, "sha256": sha}
+
+    def _save(self, db, definition, body, sha, expected_revision):
+        if definition.project_id:
+            require(one(db, "SELECT 1 FROM projects WHERE id=?", (definition.project_id,)), "NOT_FOUND", "Project does not exist")
+        previous = one(db, "SELECT * FROM skills WHERE id=?", (definition.id,))
+        require(not previous or previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Skill cannot change its project")
+        require(expected_revision is None or expected_revision == (previous["revision"] if previous else 0), "REVISION_CONFLICT", "Skill configuration changed")
+        if previous:
+            owner = json.loads(previous["config_json"]).get("plugin_owner")
+            if owner:
+                definition.plugin_owner = owner
+        revision = previous["revision"] + 1 if previous else 1
+        db.execute("INSERT INTO skills VALUES(?,?,?,?,0,?) ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,removed=0,updated_at=excluded.updated_at",
+            (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
+        db.execute("INSERT OR IGNORE INTO skill_bodies VALUES(?,?)", (sha, body))
+        db.execute("INSERT INTO skill_versions VALUES(?,?,?,?,?,?,?)", (definition.id, revision, str(definition.path), sha, definition.name, definition.description, now_ms()))
+        event(db, "skill.saved", project_id=definition.project_id, data={"skill_id": definition.id, "revision": revision})
+        return revision
 
     @staticmethod
     def scoped(db, skill_id, project_id, *, include_removed=False):
@@ -193,6 +203,7 @@ class Skills:
         return definition.model_copy(update={"skills": tuple(pinned)})
 
     def authorize(self, binding, current_binding, project_id):
+        self.host.plugins.authorize_component("skill", binding.id)
         current = self.definitions.get(binding.id)
         require(current and current[0].enabled and current[0].project_id in {None, project_id} and current[0].path == binding.path
             and (current_binding.path is None or current_binding.path == binding.path) and current_binding.revision in {None, binding.revision},

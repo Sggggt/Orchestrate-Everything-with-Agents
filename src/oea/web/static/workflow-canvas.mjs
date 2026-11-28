@@ -15,7 +15,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
       draft: null, buffers: new Map(), dirty: false, selected: null, edge: null, types: [], errors: {},
       undo: [], redo: [], validation: null, linking: null, mode: "canvas", runs: [], runCursor: null, runsMore: false,
       run: null, activity: [], selectionEpoch: 0, dialog: null, runInput: '{\n  "input": ""\n}', pendingRuns: new Map(), pendingCreate: null,
-      timer: null, epoch: 0, conflict: false, backup: null, inspector: true };
+      timer: null, epoch: 0, conflict: false, backup: null, inspector: !globalThis.matchMedia?.("(max-width: 760px)").matches };
   }
   const graph = () => ws.mode === "history" && ws.run ? ws.run.graph : ws.draft?.graph;
   const editable = () => ws.mode === "canvas" && ws.draft?.state === "ACTIVE";
@@ -133,12 +133,12 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     if (ws.unavailable) return `<section class="panel-page">${empty("工作流引擎等待加载", "请在现有任务处理完成后重启平台服务，再重连 Codex MCP，以加载新的工作流能力。", "wf-check-engine", "重新检查")}</section>`;
     return `<section class="wf-page"><div class="wf-heading"><div><h1>工作流</h1></div><div class="heading-actions"><button class="icon-btn" data-action="wf-code-graphs" title="代码图" aria-label="代码图">${icon("flow")}</button><button class="icon-btn" data-action="wf-new" title="建立工作流" aria-label="建立工作流">${icon("plus")}</button></div></div>
       <div class="wf-workspace"><aside class="wf-library" aria-label="项目工作流"><header>${libraryHeader()}</header>
-        <div class="wf-library-list">${ws.loading && !ws.loaded ? '<p class="wf-muted">正在加载…</p>' : ws.items.map(libraryItem).join("") || '<div class="wf-library-empty">从一个目标开始，<br>把步骤放上画布。</div>'}</div>
-        ${ws.more ? '<button class="btn small" data-action="wf-more">加载更多</button>' : ""}<footer><button class="text-link" data-action="wf-import">${icon("plus")}导入工作流</button><input type="file" id="wf-import-file" accept="application/json,.json" hidden><p>${icon("folder")}归属当前项目</p></footer></aside>
-        ${ws.draft ? editor() : ws.deletedOnly ? empty("工作流回收站为空", "删除的工作流可在这里恢复，画布与运行记录会一并保留。", "wf-trash", "返回项目工作流") : empty("画布已就绪", "添加节点、连接步骤，再把结果交给下一位 Agent。", "wf-new", "创建第一个工作流")}</div>${dialog()}</section>`;
+        <div class="wf-library-list">${ws.loading && !ws.loaded ? '<p class="wf-muted">正在加载…</p>' : ws.items.map(libraryItem).join("") || '<div class="wf-library-empty">暂无工作流</div>'}</div>
+        ${ws.more ? '<button class="btn small" data-action="wf-more">加载更多</button>' : ""}<footer><button class="text-link" data-action="wf-import">${icon("plus")}导入工作流</button><input type="file" id="wf-import-file" accept="application/json,.json" hidden></footer></aside>
+        ${ws.draft ? editor() : ws.deletedOnly ? empty("工作流回收站为空", "删除的工作流可在这里恢复，画布与运行记录会一并保留。", "wf-trash", "返回项目工作流") : empty("暂无工作流", "", "wf-new", "新建工作流")}</div>${dialog()}</section>`;
   }
   function empty(title, description, action, label) {
-    return `<div class="empty wf-empty">${icon("flow")}<h3>${esc(title)}</h3><p>${esc(description)}</p><button class="btn primary" data-action="${action}">${icon("plus")}${esc(label)}</button></div>`;
+    return `<div class="empty wf-empty">${icon("flow")}<h3>${esc(title)}</h3><button class="btn primary" data-action="${action}">${icon("plus")}${esc(label)}</button></div>`;
   }
   function libraryHeader() {
     return `<strong>${ws.deletedOnly ? "工作流回收站" : "项目工作流"} <span>${ws.items.length}</span></strong><div class="wf-library-tools"><button class="icon-btn ${ws.archived && !ws.deletedOnly ? "active" : ""}" data-action="wf-archived" aria-label="${ws.archived && !ws.deletedOnly ? "隐藏" : "显示"}已归档工作流" title="已归档工作流">${icon("folder")}</button><button class="icon-btn ${ws.deletedOnly ? "active" : ""}" data-action="wf-trash" aria-label="${ws.deletedOnly ? "返回项目工作流" : "工作流回收站"}" title="${ws.deletedOnly ? "返回项目工作流" : "工作流回收站"}">${icon("trash")}</button></div>`;
@@ -152,7 +152,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
   function editor() {
     const readOnly = !editable();
     return `<section class="wf-editor" aria-label="工作流编辑器"><header class="wf-editor-header"><div class="wf-name-wrap"><input id="wf-name" data-focus="wf-name" data-wf-meta="name" aria-label="工作流名称" maxlength="80" value="${esc(ws.draft.name)}" ${readOnly ? "readonly" : ""}><small id="wf-save-state">${ws.draft.state === "DELETED" ? `已删除 · r${ws.draft.revision}` : ws.dirty ? "有未保存的修改" : `已保存 · r${ws.draft.revision}`}</small></div><div class="wf-editor-actions">${workflowActions(readOnly)}</div></header>
-      <nav class="wf-tabs" aria-label="工作流视图"><button class="${ws.mode === "canvas" ? "active" : ""}" data-action="wf-mode" data-mode="canvas">${icon("flow")}画布</button><button class="${ws.mode === "history" ? "active" : ""}" data-action="wf-mode" data-mode="history">${icon("clock")}运行记录</button><span>项目归属：${esc(state.project.name)}</span></nav>
+      <nav class="wf-tabs" aria-label="工作流视图"><button class="${ws.mode === "canvas" ? "active" : ""}" data-action="wf-mode" data-mode="canvas">${icon("flow")}画布</button><button class="${ws.mode === "history" ? "active" : ""}" data-action="wf-mode" data-mode="history">${icon("clock")}运行记录</button></nav>
       ${ws.conflict ? '<div class="wf-notice error">已保存版本已更新。当前草稿保留，请导出或重新加载后合并。<button class="text-link" data-action="wf-reload">重新加载</button></div>' : ""}
       ${ws.mode === "canvas" ? palette() : historyStrip()}
       <div class="wf-edit-body ${ws.inspector ? "inspector-open" : ""}">${canvas()}<aside class="wf-inspector" id="wf-inspector" aria-label="节点属性">${inspector()}</aside></div>
@@ -185,7 +185,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     const view = current.viewport || { x: 0, y: 0, zoom: 1 };
     return `<div class="wf-canvas ${ws.linking ? "connecting" : ""}" id="wf-canvas" role="region" tabindex="0" aria-label="工作流画布，拖动节点和端口进行编排"><div class="wf-world" id="wf-world"><svg class="wf-edges" width="1" height="1" aria-label="工作流连线"><defs><marker id="wf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"/></marker></defs><g id="wf-edge-paths">${edges()}</g><path class="wf-connection-preview" id="wf-preview"/></svg>${current.nodes.map(nodeCard).join("")}</div>
       ${ws.linking ? '<div class="wf-connect-hint" role="status">选择目标节点的左侧输入端口 <button class="text-link" data-action="wf-stop-link">取消连线</button></div>' : ""}
-      <div class="wf-canvas-controls"><button class="icon-btn" data-action="wf-zoom-out" aria-label="缩小">−</button><span id="wf-zoom-label">${Math.round(view.zoom * 100)}%</span><button class="icon-btn" data-action="wf-zoom-in" aria-label="放大">+</button><span></span><button class="btn small" data-action="wf-fit">适应画布</button></div><span class="wf-canvas-caption">${ws.mode === "history" ? `RUN SNAPSHOT / r${ws.run?.revision || "—"}` : "连接前一步的输出，作为下一步的输入"}</span></div>`;
+      <div class="wf-canvas-controls"><button class="icon-btn" data-action="wf-zoom-out" aria-label="缩小">−</button><span id="wf-zoom-label">${Math.round(view.zoom * 100)}%</span><button class="icon-btn" data-action="wf-zoom-in" aria-label="放大">+</button><span></span><button class="btn small" data-action="wf-fit">适应画布</button></div>${ws.mode === "history" ? `<span class="wf-canvas-caption">运行版本 r${ws.run?.revision||"—"}</span>` : ""}</div>`;
   }
   function edges() {
     const current = graph();
@@ -224,7 +224,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
     return `<div class="field"><span>${esc(label)}</span>${valueEditor(value, "wf-" + field)}<small class="wf-field-error" id="wf-error-${field}" role="status">${esc(ws.errors[keyFor(selected(), field)] || "")}</small></div>`;
   }
   function inputFields(schema) {
-    return `<p class="form-hint">设置用户在运行前需要提供的信息。</p><div class="wf-input-fields">${Object.entries(schema.properties || {}).map(([key, field]) => `<div class="wf-input-field"><label class="field">变量名称<input data-wf-schema="name" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-name" value="${esc(key)}" required></label><label class="field">显示名称<input data-wf-schema="title" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-title" value="${esc(field.title || "")}" placeholder="例如：工作目标"></label><label class="field">内容类型<select data-wf-schema="type" data-key="${esc(key)}">${Object.entries({ string: "文本", number: "数字", integer: "整数", boolean: "开关", array: "列表", object: "字段组" }).map(([type, label]) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="check-row"><input type="checkbox" data-wf-schema="required" data-key="${esc(key)}" ${(schema.required || []).includes(key) ? "checked" : ""}>运行前必填</label><button class="icon-btn danger-text" data-action="wf-remove-input" data-key="${esc(key)}" title="移除此变量" aria-label="移除此变量">${icon("trash")}</button></div>`).join("")}</div><button class="text-link" data-action="wf-add-input">${icon("plus")}添加输入变量</button><details class="wf-advanced"><summary>输入结构高级设置</summary>${jsonField("输入结构", "input_schema", schema)}</details>`;
+    return `<div class="wf-input-fields">${Object.entries(schema.properties || {}).map(([key, field]) => `<div class="wf-input-field"><label class="field">变量名称<input data-wf-schema="name" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-name" value="${esc(key)}" required></label><label class="field">显示名称<input data-wf-schema="title" data-key="${esc(key)}" data-focus="wf-schema-${esc(key)}-title" value="${esc(field.title || "")}" placeholder="例如：工作目标"></label><label class="field">内容类型<select data-wf-schema="type" data-key="${esc(key)}">${Object.entries({ string: "文本", number: "数字", integer: "整数", boolean: "开关", array: "列表", object: "字段组" }).map(([type, label]) => `<option value="${type}" ${field.type === type ? "selected" : ""}>${label}</option>`).join("")}</select></label><label class="check-row"><input type="checkbox" data-wf-schema="required" data-key="${esc(key)}" ${(schema.required || []).includes(key) ? "checked" : ""}>运行前必填</label><button class="icon-btn danger-text" data-action="wf-remove-input" data-key="${esc(key)}" title="移除此变量" aria-label="移除此变量">${icon("trash")}</button></div>`).join("")}</div><button class="text-link" data-action="wf-add-input">${icon("plus")}添加输入变量</button><details class="wf-advanced"><summary>输入结构高级设置</summary>${jsonField("输入结构", "input_schema", schema)}</details>`;
   }
   function inspector() {
     if (ws.edge) {
@@ -274,7 +274,7 @@ export function createWorkflowUI({ state, escape: esc, icon, badge, markdown, rp
   function validation() {
     const report = ws.validation;
     const issues = [...report.errors, ...report.warnings];
-    return `<div class="wf-validation ${report.valid ? "valid" : "error"}" role="status"><div>${icon(report.valid ? "check" : "shield")}<strong>${report.valid ? "校验通过" : `${report.errors.length} 项需要调整`}</strong><button class="icon-btn" data-action="wf-dismiss-validation" aria-label="收起校验结果">${icon("close")}</button></div>${issues.length ? `<ul>${issues.map((issue) => `<li><button data-action="wf-select-issue" data-id="${esc(issue.node_id || "")}" data-edge="${esc(issue.edge_id || "")}">${esc(issue.message)}</button></li>`).join("")}</ul>` : '<p>节点、连线、变量和项目归属均已通过检查。</p>'}</div>`;
+    return `<div class="wf-validation ${report.valid ? "valid" : "error"}" role="status"><div>${icon(report.valid ? "check" : "shield")}<strong>${report.valid ? "校验通过" : `${report.errors.length} 项需要调整`}</strong><button class="icon-btn" data-action="wf-dismiss-validation" aria-label="收起校验结果">${icon("close")}</button></div>${issues.length ? `<ul>${issues.map((issue) => `<li><button data-action="wf-select-issue" data-id="${esc(issue.node_id || "")}" data-edge="${esc(issue.edge_id || "")}">${esc(issue.message)}</button></li>`).join("")}</ul>` : ''}</div>`;
   }
   function runOverview() {
     const run = ws.run;

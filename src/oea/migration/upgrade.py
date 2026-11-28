@@ -10,13 +10,14 @@ import shutil
 import sqlite3
 
 from oea.budgets.measurement import normalize
-from oea.contracts.configuration import AgentDefinition, Budget, PROTOCOL_VERSION
+from oea.contracts.configuration import Budget
 from oea.contracts.errors import RuntimeFault, require
 from oea.migration.offline import _vault
 from oea.security.secrets import atomic_write
 from oea.migration.source import file_sha256, inventory_files, offline_source, verify_files
 from oea.storage.persistence import encode, now_ms
 from oea.workspace.paths import external_path, require_local_state, resolve_data_dir
+from oea.migration.configuration_v3 import AgentDefinition, PROTOCOL_VERSION
 
 PRE_READING_SCHEMA = "f1ae954f76e97a33ed398e63efcfd4a9a689e27be0988264efc54be1d23bc59e"
 PRE_DELIVERY_SCHEMA = "63eaabe949e6e57f3fb5d024a6a78bbee84c89570b6bdd2a7dfebb9c804bb011"
@@ -90,7 +91,7 @@ def insert(db, table, value):
     db.execute("INSERT INTO " + quote(table) + "(" + ",".join(map(quote, fields)) + ") VALUES(" + ",".join("?" for _ in fields) + ")", [value[field] for field in fields])
 
 
-def upgrade_state(data_dir=None, *, target=None, apply=False):
+def _upgrade_to_v3(data_dir=None, *, target=None, apply=False):
     """Dry-run a recognized older snapshot; apply requires a new target directory.
 
     Source databases, vaults, checkpoints and files remain unchanged. Old graph
@@ -301,3 +302,28 @@ def upgrade_state(data_dir=None, *, target=None, apply=False):
         if apply:
             (destination / "migration-report.json").write_text(encode(report), encoding="utf-8")
         return report
+
+
+def upgrade_state(data_dir=None, *, target=None, apply=False):
+    """Inspect or convert supported stopped state into the current API Box schema."""
+    from oea.migration.box import chain, transition
+    source = resolve_data_dir(data_dir)
+    database = source / "oea.sqlite"
+    require(database.is_file(), "STATE_UNAVAILABLE", "Choose an existing state directory")
+    destination = external_path(target) if target is not None else None
+    if destination is not None:
+        require_local_state(destination)
+        require(not destination.exists(), "MIGRATION_TARGET_EXISTS", "Choose an absent target")
+        require(not destination.is_relative_to(source) and not source.is_relative_to(destination), "MIGRATION_TARGET_INVALID", "Choose a target separate from source")
+    require(not apply or destination is not None, "MIGRATION_TARGET_REQUIRED", "Choose a target before applying")
+    with offline_source(source) as check, closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as original:
+        original.row_factory = sqlite3.Row
+        metadata = dict(original.execute("SELECT key,value FROM metadata"))
+        current_v3 = hashlib.sha256(Path(__file__).parents[1].joinpath("storage/schema-v3.sql").read_text(encoding="utf-8").encode()).hexdigest()
+        if metadata.get("protocol_version") == "3.0" and metadata.get("schema_sha256") == current_v3:
+            return transition(original, source, destination, apply, check)
+        if metadata.get("protocol_version") == "4.0":
+            schema = Path(__file__).parents[1].joinpath("storage/schema-v4.sql").read_text(encoding="utf-8")
+            require(metadata.get("schema_sha256") == hashlib.sha256(schema.encode()).hexdigest(), "SCHEMA_MISMATCH", "State schema is not recognized")
+            return {"format_version": "4.0", "changed": False, "applied": False, "ready_for_apply": True}
+    return chain(_upgrade_to_v3, source, target=destination, apply=apply)

@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import Agent, AgentDefinition, Completion, MCPBinding, Model, SkillBinding, Tools
 from oea.contracts.configuration import Execution, Instructions, Manager, Workspace
 from oea.contracts.errors import RuntimeFault
@@ -26,8 +28,8 @@ class ModelProbeTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Project", project_id="p")
         self.session = await self.host.sessions.create("p")
         self.definition = AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="main-fixture", max_output_tokens=131072),
-            manager=Manager(model=Model(base_url="https://model.invalid/v1", model="manager-fixture")),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="main-fixture", max_output_tokens=131072)),
+            manager=Manager(model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="manager-fixture"))),
             instructions=Instructions(system="BUSINESS_INSTRUCTIONS " * 100),
             tools=Tools(functions=("unavailable_business",), mcp=(MCPBinding(server_id="unavailable"),)),
             skills=(SkillBinding(id="business", path=self.root / "unopened-skill", required=True),),

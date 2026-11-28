@@ -11,10 +11,13 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 可通过 [Agent 架构](docs/agent-architectures.md) 从 ReAct、Plan-and-Execute、Reflexion 模板编辑执行结构，按草稿、候选与生效版本管理。源码、SDK、MCP 和桌面设置页复用同一执行与恢复契约。
 
+
+OEA 4.0 新增 [API Box](docs/models/README.md) 与[插件](docs/plugins/README.md)。已有安装需先按[离线流程升级状态](docs/migration/README.md)，再启动匹配的运行时。
+
 ## 可以用它做什么
 
 - **搭建个人 Agent 工作空间。** 按项目管理 Agent、会话、指令和技能。
-- **开发自己的执行逻辑。** 配置模型 Agent，编写 协议 3 Python 进程 Agent，或注册由 LangGraph 驱动的代码图。
+- **开发自己的执行逻辑。** 配置模型 Agent，编写 协议 4 Python 进程 Agent，或注册由 LangGraph 驱动的代码图。
 - **并行启动独立实例。** 复用 Agent 配置，按输入批量创建独立上下文；保留有序结果，并沿实际工作归属取消。
 - **编排可复用的工作流。** 在画布或 Python SDK 中连接开始、Agent、并行 map、条件、模板、函数、子图、中断和结束节点；每个工作流只属于一个项目。
 - **工具和工作产物。** 注册 MCP 服务，按需授权工具，交换完整协作消息；会话文件保留来源记录，并可通过引用下载。
@@ -26,14 +29,14 @@ Orchestrate Everything with Agents 是一个轻量化、面向个人的多智能
 
 ## 本机启动
 
-OEA 需要 Python 3.12+。从 [OEA 3.4.7 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v3.4.7)下载与你的系统匹配的 wheel。Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。
+OEA 需要 Python 3.12+。从 [OEA 4.0.0 发布页](https://github.com/Sggggt/Orchestrate-Everything-with-Agents/releases/tag/v4.0.0)下载与你的系统匹配的 wheel。Windows x64 选择 `win_amd64`，Linux x64 选择 `linux_x86_64`。普通安装无需 Rust 编译器。
 
 MSVC 构建的 Windows wheel 还需要 [Microsoft Visual C++ v14 x64 运行库](docs/getting-started.md#windows-runtime)。请先安装或修复微软官方运行库；OEA 安装器不代为安装此系统依赖。
 
-如果是在已有安装上升级，请在启动 3.4.7 前按[离线状态升级说明](docs/getting-started.md#update-tool)操作。
+如果是在已有安装上升级，请在启动 4.0.0 前按[离线状态升级说明](docs/getting-started.md#update-tool)操作。
 
 ```sh
-python -m pip install "./orchestrate_everything_with_agents-3.4.7-py3-none-win_amd64.whl[web,mcp,workbench]"
+python -m pip install "./orchestrate_everything_with_agents-4.0.0-py3-none-win_amd64.whl[web,mcp,workbench]"
 oea serve --allow-commands
 ```
 

@@ -20,6 +20,11 @@ from oea.workspace.service import WorkspacePaths
 from oea.storage.persistence import Store
 
 
+def model_credential(db, reference):
+    row = db.execute("SELECT v.config_json FROM model_profiles p JOIN model_profile_versions v ON v.profile_id=p.id AND v.revision=p.revision WHERE p.id=?", (reference,)).fetchone()
+    return json.loads(row[0])["credential_ref"]
+
+
 class MigrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -94,8 +99,8 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT archived FROM sessions").fetchone()[0], 1)
         self.assertEqual(db.execute("SELECT origin,run_id,instance_id FROM artifacts").fetchone(), ("import", None, None))
         config = json.loads(db.execute("SELECT config_json FROM agent_definitions").fetchone()[0])
-        self.assertEqual(config["model"]["credential_ref"], "vault:example")
-        self.assertEqual(config["manager"]["model"]["credential_ref"], "vault:manager:example")
+        self.assertEqual(model_credential(db, config["model_ref"]), "vault:example")
+        self.assertEqual(model_credential(db, config["manager"]["model_ref"]), "vault:manager:example")
         self.assertEqual(SecretVault(self.target).get("manager:example"), "manager-example-secret")
         archived = json.loads(db.execute("SELECT row_json FROM imported_history WHERE table_name='opaque'").fetchone()[0])
         self.assertEqual(archived["value"], {"$sqlite_blob": "AP8B"})
@@ -232,7 +237,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(report["directories"]["copied"], 0)
         self.assertTrue(any(item["path"] == str(reference) for item in report["directories"]["items"]))
         manager = AgentDefinition.model_validate_json(db.execute("SELECT config_json FROM instances WHERE id='manager-t'").fetchone()[0])
-        self.assertEqual(manager.model.credential_ref, "vault:manager:example")
+        self.assertEqual(model_credential(db, manager.model_ref), "vault:manager:example")
         self.assertEqual(manager.tools.local, ())
 
     def test_thread_work_directory_takes_precedence_over_task_workbench(self):

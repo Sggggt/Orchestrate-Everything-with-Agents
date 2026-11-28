@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from oea.contracts.configuration import AgentDefinition, Budget, ContextPolicy, Execution, Model, SummaryPolicy
+from model_support import register_model
+
+from oea.contracts.configuration import AgentDefinition, RunConfiguration, Budget, ContextPolicy, Execution, Model, SummaryPolicy
 from oea.contracts.domain import Completion, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.context import RunContext
@@ -34,8 +36,8 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         self.definition = AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://main.invalid/v1", model="main", max_output_tokens=1024),
-            summary_model=Model(base_url="https://summary.invalid/v1", model="summary", thinking="enabled"),
+            model_ref=await register_model(self.host, Model(base_url="https://main.invalid/v1", model="main", max_output_tokens=1024)),
+            summary_model_ref=await register_model(self.host, Model(base_url="https://summary.invalid/v1", model="summary", thinking="enabled")),
             context=ContextPolicy(memory_tokens=256, summary=SummaryPolicy(max_output_tokens=8192, thinking="disabled")))
         await self.host.agents.save(self.definition)
         session = await self.host.sessions.create("p")
@@ -51,7 +53,7 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
             one(db, "SELECT * FROM runs WHERE id=?", (self.handle.id,)),
             one(db, "SELECT * FROM instances WHERE id=?", (self.handle.instance_id,))))
         paths = WorkspacePaths.prepare(self.definition.workspace, instance["id"], run["id"], self.root)
-        return RunContext(self.host, run, instance, self.definition, paths)
+        return RunContext(self.host, run, instance, RunConfiguration.model_validate_json(run["config_json"]), paths)
 
     async def asyncTearDown(self):
         await self.host.aclose()
@@ -65,7 +67,7 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.context.summarize(self.messages, 8192), "Confirmed evidence")
         self.assertEqual([call[2] for call in api.calls], [4096, 8192])
         self.assertTrue(all(call[0].model == "summary" and call[0].thinking == "disabled" for call in api.calls))
-        self.assertEqual(self.definition.model.max_output_tokens, 1024)
+        self.assertEqual(self.host.model_profiles.resolve(self.definition).model.max_output_tokens, 1024)
         await self.host.aclose()
         self.host = await Host(self.root, model_api=api).__aenter__()
         self.context = await self.make_context()

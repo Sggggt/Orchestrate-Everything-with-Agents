@@ -14,6 +14,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec, Tools, Workspace
 from oea.runtime.host import Host
 from oea.storage.persistence import rows
@@ -60,7 +62,7 @@ class SharedFileTests(unittest.IsolatedAsyncioTestCase):
     async def agent(self, identity, tool, arguments):
         self.model.plans[identity] = tool, arguments
         await self.host.agents.save(AgentDefinition(id=identity, name=identity, project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model=identity), tools=Tools(local=(tool, "write_stdin") if tool == "exec_command" else (tool,)),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model=identity)), tools=Tools(local=(tool, "write_stdin") if tool == "exec_command" else (tool,)),
             workspace=Workspace(sandbox="trusted", project=self.project, writable_project_paths=("shared",), shell=self.shell)))
         instance = await self.host.instances.create(self.session["id"], identity)
         return await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Apply the shared-file operation", idempotency_key="one-operation"))

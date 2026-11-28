@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -45,7 +47,7 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Project", project_id="p")
         await self.host.projects.create("Other", project_id="q")
         self.definition = AgentDefinition(id="writer", name="Writer", project_id="p",
-            model=Model(base_url="https://model.invalid", model="fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid", model="fixture")),
             tools=Tools(local=("apply_patch", "exec_command", "publish_artifact")), workspace=Workspace(sandbox=self.sandbox))
         await self.host.agents.save(self.definition)
         session = await self.host.sessions.create("p")

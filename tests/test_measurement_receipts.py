@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import httpx
 
+from model_support import register_model
+
 from oea import AgentDefinition, Model, RunSpec, Budget
 from oea.contracts.configuration import ContextPolicy
 from oea.contracts.errors import RuntimeFault
@@ -45,7 +47,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.api = ModelAPI(self.transport, secret=lambda reference: None)
         self.host = await Host(Path(self.temporary.name) / "state", model_api=self.api).__aenter__()
         await self.host.projects.create("Project", project_id="p")
-        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://example.invalid/v1", model="fixture"))
+        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="fixture")))
         await self.host.agents.save(self.definition)
         self.session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(self.session["id"], "worker", name="one")
@@ -150,7 +152,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_actual_output_reservation_drives_the_effective_input_window(self):
         definition = self.definition.model_copy(deep=True)
-        definition.model.context_window_tokens = 6200
+        definition.model_ref = await register_model(self.host, Model(base_url="https://example.invalid/v1", model="fixture", context_window_tokens=6200))
         definition.execution.budget = Budget(max_output_tokens=64, finalization_fraction=0, recovery_fraction=0)
         definition.instructions.system = "Current facts " * 300
         await self.host.agents.save(definition, expected_revision=1)
@@ -168,7 +170,7 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
             await self.host.contexts.append({"id": previous.id}, self.instance,
                 {"role": "user", "content": "Retained source evidence " * 100}, "prior-" + str(index))
         definition = self.definition.model_copy(deep=True)
-        definition.model = Model(base_url="https://example.invalid/v1", model="fixture", context_window_tokens=10000, max_output_tokens=6000)
+        definition.model_ref = await register_model(self.host, Model(base_url="https://example.invalid/v1", model="fixture", context_window_tokens=10000, max_output_tokens=6000))
         definition.context = ContextPolicy(memory_tokens=256)
         await self.host.agents.save(definition, expected_revision=1)
         current = await self.host.runs.submit(RunSpec(instance_id=self.instance["id"], input="Continue with retained evidence", idempotency_key="next"))
@@ -213,10 +215,11 @@ class MeasurementReceiptTests(unittest.IsolatedAsyncioTestCase):
 
     def test_compact_unicode_request_exact_boundary(self):
         messages = [{"role": "user", "content": "中文 and emoji 🙂"}]
-        request = prepare_request(self.definition.model, messages)
+        model = self.host.model_profiles.resolve(self.definition).model
+        request = prepare_request(model, messages)
         with patch("oea.models.request.MODEL_REQUEST_MAX_BYTES", len(request.content)):
-            self.assertEqual(prepare_request(self.definition.model, messages).content, request.content)
+            self.assertEqual(prepare_request(model, messages).content, request.content)
         with patch("oea.models.request.MODEL_REQUEST_MAX_BYTES", len(request.content) - 1):
             with self.assertRaises(RuntimeFault) as caught:
-                prepare_request(self.definition.model, messages)
+                prepare_request(model, messages)
         self.assertEqual(caught.exception.as_dict()["measurement"]["decision"], "reject")

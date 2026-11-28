@@ -1,4 +1,4 @@
-# 协议 3 约定
+# 协议 4 约定
 
 共享注册表是参数、默认值、Schema 和错误的唯一来源。platform_guide 查看一个 area/action，platform_call 执行一个 operation；两者都使用稳定 consumer_id。
 

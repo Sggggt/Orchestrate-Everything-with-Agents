@@ -28,6 +28,7 @@ class MCPServer(Configuration):
     name: str = Field(default="", max_length=80)
     description: str = Field(default="", max_length=640)
     project_id: str | None = None
+    plugin_owner: str | None = Field(default=None, json_schema_extra={"readOnly": True})
     source_directory: Path | None = None
     enabled: bool = True
     removed: bool = False
@@ -41,6 +42,7 @@ class MCPServer(Configuration):
     environment: dict[str, str] = Field(default_factory=dict)
     environment_refs: dict[str, str] = Field(default_factory=dict)
     header_refs: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: float = Field(default=120, gt=0, le=3600)
 
     @model_validator(mode="after")
@@ -50,12 +52,24 @@ class MCPServer(Configuration):
         if self.allowed_tools is not None and (len(set(self.allowed_tools)) != len(self.allowed_tools) or any(not name for name in self.allowed_tools)):
             raise ValueError("Allowed MCP tool names must be nonempty and unique")
         if self.transport == "stdio":
-            if not self.command or self.url or self.header_refs:
+            if not self.command or self.url or self.header_refs or self.headers:
                 raise ValueError("A stdio service uses a command and optional environment references")
+            if any(Path(token).name.lower() in {"oea", "oea.exe", "oea.cmd"} and self.command[index + 1] == "mcp"
+                   for index, token in enumerate(self.command[:-1])):
+                raise ValueError("The OEA control MCP cannot be registered as its own upstream")
         elif not self.url or self.command or self.environment or self.environment_refs or self.cwd:
             raise ValueError("An HTTP service uses a URL and optional header references")
         if self.url:
-            Model(base_url=self.url)
+            from urllib.parse import parse_qsl, urlsplit
+            parsed = urlsplit(self.url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+                raise ValueError("MCP URLs require HTTP(S) without credentials or fragments")
+            if {key.lower() for key, _ in parse_qsl(parsed.query)} & {"token", "access_token", "api_key", "api-key", "password", "secret"}:
+                raise ValueError("Bind MCP credentials through named references, not URL parameters")
+        if {key.lower() for key in self.headers} & {"authorization", "proxy-authorization", "cookie", "x-api-key", "api-key"}:
+            raise ValueError("Authentication headers use named credential references")
+        if {key.lower() for key in self.headers} & {key.lower() for key in self.header_refs}:
+            raise ValueError("An HTTP header has one value source")
         for reference in (*self.environment_refs.values(), *self.header_refs.values()):
             Model(credential_ref=reference)
         if set(self.environment) & set(self.environment_refs):
@@ -94,7 +108,7 @@ class Connection:
                     streams = await stack.enter_async_context(stdio_client(StdioServerParameters(command=value.command[0], args=list(value.command[1:]),
                         cwd=value.cwd, env=environment, encoding="utf-8"), errlog=log))
                 else:
-                    headers = {name: self.registry.secret(ref) for name, ref in value.header_refs.items()}
+                    headers = {**value.headers, **{name: self.registry.secret(ref) for name, ref in value.header_refs.items()}}
                     for name, secret in headers.items():
                         if name.lower() == "authorization" and " " in secret:
                             host.vault.known_secrets.add(secret.partition(" ")[2])
@@ -171,22 +185,29 @@ class UpstreamMCP:
         if definition.source_directory:
             definition = definition.model_copy(update={"source_directory": definition.source_directory.expanduser().resolve()})
         def write(db):
-            if definition.project_id:
-                require(one(db, "SELECT 1 FROM projects WHERE id=?", (definition.project_id,)), "NOT_FOUND", "Project does not exist")
-            previous = one(db, "SELECT * FROM mcp_servers WHERE id=?", (definition.id,))
-            require(expected_revision is None or expected_revision == (previous["revision"] if previous else 0), "REVISION_CONFLICT", "MCP configuration changed")
-            require(not previous or previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "MCP service cannot change its project")
-            revision = previous["revision"] + 1 if previous else 1
-            db.execute("INSERT INTO mcp_servers VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
-                (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
-            event(db, "mcp.saved", project_id=definition.project_id, data={"server_id": definition.id, "revision": revision, "removed": definition.removed})
-            return revision
+            return self._save(db, definition, expected_revision)
         revision = await self.host.store.call(write, transaction=True)
         self.configurations[definition.id] = (definition, revision)
         self.retiring.add(definition.id)
         await self.retire_idle()
         self.host.notify()
         return {"definition": definition.model_dump(mode="json"), "revision": revision}
+
+    def _save(self, db, definition, expected_revision):
+        if definition.project_id:
+            require(one(db, "SELECT 1 FROM projects WHERE id=?", (definition.project_id,)), "NOT_FOUND", "Project does not exist")
+        previous = one(db, "SELECT * FROM mcp_servers WHERE id=?", (definition.id,))
+        require(expected_revision is None or expected_revision == (previous["revision"] if previous else 0), "REVISION_CONFLICT", "MCP configuration changed")
+        require(not previous or previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "MCP service cannot change its project")
+        if previous:
+            owner = json.loads(previous["config_json"]).get("plugin_owner")
+            if owner:
+                definition.plugin_owner = owner
+        revision = previous["revision"] + 1 if previous else 1
+        db.execute("INSERT INTO mcp_servers VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
+            (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
+        event(db, "mcp.saved", project_id=definition.project_id, data={"server_id": definition.id, "revision": revision, "removed": definition.removed})
+        return revision
 
     async def retire_idle(self):
         busy = {(provider.server_id, provider.revision) for identity, name in self.host.tools.names.items()
@@ -630,6 +651,7 @@ class UpstreamMCP:
 
     async def connection(self, server_id, revision, *, consumer=None):
         self.host.assert_open()
+        self.host.plugins.authorize_component("mcp", server_id)
         saved = await self.get(server_id)
         definition = MCPServer.model_validate(saved["definition"])
         require(definition.enabled and saved["revision"] == revision, "MCP_CONFIGURATION_CHANGED", "MCP service was disabled or changed; explicitly resume with refreshed capabilities")
@@ -640,6 +662,16 @@ class UpstreamMCP:
         key = server_id, revision, "shared" if definition.session_scope == "shared" and not application else consumer
         connection = self.connections.get(key)
         if connection is None or connection.task.done() or connection.stop.is_set():
+            if definition.environment.get("PLUGIN_DATA"):
+                original = definition.environment["PLUGIN_DATA"]
+                scoped = str(Path(original) / hashlib.sha256(key[2].encode()).hexdigest()[:32])
+                Path(scoped).mkdir(parents=True, exist_ok=True)
+                # Portable writable plugin data follows the existing consumer or
+                # application connection identity, including embedded argv paths.
+                definition = definition.model_copy(update={
+                    "environment": {name: value.replace(original, scoped) for name, value in definition.environment.items()},
+                    "command": tuple(value.replace(original, scoped) for value in definition.command),
+                    "cwd": Path(str(definition.cwd).replace(original, scoped)) if definition.cwd else None})
             connection = self.connections[key] = Connection(self, definition, revision)
         try:
             return await asyncio.shield(connection.ready)
@@ -744,10 +776,13 @@ class UpstreamMCP:
 
     def current_grant(self, context, tool):
         current = self.configurations.get(tool.server_id)
-        return current and current[0].enabled and current[1] == tool.revision and current[0].project_id in {None, context.instance["project_id"]} and (
+        return current and self.host.plugins.bindings.available("mcp", tool.server_id) and current[0].enabled and current[1] == tool.revision and current[0].project_id in {None, context.instance["project_id"]} and (
             current[0].allowed_tools is None or tool.upstream_name in current[0].allowed_tools)
 
     async def authorize(self, context, name):
+        provider = self.host.tools.providers.get(name)
+        if isinstance(provider, UpstreamTool):
+            self.host.plugins.authorize_component("mcp", provider.server_id)
         require(name in self.names(context), "PERMISSION_DENIED", "MCP tool is no longer granted")
         tool = context.mcp_tools[name]
         saved = await self.get(tool.server_id)

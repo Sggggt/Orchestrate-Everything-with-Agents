@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Manager, Model, RunSpec, MessageSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -23,7 +25,7 @@ class UnreadTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root, model_api=ModelFixture()).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         model = Model(base_url="https://example.invalid/v1", model="fixture")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=model, manager=Manager(model=model)))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, model), manager=Manager(model_ref=await register_model(self.host, model))))
         self.session = await self.host.sessions.create("p")
         await self.host.sessions.set_mode(self.session["id"], "collaborative", 0)
         self.first = await self.host.instances.create(self.session["id"], "worker", name="first")

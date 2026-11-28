@@ -49,4 +49,6 @@ Run the release workflow manually for the intended commit or version tag. It bui
 
 Editable installation without assets supports model/MCP development; native local tools remain unavailable and do not silently become trusted. See [installation](../getting-started.md).
 
+The manually dispatched **OAP sustained load** workflow checks the installed native Linux backend and recovery/isolation contracts before exercising 100 application conversations and 10,000 submissions over at least 30 minutes. It stages 1, 4, 8 and 20 simultaneous native sandboxes, checks a 16 MiB transfer, reconnects, idempotent replay and foreign-read denial. Acceptance requires zero duplicate work/charges or lost receipts, p95 submission below 5 seconds and p95 result below 30 seconds. The driver stops at 80% physical memory use or less than 5 GiB free disk and cleans its external test state after closing clients and executions. These are test-worker protections; they do not introduce platform capacity controls.
+
 Upstream: [MXC 1.0.1](https://github.com/microsoft/mxc/tree/v1.0.1), [typed SDK](https://github.com/microsoft/mxc/blob/v1.0.1/src/mxc-sdk/README.md), [Windows support](https://github.com/microsoft/mxc/blob/v1.0.1/docs/backends/process-container/os-version-support.md).

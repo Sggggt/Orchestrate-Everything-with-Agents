@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from oea.catalog.service import need
-from oea.contracts.configuration import AgentDefinition, ProjectWorkspace, manager_snapshot
+from oea.contracts.configuration import AgentDefinition, RunConfiguration, ProjectWorkspace, manager_snapshot
 from oea.contracts.errors import require
 from oea.storage.persistence import encode, now_ms, one, rows
 from oea.workspace.environment import ExecutionEnvironment, WorkspacePaths, intersect_workspace
@@ -27,7 +27,7 @@ class CandidateFiles:
             instance = need(db, "instances", run["instance_id"])
             return run, instance, self.host.applications.scope(db, instance["session_id"])
         run, instance, scope = await self.host.store.call(read)
-        saved = AgentDefinition.model_validate_json(run["config_json"])
+        saved = RunConfiguration.model_validate_json(run["config_json"])
         current = self.host.definitions.get(instance["agent_id"])
         require(current is not None and not current.removed, "PERMISSION_DENIED", "The Agent's live file grants are unavailable")
         if instance["role"] == "manager":

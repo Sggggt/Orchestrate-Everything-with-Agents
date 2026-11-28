@@ -31,27 +31,26 @@ export function createMCPDirectory({state,escape,icon,badge,markdown,rpc,toast,r
     const items = state.mcpServers.filter((s) =>
       `${s.name} ${s.id} ${s.description}`.toLocaleLowerCase().includes(query),
     );
-    return items.length
-      ? `<div class="mcp-grid">${items.map((s) => `<article class="mcp-card"><div class="mcp-card-head"><span class="integration-avatar">${icon(s.transport === "stdio" ? "terminal" : "external")}</span><div><button class="mcp-name" data-action="mcp-select" data-id="${escape(s.id)}">${escape(s.name)}</button><span class="mcp-type">${s.transport === "stdio" ? "本地进程" : s.transport === "sse" ? "HTTP · SSE" : "Streamable HTTP"}</span></div>${badge(s.status)}</div><p class="mcp-description">${escape(s.description === "Imported from local Codex MCP configuration" ? "" : s.description || "")}</p><div class="mcp-card-metrics"><span><strong>${s.tool_count??"—"}</strong> 个工具</span><span><strong>${s.bound_agents?.length || 0}</strong> 个 Agent</span><span>${s.session_scope === "shared" ? "共享会话" : "上下文隔离"}</span></div>${s.last_error ? `<div class="integration-error">${escape(s.last_error.safe_message)}</div>` : ""}<footer><button class="text-link" data-action="mcp-connect" data-id="${escape(s.id)}" ${!s.enabled || state.mcpPending === s.id ? "disabled" : ""}>${icon("refresh")}${state.mcpPending === s.id ? "连接中…" : s.status === "CONNECTED" ? "刷新工具" : "连接测试"}</button><span class="mcp-card-actions"><button class="icon-btn" data-action="mcp-select" data-id="${escape(s.id)}" title="管理服务" aria-label="管理服务">${icon("settings")}</button><button class="icon-btn danger-text" data-action="mcp-remove" data-id="${escape(s.id)}" title="删除 ${escape(s.name)}" aria-label="删除 ${escape(s.name)}">${icon("trash")}</button></span></footer></article>`).join("")}</div>`
-      : `<div class="empty">${icon("plug")}<h3>${query ? "没有匹配的 MCP 服务" : "暂无 MCP 服务"}</h3><button class="icon-btn" data-action="mcp-new" title="注册服务" aria-label="注册服务">${icon("plus")}</button></div>`;
+    return items.length ? `<div class="library-grid mcp-grid">${items.map(s=>`<article class="library-row">
+      <button class="library-entry mcp-name" data-action="mcp-select" data-id="${escape(s.id)}">
+        <span class="library-glyph pigment-ocean">${icon(s.transport==="stdio"?"terminal":"external")}</span><strong>${escape(s.name)}</strong></button>
+      <span class="library-indicator ${s.status==="CONNECTED"?"is-ready":""}" role="img" title="${s.status==="CONNECTED"?"已连接":"未连接"}" aria-label="${s.status==="CONNECTED"?"已连接":"未连接"}"></span>
+      <details class="entry-menu"><summary aria-label="${escape(s.name)} · 更多操作">${icon("more")}</summary><div class="entry-menu-list mcp-card-actions">
+        <button data-action="mcp-select" data-id="${escape(s.id)}" title="管理服务">${icon("settings")}管理服务</button>
+        <button data-action="mcp-connect" data-id="${escape(s.id)}" ${!s.enabled||state.mcpPending===s.id?"disabled":""}>${icon("refresh")}测试连接</button>
+        <button class="danger-text" data-action="mcp-remove" data-id="${escape(s.id)}" title="删除 ${escape(s.name)}" aria-label="删除 ${escape(s.name)}">${icon("trash")}删除</button></div></details></article>`).join("")}</div>`
+      : `<div class="library-empty">${icon("plug")}<h2>${query?"没有匹配的服务":"暂无 MCP 服务"}</h2></div>`;
   }
   function mcpPage() {
     if (state.mcpDraft) return mcpEditor();
-    return `<section class="panel-page mcp-page"><div class="page-heading"><div><h1>MCP 工具</h1></div><div class="heading-actions"><button class="icon-btn" data-action="mcp-import" title="导入 Codex 配置" aria-label="导入 Codex 配置">${icon("upload")}</button><button class="icon-btn" data-action="mcp-new" title="注册服务" aria-label="注册服务">${icon("plus")}</button><button class="icon-btn" data-action="mcp-sdk" title="SDK 与 Codex 接入" aria-label="SDK 与 Codex 接入">${icon("terminal")}</button></div></div><form id="mcp-registry-form" class="form-section directory-registration"><div class="section-heading"><div><h2>注册 MCP 目录</h2></div></div><div class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" data-focus="mcp-directory" value="${escape(state.mcpDirectory || "")}" placeholder="含 mcp.json 的绝对目录路径" required></label><button class="icon-btn" type="submit" title="注册 MCP" aria-label="注册 MCP">${icon("plus")}</button></div></form><div class="integration-stats">${[
-      ["已注册服务", state.mcpServers.length],
-      [
-        "已连接",
-        state.mcpServers.filter((s) => s.status === "CONNECTED").length,
-      ],
-      ["已发现工具", state.mcpServers.reduce((n, s) => n + (s.tool_count||0), 0)],
-      ["活跃调用", state.mcpServers.reduce((n, s) => n + s.active_calls, 0)],
-    ]
-      .map(
-        ([label, n]) => `<div><span>${label}</span><strong>${n}</strong></div>`,
-      )
-      .join(
-        "",
-      )}</div><div class="filter-toolbar"><h2 class="compact-heading">服务目录</h2><label class="inline-search">${icon("search")}<input id="mcp-search" data-focus="mcp-search" aria-label="搜索 MCP 服务" placeholder="搜索服务…" value="${escape(state.mcpQuery)}"></label></div><div id="mcp-cards">${mcpCards()}</div>${state.mcpCursor!=null?'<button class="btn load-more" data-action="mcp-load-more">加载更多服务</button>':""}</section>`;
+    return `<section class="integration-directory"><header class="directory-bar"><h2>服务</h2><div class="library-tools">
+      <label class="library-search">${icon("search")}<input type="search" id="mcp-search" data-focus="mcp-search" aria-label="搜索 MCP 服务" placeholder="搜索服务" value="${escape(state.mcpQuery)}"></label>
+      <button class="icon-btn" data-action="mcp-import" title="导入 Codex 配置" aria-label="导入 Codex 配置">${icon("upload")}</button>
+      <button class="icon-btn" data-action="mcp-sdk" title="SDK 与 Codex 接入" aria-label="SDK 与 Codex 接入">${icon("terminal")}</button>
+      <button class="btn" data-action="mcp-new">${icon("plus")}添加服务</button>
+      </div></header><details class="register-directory"><summary>${icon("folder")}从目录注册</summary>
+        <form id="mcp-registry-form" class="directory-registration-row"><label class="field">目录路径<input id="mcp-directory" data-focus="mcp-directory" value="${escape(state.mcpDirectory||"")}" placeholder="含 mcp.json 的目录" required></label><button class="btn primary">注册</button></form></details>
+      <div id="mcp-cards">${mcpCards()}</div>${state.mcpCursor!=null?'<button class="text-link" data-action="mcp-load-more">加载更多</button>':""}</section>`;
   }
   function mcpEditor() {
     const d = state.mcpDraft,

@@ -112,10 +112,10 @@ class LauncherTests(unittest.TestCase):
             "Authorization": "Bearer " + (state / "client-token").read_text(encoding="utf-8").strip()})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
             protocol = json.load(response)
-        self.assertEqual(protocol["protocol_version"], "3.0")
+        self.assertEqual(protocol["protocol_version"], "4.0")
         self.assertEqual(protocol["engine"], "langgraph")
         request = urllib.request.Request(metadata["url"] + "/api/rpc", data=json.dumps({
-            "protocol_version": "3.0", "request_id": "launcher-status", "operation": "host.status", "params": {}}).encode(),
+            "protocol_version": "4.0", "request_id": "launcher-status", "operation": "host.status", "params": {}}).encode(),
             headers={"Content-Type": "application/json", "Authorization": request.headers["Authorization"]})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
             status = json.load(response)["result"]
@@ -165,7 +165,7 @@ class LauncherTests(unittest.TestCase):
         with opener.open(request, timeout=5) as response:
             self.assertEqual(response.status, 200)
         with opener.open(origin + "/api/protocol", timeout=5) as response:
-            self.assertEqual(json.load(response)["protocol_version"], "3.0")
+            self.assertEqual(json.load(response)["protocol_version"], "4.0")
         with self.assertRaises(urllib.error.HTTPError) as reused:
             opener.open(request, timeout=5)
         self.assertEqual(reused.exception.code, 403)

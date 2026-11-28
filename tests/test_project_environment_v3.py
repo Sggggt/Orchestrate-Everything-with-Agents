@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Model, ProjectWorkspace, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -32,7 +34,7 @@ class ProjectEnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def active(self, workspace=None):
         definition = AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid", model="test"), tools=Tools(local=("exec_command", "write_stdin")),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid", model="test")), tools=Tools(local=("exec_command", "write_stdin")),
             workspace=workspace or Workspace(sandbox="trusted"))
         await self.host.agents.save(definition)
         instance = await self.host.instances.create(self.session["id"], "worker")

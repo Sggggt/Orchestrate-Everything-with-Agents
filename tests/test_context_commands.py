@@ -268,6 +268,7 @@ class CommandContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_native_settlement_releases_the_historical_running_receipt(self):
         from oea import Completion
         from oea.runtime.host import Host
+        from oea.contracts.configuration import RunConfiguration
         from test_command_recovery_v3 import WaitingCommandModel, start_waiting
         class ResumableCommandModel(WaitingCommandModel):
             async def complete(inner, model, messages, **options):
@@ -279,7 +280,7 @@ class CommandContextTests(unittest.IsolatedAsyncioTestCase):
         native = Path(os.environ["OEA_TEST_NATIVE_COMPONENT"])
         with patch("oea.workspace.native.executable", return_value=native):
             async with Host(Path(self.fixture.temporary.name) / "native", allow_commands=True, model_api=model) as host:
-                handle, definition = await start_waiting(host)
+                handle, _ = await start_waiting(host)
                 async with asyncio.timeout(10):
                     while True:
                         changed = host.run_signal(handle.id)
@@ -297,7 +298,7 @@ class CommandContextTests(unittest.IsolatedAsyncioTestCase):
                 async def summarize(messages, limit):
                     payloads.append(json.loads(messages[1]["content"]))
                     return "The native command has finished; preserve original evidence and continue the work."
-                await host.contexts.project(run, instance, definition, "Review", [], summarize=summarize)
+                await host.contexts.project(run, instance, RunConfiguration.model_validate_json(run["config_json"]), "Review", [], summarize=summarize)
                 card = payloads[0]["command_facts"][0]
                 self.assertEqual((card["state"], card["exit_code"], card["process_stopped"]), ("exited", 0, True))
                 current = await host.store.call(lambda db: one(db, "SELECT result_json FROM actions WHERE id=?", (receipt["id"],)))

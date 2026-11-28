@@ -18,7 +18,8 @@
   - `async get(self, agent_id: str)`
   - `async list(self, project_id: str, *, cursor: int=0, limit: int=25)`
   - `async schema(self)`
-  - `async set_credential(self, agent_id: str, project_id: str, role: str, value: str, expected_revision: int)`
+  - `async set_model(self, agent_id: str, project_id: str, model_ref: str | None, expected_revision: int, *, role="main")`
+  - `async create(self, definition: AgentDefinition, idempotency_key: str)`
   - `async check(self, agent_id: str, *, project_id: str | None=None)`
   - `async probe(self, agent_id: str, session_id: str, idempotency_key: str, *, role='main')`：接受独立模型连接探测，返回原 RunHandle；结果及用量通过 runs 查询。
   - `async remove(self, agent_id: str, project_id: str, expected_revision: int)`：删除活动登记，保留历史和文件；未结束或待核对的 Run 阻止删除。
@@ -78,3 +79,5 @@ Agent 的 `removed` 是只读生命周期元数据，通过 `agents.remove` 修�
 `instances.history` 按会话位置读取预览。启用 `message_page` 后，页大小按可见消息计数，附带范围内的折叠活动。用 `after` 增量补读新条目，用返回的 `cursor` 作为下一页的 `before`。长正文的 `next_offset` 可传给 `instances.message`，在原实例和项目范围内以 Unicode 码点偏移读取同一条消息。
 
 HTTP 与 MCP 的 consumer_id 由当前连接传入；显式参数不能代替另一个阅读身份。响应 revision 来自同一会话的事件位置，界面丢弃较旧的异步计数响应。
+
+Models are user-owned API Box references. Declarations contain no inline endpoint or credential configuration. Main instance overrides are saved through `instances.set_model`; managers select only their role default. See [API Box](../models/README.md) and [plugins](../plugins/README.md).

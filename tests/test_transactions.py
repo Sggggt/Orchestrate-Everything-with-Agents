@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import apsw
 
+from model_support import register_model
+
 from oea import AgentDefinition, Budget, Completion, MessageSpec, Model, RunSpec, Tools, ToolSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -63,7 +65,7 @@ class TransactionTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root / "state", model_api=self.model).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         self.session = await self.host.sessions.create("p")
-        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid/v1", model="protocol-fixture", max_output_tokens=32))
+        self.definition = AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture", max_output_tokens=32)))
         await self.host.agents.save(self.definition, expected_revision=0)
 
     async def asyncTearDown(self):

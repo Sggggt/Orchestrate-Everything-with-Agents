@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Communication, Completion, Manager, MessageSpec, Model, RunSpec, Tools
 from oea.runtime.host import Host
 from oea.contracts.errors import RuntimeFault
@@ -71,8 +73,8 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Project", project_id="p")
         for identity in ("left", "right"):
             await self.host.agents.save(AgentDefinition(id=identity, name=identity.title(), project_id="p",
-                model=Model(base_url="https://example.invalid/v1", model="main-" + identity), tools=Tools(),
-                manager=Manager(model=Model(base_url="https://example.invalid/v1", model="manager-" + identity),
+                model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="main-" + identity)), tools=Tools(),
+                manager=Manager(model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="manager-" + identity)),
                     communication=Communication(departments=("right" if identity == "left" else "left",), can_request=True))))
         self.session = await self.host.sessions.create("p")
         await self.host.sessions.set_mode(self.session["id"], "collaborative", 0)

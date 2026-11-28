@@ -2,7 +2,7 @@
 
 External application backends use the separately authenticated [OAP 1.0
 interface](applications/README.md) at `/api/oap/v1`. The platform control
-operations below remain protocol 3.0 and do not expose application business
+operations below remain protocol 4.0 and do not expose application business
 records. OAP provides fixed business actions, without arbitrary control-operation
 forwarding.
 

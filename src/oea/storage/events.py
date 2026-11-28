@@ -11,9 +11,12 @@ class Events:
     def __init__(self, host):
         self.host = host
 
-    async def list(self, project_id: str, *, session_id: str | None = None, run_id: str | None = None, after: int = 0, limit: int = 100):
+    async def list(self, project_id: str | None = None, *, session_id: str | None = None, run_id: str | None = None, after: int = 0, limit: int = 100):
         require(0 <= after < 2**63 and 1 <= limit <= 250, "INVALID_REQUEST", "Read a bounded durable event page")
         def read(db):
+            if project_id is None:
+                require(session_id is None and run_id is None, "INVALID_REQUEST", "Global events cannot select a business object")
+                return rows(db, "SELECT * FROM events WHERE project_id IS NULL AND source='platform' AND kind IN ('model.saved','model.removed','plugin.saved','plugin.removed') AND position>? ORDER BY position LIMIT ?", (after, limit + 1)), False
             project = one(db, "SELECT 1 FROM projects WHERE id=?", (project_id,))
             if project is None:
                 require(session_id is None and run_id is None and one(db, "SELECT 1 FROM events WHERE project_id=? AND kind='project.deleted' LIMIT 1", (project_id,)),
@@ -34,7 +37,7 @@ class Events:
             return rows(db, query + " ORDER BY position LIMIT ?", (*params, limit + 1)), project is None
         values, deleted = await self.host.store.call(read)
         page = values[:limit]
-        return {"items": [{key: row[key] for key in ("position", "kind", "project_id", "session_id", "instance_id", "run_id", "created_at")} | {"data": json.loads(row["data_json"])} for row in page],
+        return {"items": [{key: row[key] for key in ("position", "kind", "project_id", "session_id", "instance_id", "run_id", "created_at")} | {"data": ({key: value for key, value in json.loads(row["data_json"]).items() if key in {"id", "revision"}} if project_id is None else json.loads(row["data_json"]))} for row in page],
             "position": page[-1]["position"] if page else after, "cursor": page[-1]["position"] if len(values) > limit else None,
             "project_deleted": deleted}
 

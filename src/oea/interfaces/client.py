@@ -1,4 +1,4 @@
-"""Client for an existing protocol-3 host; never starts another host."""
+"""Client for an existing protocol-4 host; never starts another host."""
 
 import asyncio
 import hashlib
@@ -51,7 +51,7 @@ class PlatformClient:
         try:
             response = await self.client.get("/api/protocol", timeout=10)
             response.raise_for_status()
-            require(response.json().get("protocol_version") == PROTOCOL_VERSION, "PROTOCOL_MISMATCH", "This client requires an OEA protocol-3 host; migrate and connect explicitly")
+            require(response.json().get("protocol_version") == PROTOCOL_VERSION, "PROTOCOL_MISMATCH", "This client requires an OEA protocol-4 host; migrate and connect explicitly")
         except BaseException:
             await self.client.aclose()
             self.client = None

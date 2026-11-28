@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec, SkillBinding, SkillSource
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -42,7 +44,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
 
     async def configure(self, *, required=True, project_id="p"):
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id=project_id,
-            model=Model(base_url="https://model.invalid/v1", model="protocol-fixture"), skills=(SkillBinding(id="review", required=required),)))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture")), skills=(SkillBinding(id="review", required=required),)))
 
     async def test_directory_registration_reads_metadata_once_and_preserves_references(self):
         directory = self.root / "evidence-guide"
@@ -73,7 +75,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeFault) as invalid:
             await self.host.skills.register_directory(self.source, "p")
         self.assertEqual(invalid.exception.code, "INVALID_SKILL")
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skills")["count"]), 1)
+        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skills WHERE project_id='p'")["count"]), 1)
 
     async def test_registered_body_is_versioned_and_does_not_read_the_source_on_each_run(self):
         await self.configure()
@@ -93,7 +95,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         await self.host.runs.result(second.id, timeout=5)
         self.assertIn("Instructions version two.", self.model.inputs[1])
         self.assertNotIn("Instructions version one.", self.model.inputs[1])
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_bodies")["count"]), 2)
+        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_bodies WHERE sha256 IN (SELECT sha256 FROM skill_versions WHERE skill_id='review')")["count"]), 2)
 
     async def test_discovery_pins_metadata_with_body_and_loads_optional_body_on_demand(self):
         first = "---\nname: Receipt guide\ndescription: Inspect the original receipt.\n---\nFirst version body."
@@ -121,7 +123,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         self.host.model_api = ChoosingModel()
         for index, revision in enumerate((2, None)):
             await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-                model=Model(base_url="https://model.invalid/v1", model="protocol-fixture"),
+                model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture")),
                 skills=(SkillBinding(id="review", revision=revision, name="Untrusted stale label", description="Wrong description"),)))
             instance = await self.host.instances.create(self.session["id"], "worker", name="Reader " + str(index))
             run = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="Inspect evidence", idempotency_key="metadata-" + str(index)))
@@ -143,7 +145,7 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         absent = self.root / "unopened-source"
         self.assertFalse(absent.exists())
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="protocol-fixture"),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture")),
             skills=(SkillBinding(id="direct", path=absent, name="Direct guide", description="Read it only for a relevant task."),)))
         instance = await self.host.instances.create(self.session["id"], "worker")
         run = await self.host.runs.submit(RunSpec(instance_id=instance["id"], input="No guide needed", idempotency_key="direct-metadata"))
@@ -192,9 +194,9 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
         removed = await self.host.skills.remove("review", "p", 2)
         self.assertTrue(removed["removed"])
         self.assertTrue((self.source / "SKILL.md").is_file())
-        self.assertEqual((await self.host.skills.list("p"))["items"], [])
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_bodies")["count"]), 1)
-        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_versions")["count"]), 3)
+        self.assertEqual([row for row in (await self.host.skills.list("p"))["items"] if row["definition"]["project_id"] == "p"], [])
+        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_bodies WHERE sha256 IN (SELECT sha256 FROM skill_versions WHERE skill_id='review')")["count"]), 1)
+        self.assertEqual(await self.host.store.call(lambda db: one(db, "SELECT COUNT(*) AS count FROM skill_versions WHERE skill_id='review'")["count"]), 3)
 
     async def test_explicit_source_change_loads_new_body_and_denies_old_source_reference(self):
         await self.configure()

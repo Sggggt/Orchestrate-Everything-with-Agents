@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, ApplicationBinding, ApplicationGrant, Model, Tools
 from oea.contracts.applications import ApplicationRun, ApplicationResume, ApplicationResolution, ConversationCreate
 from oea.contracts.errors import RuntimeFault
@@ -41,7 +43,7 @@ def process_terminated(pid):
 
 async def setup_application(host, *, tools=Tools()):
     await host.projects.create("Example", project_id="p")
-    await host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid", model="fixture"), tools=tools))
+    await host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(host, Model(base_url="https://model.invalid", model="fixture")), tools=tools))
     registered = await host.applications.create("Example")
     identity = registered["application"]["id"]
     grant = ApplicationBinding(app_id=identity, project_id="p", agent_id="worker", grant=ApplicationGrant(tools=tools))

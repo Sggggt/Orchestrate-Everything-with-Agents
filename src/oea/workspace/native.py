@@ -14,7 +14,7 @@ from oea.contracts.errors import RuntimeFault, require
 
 
 PROTOCOL = 1
-VERSION = "3.4.7"
+VERSION = "4.0.0"
 PACKAGE_DIRECTORY = Path(__file__).resolve().parents[1]
 
 

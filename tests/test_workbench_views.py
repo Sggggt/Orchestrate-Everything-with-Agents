@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -22,7 +24,7 @@ class WorkbenchViewTests(unittest.IsolatedAsyncioTestCase):
         await self.host.projects.create("Project", project_id="p")
         await self.host.projects.create("Other", project_id="q")
         self.session = await self.host.sessions.create("p")
-        await self.host.agents.save(AgentDefinition(id="writer", name="Writer", project_id="p", model=Model(base_url="https://model.invalid/v1", model="protocol-fixture")))
+        await self.host.agents.save(AgentDefinition(id="writer", name="Writer", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture"))))
         self.first = await self.host.instances.create(self.session["id"], "writer", name="First")
         self.second = await self.host.instances.create(self.session["id"], "writer", name="Second")
 

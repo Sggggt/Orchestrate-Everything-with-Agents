@@ -157,7 +157,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(guide.isError)
                 result = await self.call(area + ".remove", {key: identity, "project_id": "p", "expected_revision": 1}, consumer="deletion")
                 self.assertFalse(result.isError)
-                self.assertEqual(value(await self.call(area + ".list", {"project_id": "p"}, consumer="deletion"))["items"], [])
+                active = value(await self.call(area + ".list", {"project_id": "p"}, consumer="deletion"))["items"]
+                self.assertEqual([row for row in active if row["definition"]["project_id"] == "p"], [])
         self.assertEqual(self.host.mcp.connections, {})
 
     async def check_discovery(self):

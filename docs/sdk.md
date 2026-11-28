@@ -7,7 +7,7 @@ for conversation, upload, stream, resume and download examples.
 
 For editable ReAct, Plan-and-Execute and Reflexion graphs, versioned drafts and trials, use the typed [Agent architecture SDK](agent-architectures.md). `ArchitectureClient` accepts an open `Host` or `PlatformClient` and shares the same operations as HTTP and MCP.
 
-OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; protocol 3 rejects old runtime contracts.
+OEA combines an Agent capability kernel with LangGraph. Configure the model, instructions, tools and Skills, context, workspace, execution and communication once, then reuse a persistent instance. The public package is `oea`; protocol 4 rejects old runtime contracts.
 
 Saved files can remain unpublished. Use `client.call("artifacts.candidates", {"run_id": run_id, "project_id": project_id})` to inspect patch receipts, or explicitly select `source="outputs"` to observe a run's output directory. `artifacts.candidate` can compare a saved candidate with its current source using `check_source=True`. These operations retain provenance and report changes without invoking a model or declaring acceptance; see [file candidates](artifacts/README.md#未发布文件候选).
 
@@ -110,7 +110,7 @@ During a normal model call, a failed connection establishment or interrupted res
 
 Supply a stable `idempotency_key` for a logical work submission. A response loss does not authorize another work intent. `instance.last_run_id` identifies the original run, and `host.runs.inspect` reads its errors, actions, partial artifacts, and budget. If the evidence includes an `action_id`, `runs.action` reads the original tool receipt. For calls rejected before dispatch, inspect the recorded field diagnostics. `host.runs.result` reads or waits for the Run’s delivery.
 
-An interrupted or failed graph resumes through `host.runs.resume(run_id, idempotency_key, input=...)`, or `instance.resume` / `instance.aresume`. Resume retains the run, root budget, directory, and action keys. At this explicit boundary it refreshes the model and capability configuration by default; the run service accepts `refresh_model=False` and `refresh_capabilities=False`. Changing the default workspace does not move an existing instance. A completed original model or tool response is read from its receipt. Unknown side effects require inspection before resumption. Ordinary tool parameter errors remain within the existing graph and can be repaired locally.
+An interrupted or failed graph resumes through `host.runs.resume(run_id, idempotency_key, input=...)`, or `instance.resume` / `instance.aresume`. Resume retains the run, root budget, directory, and action keys. Model refresh is explicit (`refresh_model=False` by default). Capability refresh retains accepted plugin component versions while applying current authorization; `refresh_capabilities=False` also preserves the accepted base capability snapshot. Changing the default workspace does not move an existing instance. A completed original model or tool response is read from its receipt. Unknown side effects require inspection before resumption. Ordinary tool parameter errors remain within the existing graph and can be repaired locally.
 
 Cancellation requests and confirmed stops are separate. A function with no cancellation capability can finish after its consumer stops waiting. Its original result is saved; continuation then requires explicit resumption. This does not submit another external action.
 
@@ -142,7 +142,7 @@ Usage separates provider reports, estimates, reservations and unresolved calls. 
 
 The working input target is separate from the model's maximum window. Large sources remain accessible by references and selected ranges; repeated text is removed from the active projection before incremental summary.
 
-`ContextPolicy.summary` is a `SummaryPolicy`: summary generation limit, maximum attempts, thinking and reasoning settings are separate from the memory body target. `AgentDefinition.summary_model` optionally selects an explicitly authorized summary configuration. Provider settings must be supported by that provider.
+`ContextPolicy.summary` is a `SummaryPolicy`: summary generation limit, maximum attempts, thinking and reasoning settings are separate from the memory body target. `AgentDefinition.summary_model_ref` optionally selects an explicitly authorized summary configuration. Provider settings must be supported by that provider.
 
 Summary recovery is bounded, reuses original intent receipts and does not resend an unknown external result. Empty length-limited output may use a larger generation allowance. If no valid smaller summary is obtained, the previous memory plus every later durable fact/reference remains available. An input that still cannot fit suspends the original graph instead of silently dropping facts or rerunning the task.
 
@@ -274,7 +274,7 @@ Keep one stable `consumer_id` per conversation. Discover one area/action, then c
 
 When instances intentionally share a writable file, the host serializes file-tool revision checks and replacements for that canonical path. A stale `expected_sha256` returns `REVISION_CONFLICT`; different files remain independent. This protection applies to cooperating file tools in one host. Shell programs and external editors use operating-system file access and can overwrite those files independently. Shared read/modify/write commands need an explicit application lock or a designated writer; SQLite transactions and atomic rename alone do not make arbitrary shell edits transactional.
 
-`Execution(program=(...))` runs an explicitly configured program under the host's command grant. The protocol-3 SDK in `oea.stdio` exchanges UTF-8 JSONL on stdout and writes diagnostics to stderr. A process receives only its Run identity, input, workspace paths, capability descriptions, and explicit checkpoint. It calls the same authorized tools and model through its Run context; it receives no administrator client or model credentials.
+`Execution(program=(...))` runs an explicitly configured program under the host's command grant. The protocol-4 SDK in `oea.stdio` exchanges UTF-8 JSONL on stdout and writes diagnostics to stderr. A process receives only its Run identity, input, workspace paths, capability descriptions, and explicit checkpoint. It calls the same authorized tools and model through its Run context; it receives no administrator client or model credentials.
 
 Programs declare their implemented cancellation and suspension capabilities. They return a completed or suspended boundary, with a small JSON checkpoint when needed. The host persists a terminal receipt before acknowledging it. A resumed suspension starts a new process from that checkpoint and the original reply; it cannot depend on previous process memory. Managed process termination confirms local process cleanup, while any unresolved external tool action remains pending review. Native programs use the same OS policy as local commands. Only explicitly trusted mode retains unrestricted host-user execution.
 
@@ -283,3 +283,9 @@ Reader cursors are scoped to the client's stable `consumer_id`. `sessions.unread
 ## Direct downloads
 
 `PlatformClient.download_artifact(artifact_id, destination, project_id=...)` streams and verifies the saved content hash. `download_command(run_id, command_session_id, stream, destination, project_id=...)` reads a byte-bounded snapshot of the retained stdout or stderr. Neither operation overwrites a local file or reexecutes work. `runs.command` also provides authenticated download URLs for browser clients.
+
+## API Box references
+
+Use `Agent(model_ref="MODEL_REFERENCE", ...)` or save an `AgentDefinition` with `model_ref` and optional `summary_model_ref`. Manager references are independent. Obtain references through the user-scoped `models` operations. The SDK convenience `Agent(model=Model(...))` imports that connection into the same API Box during initialization; it never persists inline Agent API settings. It is unnecessary when loading a saved Agent.
+
+Use `agents.set_model` to update a default without replacing other settings, and `instances.set_model` to select a main instance's next model. Accepted Runs retain their snapshot. Resume defaults to `refresh_model=False`; explicit refresh keeps the original Run, action identities and root budget. Manager instance overrides are rejected.

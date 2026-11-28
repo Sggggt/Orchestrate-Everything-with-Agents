@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Execution, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -73,7 +75,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
 
     async def configure(self, *, model=False, script=None, timeout=20):
         value = AgentDefinition(id="program", name="Program", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="protocol-fixture") if model else Model(),
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture") if model else Model()),
             tools=Tools(local=("exec_command", "write_stdin", "publish_artifact")),
             workspace=Workspace(sandbox="trusted", environment={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}),
             execution=Execution(program=(sys.executable, "-B", str(script or self.script)), program_uses_model=model, program_timeout_seconds=timeout))

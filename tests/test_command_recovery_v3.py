@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -29,7 +31,7 @@ class WaitingCommandModel:
 async def start_waiting(host, *, elapsed=None):
     await host.projects.create("Project", project_id="p")
     session = await host.sessions.create("p")
-    definition = AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid", model="fixture"),
+    definition = AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(host, Model(base_url="https://model.invalid", model="fixture")),
         tools=Tools(local=("exec_command","write_stdin")), workspace=Workspace(sandbox="native" if os.environ.get("OEA_TEST_NATIVE_COMPONENT") else "trusted"))
     if elapsed is not None:
         definition.execution.budget.max_elapsed_seconds = elapsed

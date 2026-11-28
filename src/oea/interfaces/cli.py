@@ -36,7 +36,7 @@ def parser():
     upgrade.add_argument("--data-dir", type=Path)
     upgrade.add_argument("--target", type=Path)
     upgrade.add_argument("--apply", action="store_true", help="Write the new target after verifying the unchanged source")
-    request = commands.add_parser("request", help="Call one operation on an existing protocol-3 host")
+    request = commands.add_parser("request", help="Call one operation on an existing protocol-4 host")
     request.add_argument("operation")
     request.add_argument("--params-file", type=Path)
     request.add_argument("--data-dir", type=Path)

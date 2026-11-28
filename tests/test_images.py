@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, ContextPolicy, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -55,7 +57,7 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
         self.model = ImageModel(self.image)
         self.host = await Host(self.root / "state", model_api=self.model).__aenter__()
         await self.host.projects.create("Project", project_id="p", folder=self.project)
-        await self.host.agents.save(AgentDefinition(id="review", name="Review", project_id="p", model=Model(base_url="https://example.invalid/v1", model="image-fixture"),
+        await self.host.agents.save(AgentDefinition(id="review", name="Review", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="image-fixture")),
             tools=Tools(local=("view_image",)), workspace=Workspace(sandbox="trusted", project=self.project), context=ContextPolicy(input_tokens=131072)))
         session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(session["id"], "review")

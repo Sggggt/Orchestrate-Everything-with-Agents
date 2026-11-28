@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, MCPBinding, MCPServer, Model, RunSpec, Tools
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -118,7 +120,7 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
         self.temporary.cleanup()
 
     async def configure(self, upstream="echo", server_id="business"):
-        definition = AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid/v1", model="protocol-fixture"),
+        definition = AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture")),
             tools=Tools(mcp=(MCPBinding(server_id=server_id, tools=(upstream,)),)))
         await self.host.agents.save(definition)
         return definition
@@ -452,7 +454,7 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
                 return Completion(text="Complete", usage={"prompt_tokens": 30, "completion_tokens": 2})
         self.host.model_api = ModelFixture()
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid/v1", model="protocol-fixture"), tools=Tools(functions=(name,))))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture")), tools=Tools(functions=(name,))))
         run = await self.submit()
         await asyncio.wait_for(ready.wait(), 5)
         denied = None

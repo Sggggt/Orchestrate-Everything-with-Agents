@@ -1,12 +1,14 @@
 """Paged task history and user handling preserve execution and accounting facts."""
 
-import hashlib
 import json
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+
+from historical_state import historical_state
+from model_support import register_model
 
 from oea import AgentDefinition, Model, RunSpec, RunHandlingSelection
 from oea.contracts.errors import RuntimeFault
@@ -25,7 +27,7 @@ class TaskHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.host.aclose)
         for project in ('p', 'q'):
             await self.host.projects.create(project, project_id=project)
-            await self.host.agents.save(AgentDefinition(id='agent-' + project, project_id=project, name='Agent', model=Model(base_url='http://model.invalid', model='test')))
+            await self.host.agents.save(AgentDefinition(id='agent-' + project, project_id=project, name='Agent', model_ref=await register_model(self.host, Model(base_url='http://model.invalid', model='test'))))
             await self.host.sessions.create(project, 'First', session_id='session-' + project)
         await self.host.sessions.create('p', 'Older session', session_id='older')
         self.instances = {}
@@ -142,17 +144,7 @@ class TaskHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_offline_handling_upgrade_retains_history_and_checkpoint_bytes(self):
         task = await self.seed('original', usage=True)
         await self.host.aclose()
-        source = self.root / 'source'
-        frozen = Path(__file__).parents[1] / 'src/oea/migration/schema-v3-pre-handling.sql'
-        self.assertEqual(hashlib.sha256(frozen.read_text(encoding='utf-8').encode()).hexdigest(), PRE_HANDLING_SCHEMA)
-        with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
-            db.execute('DROP INDEX instances_identity')
-            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
-            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
-            db.execute('DROP INDEX usage_attention')
-            db.execute('ALTER TABLE runs DROP COLUMN handled_at')
-            db.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (PRE_HANDLING_SCHEMA,))
-            db.execute("UPDATE metadata SET value='3' WHERE key='schema_revision'")
+        source = historical_state(self.root / 'source', self.root / 'historical', revision=3, schema_hash=PRE_HANDLING_SCHEMA)
         original = (source / 'oea.sqlite').read_bytes()
         graphs = (source / 'graphs.sqlite').read_bytes()
         target = self.root / 'upgraded'
@@ -170,13 +162,7 @@ class TaskHistoryTests(unittest.IsolatedAsyncioTestCase):
         task = await self.seed('original')
         identity = self.instances['session-p']
         await self.host.aclose()
-        source = self.root / 'source'
-        with closing(sqlite3.connect(source / 'oea.sqlite')) as db, db:
-            db.execute('DROP INDEX instances_identity')
-            db.execute('ALTER TABLE instances DROP COLUMN removed_at')
-            db.execute('CREATE UNIQUE INDEX instances_identity ON instances(session_id,agent_id,name,role)')
-            db.execute("UPDATE metadata SET value=? WHERE key='schema_sha256'", (PRE_INSTANCE_REMOVAL_SCHEMA,))
-            db.execute("UPDATE metadata SET value='4' WHERE key='schema_revision'")
+        source = historical_state(self.root / 'source', self.root / 'historical', revision=4, schema_hash=PRE_INSTANCE_REMOVAL_SCHEMA)
         before = (source / 'oea.sqlite').read_bytes()
         target = self.root / 'upgraded'
         self.assertTrue(upgrade_state(source, target=target, apply=True)['applied'])

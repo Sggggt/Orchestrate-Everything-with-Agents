@@ -125,7 +125,9 @@ class Agents:
         self.host = host
 
     async def save(self, definition: AgentDefinition, *, expected_revision: int | None = None):
-        definition = AgentDefinition.model_validate(definition)
+        definition = self.host.model_profiles.canonical(AgentDefinition.model_validate(definition))
+        self.host.model_profiles.validate(definition)
+        self.host.plugins.validate_bindings(definition)
         require(not definition.removed, "INVALID_REQUEST", "Use agents.remove to delete an Agent")
         workspace = definition.workspace
         absolute = lambda path: path.expanduser().resolve() if path is not None else None
@@ -135,33 +137,61 @@ class Agents:
         definition = definition.model_copy(update={"workspace": workspace,
             "skills": tuple(skill.model_copy(update={"path": absolute(skill.path)}) for skill in definition.skills)})
         def write(db):
-            if definition.project_id:
-                need(db, "projects", definition.project_id)
-            previous = one(db, "SELECT * FROM agent_definitions WHERE id=?", (definition.id,))
-            self.host.architectures.check_save(db, definition, previous)
-            if previous:
-                require(previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Agent cannot change its project")
-                require(expected_revision is None or expected_revision == previous["revision"], "REVISION_CONFLICT", "Agent configuration changed")
-                require(not json.loads(previous["config_json"]).get("removed"), "AGENT_REMOVED", "Deleted Agent identities cannot be reused")
-                revision = previous["revision"] + 1
-                db.execute("UPDATE agent_definitions SET config_json=?,revision=?,updated_at=? WHERE id=?",
-                           (definition.model_dump_json(), revision, now_ms(), definition.id))
-            else:
-                require(expected_revision in {None, 0}, "REVISION_CONFLICT", "Agent does not have that revision")
-                revision = 1
-                db.execute("INSERT INTO agent_definitions VALUES(?,?,?,?,?)",
-                           (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
-            event(db, "agent.saved", project_id=definition.project_id, data={"agent_id": definition.id, "revision": revision})
-            return revision
+            return self._save(db, definition, expected_revision)
         revision = await self.host.store.call(write, transaction=True)
         self.host.definitions[definition.id] = definition.model_copy(deep=True)
         await self.host.revalidate_commands(agent_id=definition.id)
         self.host.notify()
-        return {"definition": definition.model_dump(mode="json"), "revision": revision}
+        return {"definition": definition.model_dump(mode="json"), "revision": revision, "model_summary": self.host.model_profiles.summaries(definition)}
+
+    def _save(self, db, definition, expected_revision):
+        if definition.project_id:
+            need(db, "projects", definition.project_id)
+        previous = one(db, "SELECT * FROM agent_definitions WHERE id=?", (definition.id,))
+        self.host.architectures.check_save(db, definition, previous)
+        if previous:
+            require(previous["project_id"] == definition.project_id, "PROJECT_MISMATCH", "Agent cannot change its project")
+            require(expected_revision is None or expected_revision == previous["revision"], "REVISION_CONFLICT", "Agent configuration changed")
+            require(not json.loads(previous["config_json"]).get("removed"), "AGENT_REMOVED", "Deleted Agent identities cannot be reused")
+            revision = previous["revision"] + 1
+            db.execute("UPDATE agent_definitions SET config_json=?,revision=?,updated_at=? WHERE id=?",
+                       (definition.model_dump_json(), revision, now_ms(), definition.id))
+        else:
+            require(expected_revision in {None, 0}, "REVISION_CONFLICT", "Agent does not have that revision")
+            revision = 1
+            db.execute("INSERT INTO agent_definitions VALUES(?,?,?,?,?)",
+                       (definition.id, definition.project_id, definition.model_dump_json(), revision, now_ms()))
+        event(db, "agent.saved", project_id=definition.project_id, data={"agent_id": definition.id, "revision": revision})
+        return revision
+
+    async def create(self, definition: AgentDefinition, idempotency_key: str):
+        """Create a project Agent once; internal callers use a run-bound creation grant."""
+        from oea.interfaces.registry import operation_context
+        definition = self.host.model_profiles.canonical(definition)
+        self.host.model_profiles.validate(definition)
+        self.host.plugins.validate_bindings(definition)
+        require(definition.project_id is not None and 0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "Creation needs a project and a stable key")
+        consumer = (operation_context.get() or {}).get("consumer_id") or "local"
+        key = "agent-create:" + idempotency_key
+        fingerprint = hashlib.sha256(definition.model_dump_json().encode()).hexdigest()
+        def write(db):
+            prior = one(db, "SELECT * FROM plugin_intents WHERE project_id=? AND consumer_id=? AND idempotency_key=?", (definition.project_id, consumer, key))
+            if prior:
+                require(prior["input_hash"] == fingerprint, "IDEMPOTENCY_CONFLICT", "Creation key has different content")
+                return json.loads(prior["result_json"])
+            revision = self._save(db, definition, 0)
+            result = {"definition": definition.model_dump(mode="json"), "revision": revision, "agent_id": definition.id}
+            db.execute("INSERT INTO plugin_intents VALUES(?,?,?,?,?,?)", (definition.project_id, consumer, key, fingerprint, encode(result), now_ms()))
+            return result
+        result = await self.host.store.call(write, transaction=True)
+        self.host.definitions[definition.id] = AgentDefinition.model_validate(result["definition"])
+        self.host.notify()
+        return result
 
     async def get(self, agent_id: str):
         row = await self.host.store.call(lambda db: need(db, "agent_definitions", agent_id))
-        return {"definition": json.loads(row["config_json"]), "revision": row["revision"]}
+        definition = AgentDefinition.model_validate_json(row["config_json"])
+        return {"definition": definition.model_dump(mode="json"), "revision": row["revision"], "model_summary": self.host.model_profiles.summaries(definition)}
 
     async def list(self, project_id: str, *, cursor: int = 0, limit: int = 25, include_removed: bool = False):
         require(type(limit) is int and 1 <= limit <= 100 and type(cursor) is int and 0 <= cursor < 2**63, "INVALID_REQUEST", "Use a bounded page")
@@ -170,7 +200,7 @@ class Agents:
             return rows(db, "SELECT rowid AS position,* FROM agent_definitions WHERE (project_id=? OR project_id IS NULL) AND rowid>? AND (? OR COALESCE(json_extract(config_json,'$.removed'),0)=0) ORDER BY rowid LIMIT ?",
                         (project_id, cursor, int(include_removed), limit + 1))
         values = await self.host.store.call(read)
-        return {"items": [{"position": row["position"], "revision": row["revision"], "definition": json.loads(row["config_json"])} for row in values[:limit]],
+        return {"items": [{"position": row["position"], "revision": row["revision"], "definition": json.loads(row["config_json"]), "model_summary": self.host.model_profiles.summaries(AgentDefinition.model_validate_json(row["config_json"]))} for row in values[:limit]],
                 "cursor": values[limit - 1]["position"] if len(values) > limit else None}
 
     async def schema(self):
@@ -202,28 +232,21 @@ class Agents:
             self.host.notify()
         return {"agent_id": agent_id, "revision": revision, "removed": True, "enabled": False, "reused": reused}
 
-    async def set_credential(self, agent_id: str, project_id: str, role: str, value: str, expected_revision: int, *, purpose: Literal["main", "summary"] = "main"):
-        """Write a model secret without returning its value or reusing a live reference."""
-        require(role in {"main", "manager"} and len(value) <= 16384, "INVALID_REQUEST", "Choose a model role and a bounded credential")
+    async def set_model(self, agent_id: str, project_id: str, model_ref: str | None, expected_revision: int, *, role: Literal["main", "manager"] = "main"):
+        """Update a role default without overwriting unrelated Agent settings."""
         saved = await self.get(agent_id)
         definition = AgentDefinition.model_validate(saved["definition"])
         require(definition.project_id in {None, project_id}, "PERMISSION_DENIED", "Agent belongs to another project")
-        await self.host.projects.get(project_id)
-        require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "Agent configuration changed")
-        require(role != "manager" or definition.manager is not None, "MANAGER_UNAVAILABLE", "Configure the manager before assigning its credential")
-        owner = definition if role == "main" else definition.manager
-        model = owner.model if purpose == "main" else owner.summary_model
-        require(model is not None, "MODEL_NOT_CONFIGURED", "Configure the summary model before assigning its credential")
-        reference = None
-        if value:
-            identity = new_id("credential")
-            await asyncio.to_thread(self.host.vault.set, identity, value)
-            reference = "vault:" + identity
-        model.credential_ref = reference
-        result = await self.save(definition, expected_revision=expected_revision)
-        return {"agent_id": agent_id, "role": role, "purpose": purpose, "configured": bool(value), "revision": result["revision"], "credential_ref": reference}
+        require(saved["revision"] == expected_revision, "REVISION_CONFLICT", "Agent changed")
+        reference = self.host.model_profiles.lookup(model_ref)["id"] if model_ref else None
+        if role == "manager":
+            require(definition.manager is not None, "MANAGER_UNAVAILABLE", "Configure the manager first")
+            definition = definition.model_copy(update={"manager": definition.manager.model_copy(update={"model_ref": reference})})
+        else:
+            definition = definition.model_copy(update={"model_ref": reference})
+        return await self.save(definition, expected_revision=expected_revision)
 
-    async def probe(self, agent_id: str, session_id: str, idempotency_key: str, *, role: Literal["main", "manager"] = "main"):
+    async def probe(self, agent_id: str, session_id: str, idempotency_key: str, *, role: Literal["main", "manager"] = "main", model_ref: str | None = None):
         """Accept one isolated model connection probe with persistent usage and receipts."""
         require(0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "A model probe needs a stable key")
         def accept(db):
@@ -231,7 +254,7 @@ class Agents:
             instance = self.host.instances._create(db, session_id, agent_id, name=name, role=role)
             spec = RunSpec(instance_id=instance["id"], input="READY", idempotency_key=idempotency_key,
                            policy=UsePolicy(tools=CapabilityUse(allowed=()), skills=CapabilityUse(allowed=())))
-            return self.host.runs._submit(db, spec, model_probe=True)
+            return self.host.runs._submit(db, spec, model_probe=True, probe_model_ref=model_ref)
         self.host.assert_open()
         row, reused = await self.host.store.call(accept, transaction=True)
         self.host.launch(row["id"])
@@ -248,8 +271,15 @@ class Agents:
         project_id = project_id or definition.project_id
         project = await self.host.projects.get(project_id) if project_id else None
         workspace = definition.workspace.resolved(ProjectWorkspace.model_validate(project["workspace"]) if project else None, project["folder"] if project else None)
-        def model_status(model):
+        def model_status(reference):
+            if not reference:
+                return {"state": "needs_configuration", "missing": ["model_ref"], "has_credential": False, "connection_verified": False}
+            row = self.host.model_profiles.lookup(reference, available=False)
+            from oea.contracts.configuration import Model
+            model = Model.model_validate_json(row["config_json"])
             missing = [field for field in ("base_url", "model") if not getattr(model, field)]
+            if not row["enabled"] or row["removed"]:
+                missing.append("disabled")
             credential = self.host.secret(model.credential_ref) if model.credential_ref else None
             if model.credential_ref and not credential:
                 missing.append("credential")
@@ -314,8 +344,8 @@ class Agents:
                 if not available:
                     unavailable.append(kind + ":program_unavailable")
         return {"agent_id": agent_id, "enabled": definition.enabled, "revision": value["revision"],
-                "model": model_status(definition.model),
-                "manager": {"model": model_status(definition.manager.model), "tools": (definition.manager.tools or definition.tools).model_dump(mode="json")} if definition.manager else None,
+                "model": model_status(definition.model_ref),
+                "manager": {"model": model_status(definition.manager.model_ref), "tools": (definition.manager.tools or definition.tools).model_dump(mode="json")} if definition.manager else None,
                 "tools": {"local": list(definition.tools.local), "functions": list(definition.tools.functions), "unavailable": unavailable,
                           "details": [{"name": name, "side_effects": self.host.tools.providers[name].describe().side_effects,
                                        "cancellation": self.host.tools.providers[name].describe().cancellation}
@@ -431,8 +461,10 @@ class Instances:
     def __init__(self, host):
         self.host = host
 
-    def _create(self, db, session_id, agent_id, *, name=None, role="main"):
+    def _create(self, db, session_id, agent_id, *, name=None, role="main", model_ref=None):
         require(role in {"main", "manager"}, "INVALID_REQUEST", "Choose main or manager")
+        require(role != "manager" or model_ref is None, "INVALID_REQUEST", "Manager model selection is only available in settings")
+        model_ref = self.host.model_profiles.lookup(model_ref)["id"] if model_ref else None
         scope = self.host.applications.scope(db, session_id)
         from oea.applications.service import application_id
         identity = application_id("inst") if scope.source == "application" else new_id("instance")
@@ -459,25 +491,46 @@ class Instances:
             require(conversation["instance_id"] is None and conversation["closed_at"] is None,
                     "PERMISSION_DENIED", "Application conversation cannot create another instance")
             definition = assemble(definition, self.host.applications.grant(db, scope), ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
+        require(scope.source == "platform" or model_ref is None, "PERMISSION_DENIED", "Application model selection is binding-owned")
         config = definition.model_dump(mode="json")
         if scope.source == "platform" and not config["workspace"]["project"]:
             config["workspace"]["project"] = project["folder"]
         db.execute("INSERT INTO instances(id,project_id,session_id,agent_id,name,role,config_json,workspace_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                    (identity, session["project_id"], session_id, agent_id, name, role, encode(config), "{}", now_ms()))
+        if model_ref:
+            db.execute("UPDATE instances SET model_ref=? WHERE id=?", (model_ref, identity))
         if scope.source == "platform":
             self.host.boards._create(db, session["project_id"], "Inbox", "inbox", session_id, identity)
         event(db, "instance.created", project_id=session["project_id"], session_id=session_id, instance_id=identity,
               data={"agent_id": agent_id, "role": role})
         return need(db, "instances", identity)
 
-    async def create(self, session_id: str, agent_id: str, *, name: str | None = None, role: str = "main"):
-        result = await self.host.store.call(lambda db: self._create(db, session_id, agent_id, name=name, role=role), transaction=True)
+    async def create(self, session_id: str, agent_id: str, *, name: str | None = None, role: str = "main", model_ref: str | None = None):
+        result = await self.host.store.call(lambda db: self._create(db, session_id, agent_id, name=name, role=role, model_ref=model_ref), transaction=True)
         self.host.notify()
         return self.view(result)
 
-    @staticmethod
-    def view(row):
-        return {key: row[key] for key in ("id", "project_id", "session_id", "agent_id", "name", "role", "active_run_id", "created_at")}
+    def view(self, row):
+        value = {key: row[key] for key in ("id", "project_id", "session_id", "agent_id", "name", "role", "active_run_id", "created_at")}
+        definition = self.host.definitions.get(row["agent_id"])
+        reference = row.get("model_ref")
+        if definition:
+            reference = (definition.manager.model_ref if definition.manager else None) if row["role"] == "manager" else reference or definition.model_ref
+        return value | {"model_ref": row.get("model_ref"), "model_revision": row.get("model_revision", 0), "model_summary": self.host.model_profiles.summary(reference)}
+
+    async def set_model(self, instance_id: str, project_id: str, model_ref: str | None, expected_revision: int):
+        reference = self.host.model_profiles.lookup(model_ref)["id"] if model_ref else None
+        def write(db):
+            instance = need(db, "instances", instance_id)
+            require(instance["project_id"] == project_id and need(db, "sessions", instance["session_id"])["source"] == "platform", "PERMISSION_DENIED", "Instance is outside this platform project")
+            require(instance["role"] == "main" and instance["removed_at"] is None, "PERMISSION_DENIED", "Only active main instances support model overrides")
+            require(instance["model_revision"] == expected_revision, "REVISION_CONFLICT", "Instance model selection changed")
+            db.execute("UPDATE instances SET model_ref=?,model_revision=model_revision+1 WHERE id=?", (reference, instance_id))
+            event(db, "instance.model_changed", project_id=project_id, session_id=instance["session_id"], instance_id=instance_id)
+            return need(db, "instances", instance_id)
+        result = await self.host.store.call(write, transaction=True)
+        self.host.notify()
+        return self.view(result)
 
     async def remove(self, instance_id: str, project_id: str):
         """Remove an idle platform instance from active use while preserving its history."""

@@ -15,7 +15,7 @@ RUNS = {"type": "array", "items": STRING, "minItems": 1, "maxItems": 128, "uniqu
 SCHEMAS = {
     "agent_cards": schema({"agent_ids": {**RUNS, "maxItems": 64}}, ["agent_ids"]),
     "list_instances": schema({"agent_id": STRING, "cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, []),
-    "create_instance": schema({"name": {**STRING, "maxLength": 256}}, ["name"]),
+    "create_instance": schema({"name": {**STRING, "maxLength": 256}, "agent_id": STRING}, ["name"]),
     "assign_work": schema({"instance_id": STRING, "input": {"oneOf": [{"type": "string"}, {"type": "object"}]}, "artifact_ids": {"type": "array", "items": STRING, "maxItems": 32, "uniqueItems": True}, "idempotency_key": {**STRING, "maxLength": 128}}, ["instance_id", "input", "idempotency_key"]),
     "inspect_work": schema({"run_id": STRING}, ["run_id"]),
     "wait_for_runs": schema({"run_ids": RUNS, "policy": {"enum": ["all_succeeded", "all_settled"]}}, ["run_ids"]),
@@ -78,7 +78,7 @@ class Coordination:
     def check(self, db, run_id, name, args):
         actor = self.actor(db, run_id)
         run, instance, departments, can_request = actor
-        require(name in COORDINATION_TOOLS and (name not in DELEGATION_TOOLS or can_request), "PERMISSION_DENIED", "Work delegation is not currently granted")
+        require(name in COORDINATION_TOOLS and (name not in DELEGATION_TOOLS or can_request or name in {"create_instance", "assign_work"} and self.host.factory.names(self.host.active[run_id]) and self.host.active[run_id].current_definition().creation.enabled), "PERMISSION_DENIED", "Work delegation is not currently granted")
         if name in {"inspect_work", "request_cancel"}:
             self.related(db, actor, args["run_id"], cancel=name == "request_cancel")
         elif name == "wait_for_runs":
@@ -89,6 +89,8 @@ class Coordination:
             require(set(args["agent_ids"]) <= departments, "PERMISSION_DENIED", "Card belongs to a department outside the current grant")
         elif name == "list_instances":
             require(args.get("agent_id", instance["agent_id"]) in departments, "PERMISSION_DENIED", "Department is not currently granted")
+        elif name == "create_instance" and args.get("agent_id", instance["agent_id"]) != instance["agent_id"]:
+            require(self.host.factory.created(db, self.host.active[run_id], args["agent_id"]), "PERMISSION_DENIED", "Create instances only for Agents created by this work")
         elif name == "assign_work":
             target = need(db, "instances", args["instance_id"])
             require(target["session_id"] == instance["session_id"] and target["agent_id"] in departments and target["id"] != instance["id"], "PERMISSION_DENIED", "Assign work only to another reachable instance")
@@ -102,7 +104,7 @@ class Coordination:
             actor = self.check(db, run_id, name, args)
             run, instance, departments, _ = actor
             if name == "create_instance":
-                value = self.host.instances.view(self.host.instances._create(db, instance["session_id"], instance["agent_id"], name=args["name"]))
+                value = self.host.instances.view(self.host.instances._create(db, instance["session_id"], args.get("agent_id", instance["agent_id"]), name=args["name"]))
                 return self.host.tools.commit_owned(db, action_id, run_id, value)
             if name == "assign_work":
                 child, reused = self.host.runs._submit(db, RunSpec(instance_id=args["instance_id"], input=args["input"], artifact_ids=args.get("artifact_ids", ()), idempotency_key="assignment:" + args["idempotency_key"], parent_run_id=run_id))

@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -33,7 +35,7 @@ class ResponseTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://model.invalid/v1", model="fixture")))
+            model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="fixture"))))
         session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(session["id"], "worker")
 

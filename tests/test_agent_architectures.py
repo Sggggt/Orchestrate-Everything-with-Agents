@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentArchitecture, AgentDefinition, ArchitectureBinding, ArchitectureBuilder, ArchitectureClient, Completion, Execution, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.orchestration.architecture_templates import templates, react
@@ -39,7 +41,7 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.host.aclose)
         await self.host.projects.create("Example", project_id="p")
         await self.host.projects.create("Other", project_id="q")
-        await self.host.agents.save(AgentDefinition(id="agent", project_id="p", name="Agent", model=Model(base_url="http://model.invalid", model="test")))
+        await self.host.agents.save(AgentDefinition(id="agent", project_id="p", name="Agent", model_ref=await register_model(self.host, Model(base_url="http://model.invalid", model="test"))))
         await self.host.sessions.create("p", "Session", session_id="session")
         self.instance = await self.host.instances.create("session", "agent", name="one")
 
@@ -562,7 +564,7 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
     async def test_manager_run_retains_its_binding_after_main_switch(self):
         from oea import Manager
         saved = await self.host.agents.get("agent")
-        definition = AgentDefinition.model_validate(saved["definition"]).model_copy(update={"manager": Manager(model=Model(base_url="http://model.invalid", model="test"))})
+        definition = AgentDefinition.model_validate(saved["definition"]).model_copy(update={"manager": Manager(model_ref=await register_model(self.host, Model(base_url="http://model.invalid", model="test")))})
         await self.host.agents.save(definition, expected_revision=saved["revision"])
         first, second = await self.candidate(identity="first"), await self.candidate(identity="second")
         await self.bind(first)

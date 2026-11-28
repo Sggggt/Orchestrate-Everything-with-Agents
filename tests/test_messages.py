@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from model_support import register_model
+
 from oea import AgentDefinition, Communication, Completion, Manager, MessageSpec, Model, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -32,8 +34,8 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
         self.host = await Host(self.root / "state", model_api=self.model).__aenter__()
         await self.host.projects.create("Project", project_id="p")
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://example.invalid/v1", model="main-fixture"),
-            manager=Manager(model=Model(base_url="https://example.invalid/v1", model="manager-fixture"))))
+            model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="main-fixture")),
+            manager=Manager(model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="manager-fixture")))))
         self.session = await self.host.sessions.create("p")
         self.instance = await self.host.instances.create(self.session["id"], "worker", name="first")
         self.second = await self.host.instances.create(self.session["id"], "worker", name="second")

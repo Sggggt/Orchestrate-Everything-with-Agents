@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 
 from oea.contracts.errors import require
+from oea.contracts.configuration import PROTOCOL_VERSION
 from oea.workspace.paths import external_path
 
 
@@ -18,4 +19,4 @@ def export_skill(output: Path):
     require(bundled.joinpath("SKILL.md").is_file(), "SKILL_UNAVAILABLE", "The installed distribution has no bundled Codex skill")
     with resources.as_file(bundled) as source:
         shutil.copytree(source, target)
-    return {"path": str(target), "protocol_version": "3.0"}
+    return {"path": str(target), "protocol_version": PROTOCOL_VERSION}

@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 
 from oea.catalog.service import need
-from oea.contracts.configuration import PROTOCOL_VERSION, AgentDefinition, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, ProjectWorkspace, manager_snapshot
+from oea.contracts.configuration import PROTOCOL_VERSION, AgentDefinition, RunConfiguration, Budget, ContextPolicy, Execution, Instructions, Tools, Workspace, ProjectWorkspace, manager_snapshot
 from oea.contracts.domain import Artifact, RunHandle, RunResult, RunSpec, RunHandlingSelection
 from oea.contracts.measurement import content_view
 from oea.contracts.errors import RuntimeFault, require
@@ -53,12 +53,13 @@ class Runs:
         require(path.is_file(), "COMMAND_OUTPUT_UNAVAILABLE", "No retained stream is available")
         return path, record
 
-    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False, architecture=None):
+    def _submit(self, db, spec, *, workflow_run_id=None, source_message_id=None, model_probe=False, architecture=None, probe_model_ref=None):
         """Join acceptance to an existing message or workflow transaction."""
         identity = new_id("run")
         intent = {"spec": spec.model_dump(mode="json", exclude_defaults=True, exclude={"display"}), "workflow_run_id": workflow_run_id, "source_message_id": source_message_id}
         if model_probe:
             intent["model_probe"] = True
+            intent["probe_model_ref"] = probe_model_ref
         if architecture:
             intent["architecture"] = architecture.model_dump(mode="json")
         fingerprint = hashlib.sha256(encode(intent).encode("utf-8")).hexdigest()
@@ -90,6 +91,9 @@ class Runs:
             snapshot = assemble(snapshot, self.host.applications.grant(db, scope), ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])
         else:
             snapshot = snapshot.model_copy(update={"workspace": snapshot.workspace.resolved(ProjectWorkspace.model_validate_json(project["workspace_json"]), project["folder"])})
+        snapshot = self.host.model_profiles.resolve(snapshot, model_ref=probe_model_ref or (instance["model_ref"] if instance["role"] == "main" else None))
+        if not model_probe:
+            snapshot = self.host.plugins.pin(db, snapshot, instance["project_id"], scope=scope)
         if architecture:
             snapshot = snapshot.model_copy(update={"execution": snapshot.execution.model_copy(update={
                 "architecture": architecture, "graph": "default", "graph_version": "1", "program": ()})})
@@ -145,6 +149,7 @@ class Runs:
         db.execute("INSERT INTO runs(id,instance_id,root_run_id,root_workflow_run_id,parent_run_id,workflow_run_id,budget_id,state,input_json,idempotency_key,input_hash,model_role,created_at,updated_at,config_json,source_message_id) VALUES(?,?,?,?,?,?,?,'accepted',?,?,?,?,?,?,?,?)",
                    (identity, spec.instance_id, root_run_id, root_workflow_run_id, spec.parent_run_id, workflow_run_id, budget_id,
                     encode(self.host.redact(spec.input)), spec.idempotency_key, fingerprint, instance["role"], now_ms(), now_ms(), snapshot.model_dump_json(), source_message_id))
+        db.execute("UPDATE runs SET execution_version=? WHERE id=?", (PROTOCOL_VERSION, identity))
         event(db, "run.accepted", project_id=instance["project_id"], session_id=instance["session_id"], instance_id=instance["id"], run_id=identity,
               data={"root_run_id": root_run_id, "root_workflow_run_id": root_workflow_run_id, "workflow_run_id": workflow_run_id, "budget_id": budget_id,
                     **({"purpose": "model_probe"} if model_probe else {})})
@@ -174,6 +179,8 @@ class Runs:
         row = one(db, "SELECT " + RUN_VIEW_SELECT + ", " + NEEDS_ATTENTION + " AS needs_attention FROM runs r WHERE r.id=?", (run_id,))
         require(row is not None, "NOT_FOUND", "Run does not exist")
         value = self.view(row)
+        config = json.loads(one(db, "SELECT config_json FROM runs WHERE id=?", (run_id,))["config_json"])
+        value["model_summary"] = {"id": config.get("model_ref"), "name": config.get("model_name"), "revision": config.get("model_version"), "model_id": config.get("model", {}).get("model")}
         if row["cancel_requested_at"] is not None:
             value["cancellation"] = self._cancellations(db, [run_id])[run_id]
         return value
@@ -422,7 +429,7 @@ class Runs:
             except TimeoutError:
                 raise RuntimeFault("RESULT_PENDING", "Run has not completed", run_id=run_id) from None
 
-    def _resume(self, db, run_id, idempotency_key, *, input=None, refresh_model=True, refresh_capabilities=True, source_message_id=None, execution_limits=None):
+    def _resume(self, db, run_id, idempotency_key, *, input=None, refresh_model=False, refresh_capabilities=True, source_message_id=None, execution_limits=None):
         require(isinstance(idempotency_key, str) and 0 < len(idempotency_key) <= 256, "INVALID_REQUEST", "Resume needs a stable key")
         encoded_input = encode(self.host.redact(input))
         require(len(encoded_input.encode("utf-8")) <= 1024 * 1024, "INVALID_REQUEST", "Resume large inputs by workspace or context reference")
@@ -445,7 +452,7 @@ class Runs:
         if source_message_id:
             message = need(db, "messages", source_message_id)
             require(message["session_id"] == instance["session_id"], "MESSAGE_MISMATCH", "Reply must belong to the original session")
-        snapshot = AgentDefinition.model_validate_json(run["config_json"])
+        snapshot = RunConfiguration.model_validate_json(run["config_json"])
         latest = one(db, "SELECT execution_limits_json FROM run_resumptions WHERE run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,))
         prior_limits = json.loads(latest["execution_limits_json"]).get("effective", {}) if latest else {}
         effective = {"max_steps": prior_limits.get("max_steps", agent_steps(snapshot.execution, json.loads(need(db, "budgets", run["budget_id"])["policy_json"]))), **requested_limits}
@@ -466,10 +473,14 @@ class Runs:
             require(instance["role"] != "manager" or current.manager is not None, "MANAGER_UNAVAILABLE", "Manager model was removed")
             changes = {}
             if refresh_model:
-                changes["model"] = current.manager.model if instance["role"] == "manager" else current.model
+                selected = manager_snapshot(current) if instance["role"] == "manager" else current
+                resolved = self.host.model_profiles.resolve(selected, model_ref=instance["model_ref"] if instance["role"] == "main" else None)
+                changes.update({key: getattr(resolved, key) for key in ("model", "summary_model", "model_ref", "summary_model_ref", "model_version", "summary_model_version", "model_name", "summary_model_name")})
             if refresh_capabilities:
                 db.execute("DELETE FROM run_mcp_bindings WHERE run_id=?", (run_id,))
                 capability = manager_snapshot(current) if instance["role"] == "manager" else current
+                if scope.source == "platform":
+                    capability = self.host.plugins.current_definition(capability, instance["project_id"], snapshot)
                 workspace = capability.workspace
                 if scope.source == "platform":
                     project = need(db, "projects", instance["project_id"])
@@ -487,7 +498,7 @@ class Runs:
                    (new_id("resume"), run_id, idempotency_key, fingerprint, encoded_input, waiting.get("interrupt_id"), now_ms(), position, run["error_json"], source_message_id, encode(limits_receipt)))
         return run
 
-    async def resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None = None, refresh_model: bool = True, refresh_capabilities: bool = True, execution_limits: ResumeExecutionLimits | None = None):
+    async def resume(self, run_id: str, idempotency_key: str, *, input: str | dict | None = None, refresh_model: bool = False, refresh_capabilities: bool = True, execution_limits: ResumeExecutionLimits | None = None):
         self.host.assert_open()
         await self.host.store.call(lambda db: self._resume(db, run_id, idempotency_key, input=input,
             refresh_model=refresh_model, refresh_capabilities=refresh_capabilities, execution_limits=execution_limits), transaction=True)

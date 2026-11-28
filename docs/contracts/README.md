@@ -69,4 +69,4 @@
 
 RuntimeFault 保留 cause，并公开 origin、stage、purpose、reason、action_id、attempt_id、measurement、evidence_ref、continuation。`diagnostic` 是普通函数从这些事实生成的展示投影，不再由各入口猜测原因。provider_accepted 未获明确证据时保持 null，进入发送、收到响应和计费用量不能互相代替。
 
-协议 3 的配置、MCP 和 Web 共用这些类型。预算总输入、非缓存输入、费用和收尾/恢复预留独立命名；MessageSpec 使用板块与自由正文，不再要求消息用途枚举；Workspace 原生策略与明确 trusted 模式分开。
+协议 4 的配置、MCP 和 Web 共用这些类型。预算总输入、非缓存输入、费用和收尾/恢复预留独立命名；MessageSpec 使用板块与自由正文，不再要求消息用途枚举；Workspace 原生策略与明确 trusted 模式分开。

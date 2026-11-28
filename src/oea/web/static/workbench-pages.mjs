@@ -121,7 +121,7 @@ async function showArchive(app){
   let items=[],cursor=null,loading=false,closed=false;close.onclose=()=>{closed=true;};
   const draw=()=>{
     if(closed)return;
-    content.innerHTML=`<h3>当前项目的已归档会话</h3>${items.map(value=>`<p>${escape(value.name)} <button class="icon-btn" data-restore-session="${escape(value.id)}" title="恢复会话" aria-label="恢复会话">${icon("refresh")}</button></p>`).join("")||`<p class="form-hint">${loading?"正在加载已归档会话…":projectId?"暂无已归档会话。":"选择项目后查看已归档会话。"}</p>`}${cursor!=null?`<button class="btn" id="more-archive" ${loading?"disabled":""}>${loading?"正在加载…":"加载更多会话"}</button>`:""}`;
+    content.innerHTML=`${items.length?"<h3>已归档会话</h3>":""}${items.map(value=>`<p>${escape(value.name)} <button class="icon-btn" data-restore-session="${escape(value.id)}" title="恢复会话" aria-label="恢复会话">${icon("refresh")}</button></p>`).join("")||`<p class="form-hint">${loading?"正在加载已归档会话…":projectId?"暂无已归档会话。":"选择项目后查看已归档会话。"}</p>`}${cursor!=null?`<button class="btn" id="more-archive" ${loading?"disabled":""}>${loading?"正在加载…":"加载更多会话"}</button>`:""}`;
     for(const button of content.querySelectorAll("[data-restore-session]"))button.onclick=async()=>{button.disabled=true;try{const restored=await rpc("sessions.set_archived",{project_id:projectId,session_id:button.dataset.restoreSession,archived:false});items=items.filter(value=>value.id!==restored.id);if(s.project?.id===projectId){await app.reloadSessions({restored});app.refreshFrame();await app.render();}draw();}catch(error){button.disabled=false;notify(error.message,true);}};
     if($("#more-archive",content))$("#more-archive",content).onclick=()=>load(true).catch(error=>notify(error.message,true));
   };

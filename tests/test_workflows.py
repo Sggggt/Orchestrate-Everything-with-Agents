@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, WorkflowBuilder
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -41,7 +43,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temporary.name)
         self.host = await Host(self.root / "state", model_api=EchoModel()).__aenter__()
         await self.host.projects.create("Project", project_id="p")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://example.invalid/v1", model="protocol-fixture")))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="protocol-fixture"))))
 
     async def asyncTearDown(self):
         await self.host.aclose()

@@ -1,0 +1,46 @@
+name: OAP sustained load
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_HOME: ${{ runner.temp }}/cargo
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      PIP_CACHE_DIR: ${{ runner.temp }}/pip-cache
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iproute2 iptables
+          toolchain=$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('native/sandbox/rust-toolchain.toml').read_text())['toolchain']['channel'])")
+          rustup toolchain install "$toolchain" --profile minimal --component rust-docs
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+      - name: Build and install matching native component
+        run: |
+          assets=$(python -B scripts/build_native.py --output "$RUNNER_TEMP/native" | tail -1)
+          export OEA_NATIVE_ASSETS="$assets"
+          python -m pip install -c constraints.txt -e '.[web,mcp,workbench]'
+          echo "OEA_TEST_NATIVE_COMPONENT=$assets/oea-sandbox" >> "$GITHUB_ENV"
+          echo 'OEA_TEST_NATIVE_NETWORK_ALLOW=1' >> "$GITHUB_ENV"
+      - name: Run full regression with the native Linux backend
+        env:
+          PYTHONPATH: tests
+        run: python -B -m unittest discover -s tests -p 'test_*.py'
+      - name: Run thirty-minute load acceptance
+        run: python -B scripts/check_oap_load.py --work-dir "$RUNNER_TEMP/oap-load" --duration 1800

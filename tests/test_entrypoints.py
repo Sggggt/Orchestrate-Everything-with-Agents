@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Completion, Model, RunSpec
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -32,7 +34,7 @@ class EntrypointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await call("projects.update", {"project_id": "p", "name": "Renamed"}))["name"], "Renamed")
         session = await call("sessions.create", {"project_id": "p", "name": "Work"})
         self.assertEqual((await call("sessions.update", {"session_id": session["id"], "project_id": "p", "name": "Renamed work"}))["name"], "Renamed work")
-        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model=Model(base_url="https://model.invalid/v1", model="protocol-fixture")))
+        await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://model.invalid/v1", model="protocol-fixture"))))
         instance = await self.host.instances.create(session["id"], "worker")
         spec = RunSpec(instance_id=instance["id"], input="Goal", idempotency_key="original")
         original = await self.host.runs.submit(spec)

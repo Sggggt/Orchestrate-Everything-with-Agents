@@ -10,6 +10,7 @@
 | catalog | `src/oea/catalog/` | [接口](catalog/README.md) |
 | runtime | `src/oea/runtime/` | [接口](runtime/README.md) |
 | orchestration | `src/oea/orchestration/` | [接口](orchestration/README.md) |
+| plugins | `src/oea/plugins/` | [接口](plugins/README.md) |
 | models | `src/oea/models/` | [接口](models/README.md) |
 | tools | `src/oea/tools/` | [接口](tools/README.md) |
 | workspace | `src/oea/workspace/` | [接口](workspace/README.md) |

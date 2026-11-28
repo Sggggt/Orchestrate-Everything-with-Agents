@@ -1,36 +1,16 @@
-# models 模块接口
+# API Box and model execution
 
-模型传输、流式解析、请求回执和用量结算。
+API Box is a user-scoped directory of model connections. Each entry has a unique name and a stable ID; its upstream model identifier, endpoint, generation parameters, optional pricing and write-only credential are managed centrally. Agent definitions contain Box references, not inline API configuration.
 
-## 独立连接探测
+Choose an Agent default during creation. Main-instance conversations can select a model for subsequent new tasks or update the Agent default. Other instances keep their explicit choices. Manager selection is available only in manager settings. An accepted Run pins its resolved configuration and version; changing a selection does not replace an active Run. Resume preserves the pinned model unless explicit refresh is requested. Disabling or revoking a connection blocks subsequent requests.
 
-`agents.probe(agent_id, session_id, idempotency_key, role="main")` 接受独立实例中的精简 Run，返回 RunHandle。通过 `runs.result` 或 `runs.inspect` 读取原结果、失败事实和用量；同键查询沿用原实例和 Run。manager 使用自己的模型与秘密，并要求协作模式。SDK 提供 `Agent.probe()` / `await Agent.aprobe()`，Web Agent 设置提供主模型的「测试模型连接」。
+Independent summary-model references are preserved. API Box is available without a selected project. Connection probes use the existing short, isolated Run with an explicit project/session/Agent context, at most one model call and 128 output tokens. Configuration readiness, a successful connection, tool availability and business correctness are separate facts.
 
-探测仅沿用所选模型，使用短指令、最多 128 输出 token、一次模型调用和独立根预算。它不加载业务 Skill、MCP、函数工具、原件、历史或配置的执行程序，也不更改已保存的 Agent。它仍使用正式模型动作、授权与回执，不自动重试。正常业务工作继续满足原有 required 和交付契约。
+Model execution, usage normalization, cached-token accounting, request limits and root-budget inheritance retain their existing contracts. No new budget mechanism is introduced.
 
-`agents.check` 仍只核对配置，不产生模型费用。连接响应只证明所选模型能够响应，工具可用性和实际业务效果另行验证。输入统计区分本地估算、供应商报告、缓存命中和未决估算；不得把预算上限或失败暂记值当成实际消费。
+Upgrade stopped earlier state into a separate target with the offline converter. It imports all model roles, verifies references, removes legacy inline API fields from active definitions and instance configurations, and removes only unreferenced legacy credentials. Source backups and recoverable historical receipts remain intact.
 
-源码：[src/oea/models/](../../src/oea/models/)
-
-## Python 接口
-
-- `models/api.py`：`provider_error(response, redact)`
-- `models/api.py`：`ModelFailure`
-- `models/api.py`：`ModelCancelled`
-- `models/api.py`：`sse_data(response, max_bytes=1024 * 1024)`
-- `models/api.py`：`ModelAPI`
-  - `async complete(self, model, messages, *, tools=(), output_tokens=None, emit=None, on_fact=None)`
-- `models/execution.py`：`ModelExecutor`
-  - `async complete(self, context, key, build_input, *, purpose='model', output_tokens=None, conversation=True, recovery=None, model=None)`
-- `models/transport.py`：`ModelTransport`
-  - `async borrow(self, base_url)`
-  - `async aclose(self)`
-
-## 依赖与边界
-
-依赖模块：context、contracts、storage。
-
-跨模块调用使用明确的 Python 对象和注入的服务；HTTP、MCP 可调用操作以共享操作注册表为准。执行权限由实际服务边界校验。
+Exact `models`, `agents`, `instances` and `runs` parameters are maintained by the shared typed registry.
 
 ## 请求编码边界
 
@@ -66,4 +46,4 @@ HTTP 400/413 且结构化代码为 `context_length_exceeded` 或 `max_context_le
 
 `Model.thinking`、`reasoning_effort` 和生成参数只按明确模型配置发送。工具续接保留供应商需要的推理字段与不透明签名；逻辑工具组不能被摘要拆断。确定性配置错误不自动重复请求。
 
-`summary_model` 和 `ContextPolicy.summary` 分别控制摘要模型与策略；正文目标 `memory_tokens` 不充当总生成上限。最多三个有依据的 attempt，共用原预算和回执。空正文且 length 可调整额度；未知发送先核对，不换键重发。全部失败保留上一记忆与之后的持久事实/引用，硬窗口仍不足时挂起原图。
+`summary_model_ref` 和 `ContextPolicy.summary` 分别控制摘要模型与策略；正文目标 `memory_tokens` 不充当总生成上限。最多三个有依据的 attempt，共用原预算和回执。空正文且 length 可调整额度；未知发送先核对，不换键重发。全部失败保留上一记忆与之后的持久事实/引用，硬窗口仍不足时挂起原图。

@@ -59,6 +59,7 @@ async def prepare_project_deletion(host, project_id):
 
 
 async def on_project_deleted(host, project_id):
+    host.plugins.current = {identity: value for identity, value in host.plugins.current.items() if value["project_id"] != project_id}
     scope = host.project_deletion_scopes.get(project_id, {"instances": set(), "runs": set(), "workflows": set()})
     if await host.store.call(lambda db: one(db, "SELECT 1 FROM projects WHERE id=?", (project_id,))):
         return

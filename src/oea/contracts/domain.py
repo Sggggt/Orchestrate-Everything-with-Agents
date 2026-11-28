@@ -105,7 +105,7 @@ class MessageSpec(Configuration):
 
 class AgentDescriptor(Configuration):
     agent_id: str
-    protocol_version: Literal["3.0"] = "3.0"
+    protocol_version: Literal["4.0"] = "4.0"
     supports_cancel: bool = False
     supports_probe: bool = False
     supports_suspend: bool = False

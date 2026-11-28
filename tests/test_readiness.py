@@ -6,8 +6,11 @@ import sys
 import tempfile
 import unittest
 
+from model_support import register_model
+
 from oea import AgentDefinition, Execution, Manager, MCPBinding, MCPServer, Model, SkillBinding, SkillSource, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
+from oea.contracts.configuration import manager_snapshot
 from oea.runtime.host import Host
 from oea.storage.persistence import one
 
@@ -31,11 +34,15 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_role_credentials_are_independent_and_workspace_preview_has_no_effect(self):
         await self.host.agents.save(AgentDefinition(id="worker", name="Worker", project_id="p",
-            model=Model(base_url="https://main.invalid/v1", model="main"),
-            manager=Manager(model=Model(base_url="https://manager.invalid/v1", model="manager", credential_ref="vault:missing")),
+            model_ref=await register_model(self.host, Model(base_url="https://main.invalid/v1", model="main")),
+            manager=Manager(model_ref=await register_model(self.host, Model(base_url="https://manager.invalid/v1", model="manager"))),
             workspace=Workspace(sandbox="trusted", work=self.root / "work-not-created", shell=(sys.executable, "-B")), tools=Tools(local=("exec_command",))))
         credential = "a synthetic readiness credential"
-        await self.host.agents.set_credential("worker", "p", "main", credential, 1)
+        definition = self.host.definitions["worker"]
+        await self.host.model_profiles.set_credential(definition.model_ref, credential, 1)
+        await self.host.model_profiles.set_credential(definition.manager.model_ref, "temporary-manager-key", 1)
+        manager_secret = self.host.model_profiles.resolve(manager_snapshot(definition)).model.credential_ref
+        self.host.vault.set(manager_secret.removeprefix("vault:"), "")
         before = await self.host.agents.get("worker")
         check = await self.host.registry.call("agents.check", {"agent_id": "worker", "project_id": "p"})
         self.assertEqual(check["model"]["state"], "configured")

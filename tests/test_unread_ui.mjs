@@ -22,6 +22,13 @@ test("message labels use the accepted external name or exact instance identity",
  assert.equal(messageSource({source:{kind:"manager",instance_id:"i",agent_id:"worker"}},state).agentId,"worker");
 });
 
+test("only explicit user sources use the user message presentation",()=>{
+ assert.deepEqual(messageSource({source:{kind:"user",name:"user"}},state),{name:"你",agentId:undefined,instanceId:undefined,kind:"user"});
+ for(const source of [{kind:"leader"},{kind:"leader",name:"leader"},{kind:"leader",name:"user"},{kind:"leader",name:"external-agent"},{kind:"instance",instance_id:"i"},{kind:"manager",instance_id:"i"}]){
+  assert.notEqual(messageSource({source},state).kind,"user");
+ }
+});
+
 test("group messages show recipients outside the current instance page and failed mentions",()=>{
  assert.deepEqual(recipientLabels({board:{scope:"session"},deliveries:[{instance_id:"off-page",instance_name:"Evidence reviewer"}],issues:[{field:"mentions",target:"i",reason:"NOT_DELIVERED"}]},state),["群聊","@Evidence reviewer","@One（未送达）"]);
  assert.deepEqual(recipientLabels({board:{scope:"session"},deliveries:[]},state),["群聊"]);

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import httpx
 
+from model_support import register_model
+
 from oea import Agent, AgentDefinition, Completion, Model, PlatformClient, RunSpec, Tools, Workspace
 from oea.contracts.errors import RuntimeFault
 from oea.runtime.host import Host
@@ -61,7 +63,7 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
 
     async def seed(self):
         await self.client.call("projects.create", {"name": "Project", "project_id": "p"})
-        definition = AgentDefinition(id="review", name="Review", project_id="p", model=Model(base_url="https://example.invalid/v1", model="protocol-fixture"))
+        definition = AgentDefinition(id="review", name="Review", project_id="p", model_ref=await register_model(self.host, Model(base_url="https://example.invalid/v1", model="protocol-fixture")))
         await self.client.call("agents.save", {"definition": definition.model_dump(mode="json")})
         session = await self.client.call("sessions.create", {"project_id": "p"})
         instance = await self.client.call("instances.create", {"session_id": session["id"], "agent_id": "review"})
@@ -177,6 +179,40 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await raw.get("/api/protocol")).status_code, 200)
             self.assertEqual((await raw.post("/api/browser-login/redeem", json={"ticket": ticket})).status_code, 403)
 
+    async def test_group_message_user_identity_comes_from_browser_authentication(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        session, _ = await self.seed()
+        boards = await self.client.call("boards.list", {"project_id": "p", "session_id": session["id"]})
+        board = next(item["id"] for item in boards["items"] if item["scope"] == "session")
+
+        def params(key):
+            return {"spec": {"board_id": board, "content": key, "idempotency_key": key}}
+
+        for name in (None, "external-agent", "leader", "user"):
+            external = await self.client.call("messages.send", params("external-" + str(name)), agent_name=name)
+            self.assertEqual(external["source"], {"kind": "leader", "name": name or "leader"})
+
+        async with httpx.AsyncClient(transport=self.transport, base_url=self.client.url) as browser:
+            ticket = parse_qs(urlsplit(await self.client.browser_url()).fragment)["oea-login"][0]
+            await browser.post("/api/browser-login/redeem", json={"ticket": ticket})
+            body = {"protocol_version": "4.0", "operation": "messages.send", "params": params("browser"), "request_id": "browser-send"}
+            sent = (await browser.post("/api/rpc", json=body)).json()["result"]
+            self.assertEqual(sent["source"], {"kind": "user", "name": "user"})
+            replay = (await browser.post("/api/rpc", json=body)).json()["result"]
+            self.assertTrue(replay["reused"])
+            self.assertEqual(replay["source"], sent["source"])
+            body["params"] = params("bearer-with-cookie")
+            external = (await browser.post("/api/rpc", json=body,
+                headers={"Authorization": "Bearer " + self.app.state.token})).json()["result"]
+            self.assertEqual(external["source"]["kind"], "leader")
+
+        spoofed = await self.client.client.post("/api/rpc", json=body | {"user_initiated": True})
+        self.assertEqual(spoofed.json()["error"]["code"], "INVALID_REQUEST")
+        saved = await self.client.call("messages.list", {"session_id": session["id"], "project_id": "p"})
+        self.assertEqual(next(item for item in saved["items"] if item["id"] == sent["id"])["source"], sent["source"])
+        self.assertEqual(self.model.calls, 0)
+
     async def test_sse_reconnect_reads_saved_cursor_without_reexecuting_work(self):
         session, instance = await self.seed()
         run = await self.client.call("runs.submit", {"spec": {"instance_id": instance["id"], "input": "Deliver", "idempotency_key": "intent"}})
@@ -195,13 +231,20 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_secret_is_write_only_and_rotates_the_configuration_reference(self):
         await self.seed()
         value = "test-only-value-" + "x" * 24
-        result = await self.client.call("agents.set_credential", {"agent_id": "review", "project_id": "p", "role": "main", "value": value, "expected_revision": 1})
+        definition = self.host.definitions["review"]
+        ref = definition.model_ref
+        result = await self.client.call("models.set_credential", {"model_ref": ref, "value": value, "expected_revision": 1})
+        first_secret_ref = self.host.model_profiles.resolve(definition).model.credential_ref
+        self.assertEqual(self.host.secret(first_secret_ref), value)
         saved = await self.client.call("agents.get", {"agent_id": "review"})
-        self.assertTrue(result["configured"])
+        self.assertTrue(result["has_credential"])
         self.assertNotIn(value, json.dumps(saved))
         self.assertNotIn(value, json.dumps(result))
-        self.assertEqual(self.host.secret(result["credential_ref"]), value)
-        changed = await self.client.call("agents.set_credential", {"agent_id": "review", "project_id": "p", "role": "main", "value": value + "y", "expected_revision": 2})
-        self.assertNotEqual(changed["credential_ref"], result["credential_ref"])
+        self.assertNotIn("credential_ref", result["model"])
+        changed = await self.client.call("models.set_credential", {"model_ref": ref, "value": value + "y", "expected_revision": 2})
+        second_secret_ref = self.host.model_profiles.resolve(definition).model.credential_ref
+        self.assertEqual(self.host.secret(second_secret_ref), value + "y")
+        self.assertNotEqual(first_secret_ref, second_secret_ref)
+        self.assertEqual(changed["revision"], 3)
         events = await self.client.call("events.list", {"project_id": "p"})
         self.assertNotIn(value, json.dumps(events))

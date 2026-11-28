@@ -8,10 +8,12 @@ from oea.contracts.measurement import estimated_tokens, estimate_input, measurem
 from oea.storage.persistence import encode, new_id, now_ms, one, rows
 from oea.context.selection import Group, select_views
 from oea.context.facts import CommandFacts
+from oea.context.protocol import project_message
 from oea.context.views import STRUCTURED_FIELDS, activity_group, deduplicate_mcp_result, deduplicate_skills, reference_message, tool_reference
 
 
 CONVERSATION = """SELECT c.id,c.position,c.run_id,c.resumption_id,a.name AS action_name,a.state AS action_state,m.created_at AS message_created_at,
+CASE WHEN c.role='assistant' AND a.name='model.complete' THEN json_array(json_extract(a.input_json,'$.model.base_url'),json_extract(a.input_json,'$.model.model'),json_extract(a.input_json,'$.model.credential_ref'),json_extract(a.input_json,'$.model.thinking')) END AS model_origin,
 COALESCE(c.body_json,
  CASE WHEN c.action_id IS NOT NULL THEN
    CASE WHEN c.role='tool' THEN json_object('role','tool','tool_call_id',c.tool_call_id,'content',a.result_json)
@@ -358,7 +360,7 @@ class ContextStore:
             page = await self.store.call(lambda db: rows(db, CONVERSATION + "WHERE c.instance_id=? AND c.position>? AND c.id<>? ORDER BY c.position LIMIT 256", (instance["id"], position, run["id"] + ":input")))
             if not page:
                 break
-            decoded = self.redact([json.loads(row["body_json"]) for row in page])
+            decoded = self.redact([project_message(row, model, run["id"]) for row in page])
             await facts.prepare(page, decoded)
             for row, message in zip(page, decoded):
                 if message["role"] != "tool" and history.groups and not history.pending:
@@ -415,7 +417,7 @@ class ContextStore:
         facts = CommandFacts(self.store, instance, self.command_facts, memory)
 
         async def decode():
-            messages = [json.loads(row["body_json"]) for row in records]
+            messages = [project_message(row, model, run["id"]) for row in records]
             await facts.prepare(records, messages)
             return messages
 
@@ -514,7 +516,7 @@ class ContextStore:
                     require(following, "MODEL_CONTEXT_INVALID", "Complete pending tool calls before invoking the model")
                     for index, row in enumerate(following):
                         records.append(row)
-                        message = json.loads(row["body_json"])
+                        message = project_message(row, model, run["id"])
                         messages.append(message)
                         history.add(row, message)
                         group_cost += estimated_tokens(message)

@@ -10,6 +10,8 @@ Use `agent_mentions` with Agent IDs to let the host select a recipient in the se
 
 Authenticated control MCP clients use their host access for messages and receipts. Partner grants apply between platform Agents. The sender's grant controls delivery, and the recipient's grant controls automatic inclusion of an Agent-sent message in model input.
 
+Group chat displays browser user messages on the right and external controller or platform Agent messages on the left. The server records browser-session provenance as `source.kind=user`; external control clients retain `leader` with their accepted display name. Names do not establish user identity. Historical messages without distinct user provenance stay on the left.
+
 Create work through `runs.submit` or an authorized `assign_work`. Continue a wait through its original resume operation. Use `list_members` and `list_boards` to discover reachable identities. Read complete results and artifact references before summarizing them.
 
 The optional manager uses the same capability types as any Agent. Its model and credentials are independent; tools, Skills, workspace and execution inherit the definition unless explicitly narrowed. A role name neither removes business tools nor grants administrator access. Assignment and cancellation require current communication grants and root ownership.

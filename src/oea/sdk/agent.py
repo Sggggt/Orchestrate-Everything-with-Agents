@@ -20,7 +20,7 @@ def plain(value):
 
 
 class Agent:
-    def __init__(self, *, name, model=None, summary_model=None, instructions="", tools=None, skills=(), context=None,
+    def __init__(self, *, name, model_ref=None, summary_model_ref=None, model=None, summary_model=None, instructions="", tools=None, skills=(), context=None,
                  workspace=None, execution=None, communication=None, manager=None, agent_id=None,
                  state_dir=None, host=None, client=None, project_id=None, session_id=None):
         require(not (host and client), "INVALID_REQUEST", "Choose a local host or an existing-host client")
@@ -28,11 +28,12 @@ class Agent:
         if not slug or not slug[0].isalpha():
             slug = "agent-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
         toolkit = tools if isinstance(tools, ToolKit) else ToolKit.local().with_tools(*(tools or ()))
-        options = {"id": agent_id or slug, "name": name, "project_id": project_id, "model": model or Model.from_env(),
+        options = {"id": agent_id or slug, "name": name, "project_id": project_id, "model_ref": model_ref, "summary_model_ref": summary_model_ref,
                    "instructions": Instructions(system=instructions) if isinstance(instructions, str) else instructions,
                    "tools": toolkit.bindings, "skills": skills, "workspace": workspace or Workspace(), "manager": manager}
-        options.update({key: value for key, value in (("summary_model", summary_model), ("context", context), ("execution", execution), ("communication", communication)) if value is not None})
+        options.update({key: value for key, value in (("context", context), ("execution", execution), ("communication", communication)) if value is not None})
         self.definition = AgentDefinition.model_validate(options)
+        self._initial_models = (model if model is not None else (None if model_ref else Model.from_env()), summary_model)
         self.toolkit = toolkit
         self.state_dir = Path(state_dir) if state_dir is not None else None
         self.backend = host or client
@@ -121,6 +122,31 @@ class Agent:
             definition = self.definition
             if not self._saved:
                 definition = definition.model_copy(update={"project_id": project_id})
+                # SDK convenience input is imported once into the same API Box;
+                # persisted declarations and all executions still use references.
+                references = {}
+                for purpose, initial in zip(("model", "summary_model"), self._initial_models):
+                    if initial is None or not (initial.base_url or initial.model):
+                        continue
+                    name = "sdk-" + hashlib.sha256(initial.model_dump_json().encode()).hexdigest()[:24]
+                    try:
+                        entry = await self._call("models.get", {"model_ref": name})
+                    except RuntimeFault as error:
+                        if error.code != "MODEL_NOT_FOUND":
+                            raise
+                        entry = await self._call("models.save", {"name": name, "model": initial.model_dump(mode="json", exclude={"credential_ref"})})
+                        if initial.credential_ref:
+                            import os
+                            if initial.credential_ref.startswith("env:"):
+                                credential = os.environ.get(initial.credential_ref[4:], "")
+                            else:
+                                require(hasattr(self.backend, "secret"), "INVALID_REQUEST", "Use an existing Box reference for remote vault credentials")
+                                credential = self.backend.secret(initial.credential_ref)
+                            if credential:
+                                await self._call("models.set_credential", {"model_ref": entry["id"], "value": credential, "expected_revision": entry["revision"]})
+                    references[purpose + "_ref"] = entry["id"]
+                definition = definition.model_copy(update=references)
+                self._initial_models = (None, None)
                 saved = await self._call("agents.save", {"definition": definition.model_dump(mode="json")})
                 definition = AgentDefinition.model_validate(saved["definition"])
             if session is None:
@@ -277,7 +303,7 @@ class AgentInstance:
         finally:
             self.agent._sync(iterator.aclose)
 
-    async def aresume(self, input=None, *, run_id=None, idempotency_key=None, timeout=None, refresh_model=True, refresh_capabilities=True):
+    async def aresume(self, input=None, *, run_id=None, idempotency_key=None, timeout=None, refresh_model=False, refresh_capabilities=True):
         await self._ensure()
         identity = run_id or self.last_run_id
         require(identity is not None, "RUN_REQUIRED", "Choose the original run to resume")

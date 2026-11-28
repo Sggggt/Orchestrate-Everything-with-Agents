@@ -31,7 +31,7 @@ class OperationRegistry:
                   for parameter in self.signatures[name].parameters.values()}
         self.parameters[name] = create_model(name.replace(".", "_") + "Parameters", __config__=ConfigDict(extra="forbid"), **fields)
 
-    async def call(self, name, params=None, *, correlation_id=None, causation_id=None, consumer_id=None, agent_name=None):
+    async def call(self, name, params=None, *, correlation_id=None, causation_id=None, consumer_id=None, agent_name=None, user_initiated=False):
         handler = self.handlers.get(name)
         if handler is None:
             raise RuntimeFault("METHOD_NOT_FOUND", "Operation is not available", operation=name)
@@ -50,7 +50,7 @@ class OperationRegistry:
             require(isinstance(agent_name, str) and 0 < len(agent_name.strip()) <= 80 and all(character.isprintable() for character in agent_name),
                     "INVALID_REQUEST", "Use a bounded external Agent display name")
             agent_name = agent_name.strip()
-        token = operation_context.set({"operation": name, "correlation_id": correlation_id, "causation_id": causation_id, "consumer_id": consumer_id, "agent_name": agent_name})
+        token = operation_context.set({"operation": name, "correlation_id": correlation_id, "causation_id": causation_id, "consumer_id": consumer_id, "agent_name": agent_name, "user_initiated": user_initiated})
         try:
             return await handler(**params)
         finally:
