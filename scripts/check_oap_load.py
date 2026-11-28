@@ -155,6 +155,12 @@ async def exercise(root, duration, owned):
             response = await clients[1].client.get("/api/oap/v1/artifacts/" + upload["id"] + "/content")
             assert response.status_code == 403
             del data
+
+            async def check_platform_isolation():
+                assert (await platform.call("runs.list", {"project_id": "example"}))["items"] == []
+                assert (await platform.call("artifacts.list", {"project_id": "example", "session_id": None}))["items"] == []
+
+            await check_platform_isolation()
             started = time.monotonic()
 
             async def worker(index):
@@ -206,8 +212,7 @@ async def exercise(root, duration, owned):
             assert fixture.calls == len(identities) == 10000
             assert peak == 20 and elapsed >= 1800
             assert percentile(latencies, .95) < 5 and percentile(totals, .95) < 30
-            assert (await platform.call("runs.list", {"project_id": "example"}))["items"] == []
-            assert (await platform.call("artifacts.list", {"project_id": "example"}))["items"] == []
+            await check_platform_isolation()
             assert not host.active and not host.command_sessions.live
             server.should_exit = True
             await serving
