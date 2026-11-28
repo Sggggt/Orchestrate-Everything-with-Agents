@@ -248,15 +248,20 @@ class NativeWorkspaceTests(__import__("test_workspace").WorkspaceTests):
         self.addCleanup(native.stop)
 
     async def test_default_shell_and_discovered_development_programs(self):
-        result = await self.invoke("exec_command", {"command":"echo shell-ready", "yield_time_ms":1000})
-        if result["state"] == "running":
-            result = await self.invoke("write_stdin", {"command_session_id":result["command_session_id"], "yield_time_ms":5000})
+        async def completed(arguments):
+            result = await self.invoke("exec_command", {**arguments, "yield_time_ms":1000})
+            async with asyncio.timeout(30):
+                while result["state"] == "running":
+                    result = await self.invoke("write_stdin", {"command_session_id":result["command_session_id"], "yield_time_ms":1000})
+            return result
+
+        result = await completed({"command":"echo shell-ready"})
         self.assertEqual(result["exit_code"], 0, result)
         self.assertIn("shell-ready", result["stdout"])
         for name in ("git", "rg", "node"):
             path = result["environment"]["programs"][name]
             if path:
-                observed = await self.invoke("exec_command", {"argv":[path,"--version"], "yield_time_ms":1000})
+                observed = await completed({"argv":[path,"--version"]})
                 self.assertEqual(observed["exit_code"], 0, observed)
 
     async def test_terminate_remains_available_when_command_input_is_backpressured(self):
